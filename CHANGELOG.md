@@ -2,6 +2,9 @@
 
 Format: keep a short entry per released version. Dates are UTC.
 
+## 2.10.1
+
+- 挂载时的那次诊断上报改成不会抛错的写法，并且先记一行 client: mounted。它原本写在挂载 effect 里：一旦读取容器信息出错，React 会把整行连同胶囊一起卸载——这正是「刷新后状态行里什么都没有」的一种可能。
 ## 2.10.0
 
 - 状态行里的胶囊改成宿主自己的度量：字号、行高、内边距、圆角和颜色都取 StatsPills 用的那几个值，所以它和旁边的轮数、token 统计看起来是同一行里的东西，而不是外挂上去的按钮。

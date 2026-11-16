@@ -427,11 +427,14 @@ window.__ModuleLoader__.load({
       React.useEffect(() => clearTimers, []);
 
       // One diagnostic per mount: where the slot actually sits in the shell.
+      // It must never throw: an error in a mount effect takes the whole row down.
       React.useEffect(() => {
-        const host = wrap.current;
-        const chipNode = chip.current;
-        if (!host || !chipNode) return;
-        const chipStyle = getComputedStyle(chipNode);
+        try {
+          report("mounted");
+          const host = wrap.current;
+          const chipNode = chip.current;
+          if (!host || !chipNode) return;
+          const chipStyle = getComputedStyle(chipNode);
         let clipping = "none";
         let node = host.parentElement;
         const chain = [];
@@ -458,6 +461,9 @@ window.__ModuleLoader__.load({
             `ancestors=${chain.slice(0, 4).join(">") || "clean"}`,
           ].join(" "),
         );
+        } catch (error) {
+          report(`diagnostic failed: ${error && error.message ? error.message : String(error)}`);
+        }
       }, []);
 
       // Escape closes; so does a click anywhere outside the pill and the panel.
