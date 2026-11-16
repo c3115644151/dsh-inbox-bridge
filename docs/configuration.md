@@ -16,6 +16,24 @@ DSH 的插件配置里，一个 `dsh-inbox-bridge` 条目即可；等价写法�
 
 改完重载插件生效（`plugin_manager` 的 `set_plugin` 关一次再开一次）。
 
+## 在页面上改（覆盖层）
+
+输入框下面那颗胶囊浮出来的卡片里，可以直接改三件事：提醒方式、清理强度、订阅哪些仓库。这些改动不写回 DSH 的插件配置，而是记在插件自己的覆盖层里：
+
+```text
+<cwd>/.work/inbox-bridge/prefs.json
+```
+
+优先级是 **页面上的选择 > profile 里的配置 > 默认值**。卡片上的「恢复配置」删掉这个文件的内容，一切回到 profile 写的那份；直接删文件也一样。
+
+写这些改动走的是插件注册的同源路由 `GET /inbox-bridge/prefs?...`，带一个每次进程启动重新生成的 token（随状态一起下发）。这有两个原因：宿主的 webServer 路由只应答 GET/HEAD，所以改动只能走查询串；而这个端口本身没有鉴权，token 保证别的本地页面不能替你做决定。
+
+覆盖层只存你动过的键。看着 `overlay` 就知道现在哪些设置来自页面：
+
+```json
+{ "delivery": "wakeup", "wakeOn": ["reviewer"], "repos": ["owner/one", "owner/two"] }
+```
+
 ## 全部配置项
 
 | 键 | 默认 | 作用 |

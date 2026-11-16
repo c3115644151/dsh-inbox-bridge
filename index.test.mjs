@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { buildMessage, buildUiPayload, deliver, deliveryTargets, detectRepo, filterUndelivered, formatEvents, matchesWatch, mergeConfig, repoOf, wakePlan } from "./index.js";
+import { buildMessage, buildUiPayload, deliver, deliveryTargets, detectRepo, filterUndelivered, formatEvents, matchesWatch, mergeConfig, preferenceNext, repoOf, wakePlan } from "./index.js";
 
 const idle = { status: "idle" };
 const running = { status: "running" };
@@ -602,4 +602,37 @@ test("the page keeps at most twenty open events", () => {
   const payload = buildUiPayload({ options: { label: "外部收件箱" }, queue, now: 0 });
   assert.equal(payload.events.length, 20);
   assert.equal(payload.events[0].key, "a/b#issue:29:author");
+});
+
+test("switching to wakeup brings a usable role, and quiet drops it", () => {
+  const wakeup = preferenceNext({}, "delivery", "wakeup", {});
+  assert.equal(wakeup.delivery, "wakeup");
+  assert.deepEqual(wakeup.wakeOn, ["reviewer"]);
+  const quiet = preferenceNext(wakeup, "delivery", "quiet", {});
+  assert.equal(quiet.delivery, "quiet");
+  assert.equal("wakeOn" in quiet, false);
+});
+
+test("turning the sweep off overrides a profile that configures one", () => {
+  const off = preferenceNext({}, "sweep", "off", {});
+  assert.equal(off.sweep, null);
+  // A null has to survive the merge: deleting the key falls back to the profile.
+  assert.equal(mergeConfig({ cwd: process.cwd(), sweep: off.sweep }).sweep, null);
+  const on = preferenceNext({}, "sweep", "on", {});
+  assert.equal(on.sweep.args.at(-1), "--json");
+  assert.equal(mergeConfig({ cwd: process.cwd(), sweep: on.sweep }).sweep.when, "events");
+});
+
+test("watching and unwatching a repository edits the list without duplicates", () => {
+  const options = { repos: ["a/b"] };
+  const added = preferenceNext({}, "watch", "c/d", options);
+  assert.deepEqual(added.repos, ["a/b", "c/d"]);
+  const again = preferenceNext({}, "watch", "a/b", options);
+  assert.deepEqual(again.repos, ["a/b"]);
+  const removed = preferenceNext({}, "unwatch", "a/b", options);
+  assert.deepEqual(removed.repos, []);
+});
+
+test("an unknown setting is refused instead of silently doing nothing", () => {
+  assert.equal(preferenceNext({}, "colour", "blue", {}), null);
 });

@@ -109,6 +109,20 @@ window.__ModuleLoader__.load({
         more: (n) => `还有 ${n} 条`,
         roles: { author: "作者", reviewer: "评审", assignee: "指派", mention: "提及", ci: "CI", any: "" },
         ago: { now: "刚刚", minutes: (n) => `${n} 分钟前`, hours: (n) => `${n} 小时前`, days: (n) => `${n} 天前` },
+        pick: {
+          mode: "提醒",
+          quiet: "只排队",
+          wakeup: "有事开轮",
+          clean: "清理",
+          cleanOff: "不碰",
+          cleanRead: "标已读",
+          cleanAll: "全账号",
+          done: "归档",
+          subscribe: "订阅",
+          add: "订阅本站",
+          remove: "取消订阅",
+          reset: "恢复配置",
+        },
       },
       en: {
         label: "GitHub inbox",
@@ -132,6 +146,20 @@ window.__ModuleLoader__.load({
         more: (n) => `${n} more`,
         roles: { author: "author", reviewer: "reviewer", assignee: "assignee", mention: "mention", ci: "CI", any: "" },
         ago: { now: "just now", minutes: (n) => `${n}m ago`, hours: (n) => `${n}h ago`, days: (n) => `${n}d ago` },
+        pick: {
+          mode: "notify",
+          quiet: "queue only",
+          wakeup: "open a turn",
+          clean: "clean",
+          cleanOff: "leave it",
+          cleanRead: "mark read",
+          cleanAll: "whole account",
+          done: "archive",
+          subscribe: "watch",
+          add: "watch this one",
+          remove: "unwatch",
+          reset: "reset",
+        },
       },
     };
 
@@ -319,6 +347,12 @@ window.__ModuleLoader__.load({
         gap: "12px",
         minWidth: 0,
       },
+      // A two-character label must never break between its characters: the
+      // panel is narrow and a wrapped label reads as two separate rows.
+      metaName: {
+        flex: "0 0 auto",
+        whiteSpace: "nowrap",
+      },
       metaFoot: {
         display: "flex",
         alignItems: "baseline",
@@ -343,6 +377,98 @@ window.__ModuleLoader__.load({
         textDecoration: "none",
         borderBottom: "1px dotted currentColor",
         whiteSpace: "nowrap",
+      },
+      controls: {
+        display: "grid",
+        gap: "8px",
+        marginTop: "10px",
+        paddingTop: "10px",
+        borderTop: "0.5px solid var(--dsw-alias-border-l2)",
+      },
+      controlRow: {
+        display: "grid",
+        gridTemplateColumns: "56px minmax(0, 1fr)",
+        alignItems: "center",
+        gap: "8px",
+        minWidth: 0,
+      },
+      controlLabel: {
+        color: "var(--dsw-alias-label-tertiary)",
+        fontSize: "11px",
+        lineHeight: "18px",
+        whiteSpace: "nowrap",
+      },
+      segGroup: {
+        display: "inline-flex",
+        minWidth: 0,
+        padding: "1px",
+        gap: "1px",
+        borderRadius: "var(--dsw-radius-sm)",
+        background: "var(--dsw-alias-bg-subtle, transparent)",
+      },
+      seg: {
+        padding: "1px 8px",
+        border: 0,
+        borderRadius: "var(--dsw-radius-sm)",
+        background: "transparent",
+        color: "var(--dsw-alias-label-tertiary)",
+        font: "inherit",
+        fontSize: "11px",
+        lineHeight: "18px",
+        whiteSpace: "nowrap",
+        cursor: "pointer",
+      },
+      segOn: {
+        background: "var(--dsw-specific-menu, var(--dsw-alias-interactive-bg-hover))",
+        color: "var(--dsw-alias-label-primary)",
+      },
+      repos: {
+        display: "flex",
+        flexWrap: "wrap",
+        alignItems: "center",
+        gap: "4px",
+        minWidth: 0,
+      },
+      repoChip: {
+        display: "inline-flex",
+        alignItems: "center",
+        gap: "2px",
+        maxWidth: "100%",
+        padding: "0 2px 0 6px",
+        borderRadius: "var(--dsw-radius-sm)",
+        background: "var(--dsw-alias-bg-subtle, transparent)",
+        color: "var(--dsw-alias-label-secondary)",
+        fontSize: "11px",
+        lineHeight: "18px",
+        minWidth: 0,
+      },
+      repoName: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+      iconBtn: {
+        padding: "0 4px",
+        border: 0,
+        background: "transparent",
+        color: "var(--dsw-alias-label-tertiary)",
+        font: "inherit",
+        fontSize: "11px",
+        lineHeight: "18px",
+        cursor: "pointer",
+      },
+      addBtn: {
+        padding: "0 6px",
+        border: "0.5px solid var(--dsw-alias-border-l2)",
+        borderRadius: "var(--dsw-radius-sm)",
+        background: "transparent",
+        color: "var(--dsw-alias-label-tertiary)",
+        font: "inherit",
+        fontSize: "11px",
+        lineHeight: "18px",
+        whiteSpace: "nowrap",
+        cursor: "pointer",
+      },
+      errorLine: {
+        marginTop: "6px",
+        color: "var(--dsw-alias-label-warning, var(--dsw-alias-label-secondary))",
+        fontSize: "11px",
       },
     };
 
@@ -408,6 +534,7 @@ window.__ModuleLoader__.load({
 
     function useStatus(sessionId) {
       const [state, setState] = React.useState({ status: null, missing: false });
+      const [tick, setTick] = React.useState(0);
       React.useEffect(() => {
         let alive = true;
         let misses = 0;
@@ -443,13 +570,181 @@ window.__ModuleLoader__.load({
           window.removeEventListener("focus", onWake);
           document.removeEventListener("visibilitychange", onWake);
         };
-      }, [sessionId]);
-      return state;
+      }, [sessionId, tick]);
+      // A choice made in the panel must show at once; it reuses the same read.
+      const reload = React.useCallback(() => setTick((value) => value + 1), []);
+      return { ...state, reload };
+    }
+
+    /**
+     * One change at a time, through the host's own route. The token is the one
+     * this process handed out with the status, so another page cannot do this.
+     */
+    async function change(status, set, value) {
+      const token = status?.token;
+      if (!token) return { ok: false, error: "no token" };
+      const url = `/inbox-bridge/prefs?token=${encodeURIComponent(token)}&set=${encodeURIComponent(
+        set,
+      )}&value=${encodeURIComponent(value)}`;
+      try {
+        const response = await fetch(url, { cache: "no-store" });
+        return await response.json();
+      } catch (error) {
+        return { ok: false, error: error && error.message ? error.message : String(error) };
+      }
+    }
+
+    /** Back to exactly what the profile says: delete every choice made here. */
+    async function reset(status, reload) {
+      const result = await change(status, "reset", "1");
+      if (result.ok) reload();
+      return result;
+    }
+
+    /**
+     * The choices that change behaviour, in place. Every control writes through
+     * the host's own route and then re-reads the status, so what is shown is what
+     * the next poll will do — never an optimistic guess.
+     */
+    function Controls({ status, text, reload }) {
+      const [busy, setBusy] = React.useState(false);
+      const [error, setError] = React.useState(null);
+      const pick = text.pick;
+      const send = async (set, value) => {
+        if (busy) return;
+        setBusy(true);
+        setError(null);
+        const result = await change(status, set, value);
+        setBusy(false);
+        if (!result.ok) {
+          setError(result.error ?? "failed");
+          return;
+        }
+        reload();
+      };
+      const seg = (label, options, current, set, key) =>
+        h(
+          "div",
+          { style: styles.segGroup, role: "group", "aria-label": label },
+          options.map(([value, caption]) =>
+            h(
+              "button",
+              {
+                key: `${key}-${value}`,
+                type: "button",
+                "aria-pressed": current === value,
+                disabled: busy,
+                onClick: () => void send(set, value),
+                style: { ...styles.seg, ...(current === value ? styles.segOn : {}) },
+              },
+              caption,
+            ),
+          ),
+        );
+      const watched = status.watched ?? status.repos ?? [];
+      const sessionRepo = status.scope === "session" ? status.session?.repo ?? null : null;
+      const canAdd = Boolean(sessionRepo) && !watched.includes(sessionRepo);
+      return h(
+        "div",
+        { style: styles.controls },
+        h(
+          "div",
+          { style: styles.controlRow },
+          h("span", { style: styles.controlLabel }, pick.mode),
+          seg(
+            pick.mode,
+            [
+              ["quiet", pick.quiet],
+              ["wakeup", pick.wakeup],
+            ],
+            status.delivery ?? "quiet",
+            "delivery",
+            "mode",
+          ),
+        ),
+        h(
+          "div",
+          { style: styles.controlRow },
+          h("span", { style: styles.controlLabel }, pick.clean),
+          h(
+            "div",
+            { style: styles.repos },
+            seg(
+              pick.clean,
+              [
+                ["off", pick.cleanOff],
+                ["repo", pick.cleanRead],
+                ["all", pick.cleanAll],
+              ],
+              status.clear ?? "off",
+              "clear",
+              "clean",
+            ),
+            h(
+              "button",
+              {
+                type: "button",
+                disabled: busy,
+                "aria-pressed": Boolean(status.sweepOn),
+                onClick: () => void send("sweep", status.sweepOn ? "off" : "on"),
+                style: { ...styles.addBtn, ...(status.sweepOn ? styles.segOn : {}) },
+                title: pick.done,
+              },
+              `${pick.done}${status.sweepOn ? " ✓" : ""}`,
+            ),
+          ),
+        ),
+        h(
+          "div",
+          { style: styles.controlRow },
+          h("span", { style: styles.controlLabel }, pick.subscribe),
+          h(
+            "div",
+            { style: styles.repos },
+            watched.length === 0
+              ? h("span", { style: styles.controlLabel }, text.none)
+              : watched.map((entry) =>
+                  h(
+                    "span",
+                    { key: entry, style: styles.repoChip, title: entry },
+                    h("span", { style: styles.repoName }, entry.split("/").pop()),
+                    watched.length > 1
+                      ? h(
+                          "button",
+                          {
+                            type: "button",
+                            disabled: busy,
+                            "aria-label": `${pick.remove} ${entry}`,
+                            onClick: () => void send("unwatch", entry),
+                            style: styles.iconBtn,
+                          },
+                          "×",
+                        )
+                      : null,
+                  ),
+                ),
+            canAdd
+              ? h(
+                  "button",
+                  {
+                    type: "button",
+                    disabled: busy,
+                    onClick: () => void send("watch", sessionRepo),
+                    style: styles.addBtn,
+                    title: sessionRepo,
+                  },
+                  `+ ${pick.add}`,
+                )
+              : null,
+          ),
+        ),
+        error ? h("div", { style: styles.errorLine }, error) : null,
+      );
     }
 
     function InboxBar(props) {
       const sessionId = props?.sessionId ?? null;
-      const { status, missing } = useStatus(sessionId);
+      const { status, missing, reload } = useStatus(sessionId);
       const text = locale();
       const [open, setOpen] = React.useState(false);
       const [geometry, setGeometry] = React.useState(null);
@@ -600,12 +895,11 @@ window.__ModuleLoader__.load({
       const watchedRepos = status.watched ?? status.repos ?? [];
       const unwatched =
         sessionRepo && watchedRepos.length > 0 && !watchedRepos.includes(sessionRepo) ? sessionRepo : null;
-      const watchedLabel = watchedRepos.length > 0 ? watchedRepos.join("  ") : text.none;
       const metaRow = (name, value, extra) =>
         h(
           "div",
           { style: styles.metaRow },
-          h("span", null, name),
+          h("span", { style: styles.metaName }, name),
           h("span", { style: { ...styles.metaValue, ...(extra ?? {}) } }, value),
         );
       const lastPoll = (status.polls ?? []).map((poll) => poll.at).filter(Boolean).sort().pop();
@@ -643,8 +937,9 @@ window.__ModuleLoader__.load({
             h(
               "div",
               { style: styles.meta },
+              // Only what the controls below cannot say: which identity reads, and
+              // when it last did. The subscription itself is edited in its own row.
               metaRow(text.scopeRead, identityLine(status, text)),
-              metaRow(text.scopeWatch, watchedLabel, unwatched ? styles.warnValue : null),
               unwatched
                 ? null
                 : metaRow(
@@ -654,14 +949,23 @@ window.__ModuleLoader__.load({
               h(
                 "div",
                 { style: styles.metaFoot },
-                h("span", null, status.sweep ? text.sweep : text.clear),
-                h("span", null, status.delivery === "wakeup" ? "" : text.quiet),
                 h(
                   "a",
                   { href: "https://github.com/notifications", target: "_blank", rel: "noreferrer", style: styles.openLink },
                   text.open,
                 ),
+                h(
+                  "button",
+                  {
+                    type: "button",
+                    onClick: () => void reset(status, reload),
+                    style: { ...styles.openLink, background: "transparent", border: 0, borderBottom: "1px dotted currentColor", font: "inherit", cursor: "pointer", padding: 0 },
+                    title: text.pick.reset,
+                  },
+                  text.pick.reset,
+                ),
               ),
+              h(Controls, { status, text, reload }),
             ),
           )
         : null;

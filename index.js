@@ -34,6 +34,43 @@ export const inject = { agents: true, webServer: false };
 
 /** The bridge CLI that ships with this plugin; commands run it, not a project copy. */
 const CLI = fileURLToPath(new URL("./scripts/inbox-bridge.mjs", import.meta.url));
+/** The browser sweep that archives the GitHub inbox; the page can turn it on. */
+const SWEEP_SCRIPT = fileURLToPath(new URL("./scripts/clear-inbox.mjs", import.meta.url));
+
+/**
+ * The next overlay for one choice the page made, or `null` for an unknown action.
+ *
+ * Kept pure so the rules are testable without a running host: what a click means
+ * is exactly this, and `apply` only writes the result.
+ */
+export function preferenceNext(current = {}, action, value = "", options = {}) {
+  const next = { ...current };
+  if (action === "delivery") {
+    next.delivery = value;
+    // `wakeup` without roles wakes nobody, which looks broken; `quiet` with roles
+    // is a configuration error, so drop them together with the mode.
+    if (value === "quiet") delete next.wakeOn;
+    else if (!next.wakeOn?.length) next.wakeOn = ["reviewer"];
+    return next;
+  }
+  if (action === "clear") {
+    next.clear = value;
+    return next;
+  }
+  if (action === "sweep") {
+    // `null` overrides a profile that configures a sweep; deleting the key would
+    // only fall back to that profile and stay on.
+    next.sweep = value === "on" ? { args: [SWEEP_SCRIPT, "--json"] } : null;
+    return next;
+  }
+  if (action === "watch" || action === "unwatch") {
+    const watched = options.repos?.length ? options.repos : options.repo ? [options.repo] : [];
+    next.repos =
+      action === "watch" ? [...new Set([...watched, value])] : watched.filter((entry) => entry !== value);
+    return next;
+  }
+  return null;
+}
 
 /**
  * What the notice tells the agent to run once an event is handled.
@@ -54,6 +91,14 @@ const SOURCE_STATE_REL = join(".work", "github-inbox", "state.json");
 const UI_ROUTE = "/inbox-bridge/status.json";
 /** Where the page reports what it sees (clipping, missing layers) into the log. */
 const CLIENT_LOG_ROUTE = "/inbox-bridge/client-log";
+/** Where the page changes how this instance behaves; GET with a token, since routes answer GET only. */
+const PREFS_ROUTE = "/inbox-bridge/prefs";
+/**
+ * Choices made in the page, kept beside the queue instead of rewritten into the
+ * host's configuration file: the plugin owns its own overlay, and deleting this
+ * file returns the instance to exactly what the profile says.
+ */
+const PREFS_REL = join(".work", "inbox-bridge", "prefs.json");
 /** Event details (title, url, role) kept beside the queue, so reloads keep them. */
 const LABELS_REL = join(".work", "inbox-bridge", "labels.json");
 /** How many event details to keep for the view. */
@@ -147,9 +192,34 @@ export function keyOf(agent) {
 }
 
 export function apply(ctx, config) {
-  const options = mergeConfig(config);
+  const baseConfig = config ?? {};
+  const options = mergeConfig(baseConfig);
   const stateDir = join(options.cwd, ".work", "inbox-bridge");
   const logPath = join(stateDir, "plugin.log");
+  /**
+   * What the page is allowed to change, and how. Routes in this host answer GET
+   * and HEAD only, so a choice arrives as query parameters; the token keeps a
+   * random web page from changing this instance behind the user's back.
+   */
+  const prefsFile = join(options.cwd, PREFS_REL);
+  const uiToken = randomUUID();
+  let prefs = readJsonSync(prefsFile) ?? {};
+  const applyPrefs = (next) => {
+    const merged = mergeConfig({ ...baseConfig, ...next });
+    prefs = next;
+    mkdirSync(dirname(prefsFile), { recursive: true });
+    writeFileSync(prefsFile, `${JSON.stringify(next, null, 2)}\n`);
+    Object.assign(options, merged);
+    return merged;
+  };
+  if (Object.keys(prefs).length > 0) {
+    try {
+      Object.assign(options, mergeConfig({ ...baseConfig, ...prefs }));
+    } catch {
+      // A stale overlay must not stop the instance; the loop below reports it.
+      prefs = {};
+    }
+  }
   const agents = new Map();
   /** One re-poll timer per session that is currently running a turn. */
   const turnTimers = new Map();
@@ -224,13 +294,20 @@ export function apply(ctx, config) {
           roles: options.roles ?? [],
         }
       : null;
-    return buildUiPayload({
-      options,
-      queue: readJson(join(options.cwd, STATE_REL))?.events,
-      source: readJson(join(options.cwd, SOURCE_STATE_REL)),
-      recent,
-      session,
-    });
+    return {
+      ...buildUiPayload({
+        options,
+        queue: readJson(join(options.cwd, STATE_REL))?.events,
+        source: readJson(join(options.cwd, SOURCE_STATE_REL)),
+        recent,
+        session,
+      }),
+      // The page proves it is this process's page before it may change anything,
+      // and shows which choices came from it rather than from the profile.
+      token: uiToken,
+      overlay: Object.keys(prefs),
+      sweepOn: Boolean(options.sweep),
+    };
   };
 
   // What the plugin believes it is doing, for `dsh-inbox-bridge status`: the
@@ -547,6 +624,57 @@ export function apply(ctx, config) {
                 "cache-control": "no-store",
               },
             });
+          },
+        }),
+      );
+      // The page changes behaviour here. Routes answer GET/HEAD only, so the
+      // change travels in the query string and carries the per-process token:
+      // without it, any local page could rewrite how this instance behaves.
+      ctx.effect(() =>
+        server.register({
+          kind: "exact",
+          path: PREFS_ROUTE,
+          resource: async (request) => {
+            const reply = (status, body) =>
+              new Response(`${JSON.stringify(body)}\n`, {
+                status,
+                headers: {
+                  "content-type": "application/json; charset=utf-8",
+                  "cache-control": "no-store",
+                },
+              });
+            let url;
+            try {
+              url = new URL(request.url);
+            } catch {
+              return reply(400, { ok: false, error: "unreadable request" });
+            }
+            if (url.searchParams.get("token") !== uiToken) {
+              return reply(403, { ok: false, error: "token" });
+            }
+            const action = url.searchParams.get("set") ?? "";
+            const value = url.searchParams.get("value") ?? "";
+            try {
+              if (action === "reset") {
+                prefs = {};
+                mkdirSync(dirname(prefsFile), { recursive: true });
+                writeFileSync(prefsFile, "{}\n");
+                Object.assign(options, mergeConfig(baseConfig));
+                log("preferences reset to the profile");
+                writeRuntime();
+                return reply(200, { ok: true, status: uiPayload() });
+              }
+              const next = preferenceNext(prefs, action, value, options);
+              if (next === null) {
+                return reply(400, { ok: false, error: `unknown setting: ${action || "-"}` });
+              }
+              applyPrefs(next);
+            } catch (error) {
+              return reply(400, { ok: false, error: describe(error) });
+            }
+            log(`preference: ${action} ${value || ""} → delivery ${options.delivery}, clear ${options.clear}, sweep ${options.sweep?.when ?? "off"}, repos ${(options.repos ?? []).join(",") || "-"}`);
+            writeRuntime();
+            return reply(200, { ok: true, status: uiPayload() });
           },
         }),
       );
