@@ -135,7 +135,7 @@ Every real wake writes `woke <session> because <role>:<key>`; a refusal writes `
 | `mention` | a comment mentioning me (`@name` and `@name[bot]` both count) |
 | `ci` | default-branch CI, nobody's in particular |
 
-**Repository affinity** — a notice only reaches sessions whose workspace `origin` equals the watched repository; sessions with no recognisable repository never receive another repository's events. Only keys that were actually delivered are marked `delivered`; the rest stay for the next poll.
+**Repository affinity** — a notice only reaches sessions whose workspace `origin` equals the watched repository; sessions with no recognisable repository never receive another repository's events. Only keys that were actually delivered are marked `delivered`; the rest stay for the next poll. One instance serves one repository today — run one instance per repository; letting one instance watch a list of repositories is ROADMAP step 4.
 
 ## Usage
 
