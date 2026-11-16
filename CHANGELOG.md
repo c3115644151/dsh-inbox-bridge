@@ -2,6 +2,11 @@
 
 Format: keep a short entry per released version. Dates are UTC.
 
+## 2.8.0
+
+- 新增视觉入口：输入框上方一行显示「几条在等 / 没有待处理的事」，点开是清单（谁、哪个仓库、什么时候同步的）。只读，不占对话，拉不到数据就整行不显示。
+- 页面数据走同源命名路由 GET /inbox-bridge/status.json（ctx.webServer 注册，只读、无凭据、无第二个端口），内容与 status 命令一致。
+- uildUiPayload 成为可测的纯函数：截 20 条未收口事件、按时间倒序、done 不进页面。
 ## 2.7.1
 
 - 启动日志写明是否在归档收件箱（sweep events），和 clear 并列，免得要靠猜。

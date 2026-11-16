@@ -19,12 +19,18 @@
  */
 import { execFile, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const name = "inbox-bridge";
-export const inject = ["agents"];
+/**
+ * `agents` is required — without them there is nothing to deliver to. `webServer`
+ * is optional: it carries the status route the Web page reads, and a composition
+ * without it (a terminal-only run) still polls and delivers, just with no visual
+ * surface.
+ */
+export const inject = { agents: true, webServer: false };
 
 /** The bridge CLI that ships with this plugin; commands run it, not a project copy. */
 const CLI = fileURLToPath(new URL("./scripts/inbox-bridge.mjs", import.meta.url));
@@ -39,6 +45,15 @@ export const DEFAULT_ACK_HINT = `node "${CLI}" ack --done -- <key>`;
 
 /** How long a session workspace's `owner/name` is trusted before re-reading git. */
 const REPO_TTL_MS = 10 * 60 * 1000;
+
+/** Queue state the CLI owns: one entry per event key, with its status. */
+const STATE_REL = join(".work", "inbox-bridge", "state.json");
+/** What the poller saw last, per repository. */
+const SOURCE_STATE_REL = join(".work", "github-inbox", "state.json");
+/** The path the client view reads; same origin as the page, so no CORS and no second port. */
+const UI_ROUTE = "/inbox-bridge/status.json";
+/** How many event details to keep in memory for the view. */
+const RECENT_LIMIT = 60;
 
 const DEFAULTS = Object.freeze({
   label: "外部收件箱",
@@ -153,6 +168,44 @@ export function apply(ctx, config) {
     if (options.debug) log(`debug: ${line}`);
   };
 
+  // The queue file records only status and time, so the view would show bare
+  // keys. Keep the last details this process saw and merge them in on read: the
+  // poll is the only place that knows a title, a url, and a role.
+  const recent = new Map();
+  const rememberEvents = (events) => {
+    for (const event of events) {
+      recent.delete(event.key);
+      recent.set(event.key, {
+        kind: event.kind ?? null,
+        role: event.role ?? null,
+        title: event.title ?? null,
+        url: event.url ?? null,
+      });
+    }
+    while (recent.size > RECENT_LIMIT) recent.delete(recent.keys().next().value);
+  };
+
+  const readJson = (file) => {
+    try {
+      return JSON.parse(readFileSync(file, "utf8"));
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * Everything the page needs in one read: what this instance watches, as whom,
+   * how it delivers, and the queue as it stands. Statuses come from the queue
+   * file (the CLI's record of truth); details come from `recent`.
+   */
+  const uiPayload = () =>
+    buildUiPayload({
+      options,
+      queue: readJson(join(options.cwd, STATE_REL))?.events,
+      source: readJson(join(options.cwd, SOURCE_STATE_REL)),
+      recent,
+    });
+
   // What the plugin believes it is doing, for `dsh-inbox-bridge status`: the
   // effective config without secrets, plus where the state lives.
   const writeRuntime = () => {
@@ -232,6 +285,7 @@ export function apply(ctx, config) {
 
   const poll = async () => {
     debug(`poll: enter (polling=${polling}, agents=${agents.size}, since=${Date.now() - startedAt}ms)`);
+    if (!routeReady) registerStatusRoute();
     if (polling || agents.size === 0) return;
     // Turn start fires both a status change and a session event; one poll is
     // enough for both, and a duplicate would only spend a second `gh` call.
@@ -263,6 +317,7 @@ export function apply(ctx, config) {
       );
       if (suppressed > 0) log(`suppressed ${suppressed} event(s) already delivered; waiting for ack`);
       if (events.length === 0) return;
+      rememberEvents(events);
       // Archiving runs alongside delivery: the browser takes seconds, and the
       // notice must not wait for it.
       void sweepInbox(freshCount);
@@ -409,6 +464,57 @@ export function apply(ctx, config) {
     for (const key of [...turnTimers.keys()]) stopTurn(key);
     agents.clear();
   });
+
+  // The page reads this route: it is the same origin as the GUI, so the view
+  // needs no CORS, no second port, and no credentials. `webServer` is optional
+  // and may activate after this plugin, so the first poll retries once.
+  let routeReady = false;
+  const registerStatusRoute = () => {
+    if (routeReady) return;
+    let server;
+    try {
+      server = ctx.webServer;
+    } catch {
+      // The optional service is not mounted yet; a later poll tries again.
+      return;
+    }
+    if (!server || typeof server.register !== "function") return;
+    routeReady = true;
+    let served = 0;
+    try {
+      ctx.effect(() =>
+        server.register({
+          kind: "exact",
+          path: UI_ROUTE,
+          resource: async (request) => {
+            served += 1;
+            // One line per read is too loud for a 20 s poll; the first read and
+            // every tenth after it still prove which origin asked.
+            if (served === 1 || served % 10 === 0) {
+              let origin = "none";
+              try {
+                origin = request?.headers?.get?.("origin") ?? "none";
+              } catch {
+                origin = "unreadable";
+              }
+              log(`status read ${served} time(s), origin ${origin}`);
+            }
+            return new Response(`${JSON.stringify(uiPayload())}\n`, {
+              headers: {
+                "content-type": "application/json; charset=utf-8",
+                "cache-control": "no-store",
+              },
+            });
+          },
+        }),
+      );
+      log(`status route ready: ${UI_ROUTE}`);
+    } catch (error) {
+      // A duplicate path is a composition mistake, not a reason to stop polling.
+      log(`status route not registered: ${describe(error)}`);
+    }
+  };
+  registerStatusRoute();
 }
 
 /**
@@ -834,6 +940,48 @@ function wakeNotice(options, delivery) {
     `插件可能替你开一轮：仅限 ${wakeOn.join("/")} 角色，会话空闲满 ${idleMinutes} 分钟后，` +
     `每小时最多 ${perHour} 次（另有每个会话 ${options.maxConsecutiveWakes ?? DEFAULTS.maxConsecutiveWakes} 次的连续上限）。`
   );
+}
+
+/**
+ * What the page shows: what this instance watches, as whom, how it delivers,
+ * and the queue as it stands. Statuses come from the queue file (the CLI's
+ * record of truth); titles and links come from what this turn actually saw.
+ */
+export function buildUiPayload({ options, queue = {}, source = null, recent = new Map(), now = Date.now() }) {
+  const repos = options.repos?.length > 0 ? options.repos : options.repo ? [options.repo] : [];
+  const counts = { pending: 0, delivered: 0, done: 0 };
+  for (const entry of Object.values(queue)) {
+    if (entry?.status && entry.status in counts) counts[entry.status] += 1;
+  }
+  const events = Object.entries(queue)
+    .map(([key, entry]) => ({
+      key,
+      repo: key.includes("#") ? key.slice(0, key.indexOf("#")) : null,
+      status: entry?.status ?? "unknown",
+      at: entry?.at ?? null,
+      ...(recent?.get?.(key) ?? {}),
+    }))
+    .filter((event) => event.status !== "done")
+    .sort((left, right) => String(right.at ?? "").localeCompare(String(left.at ?? "")))
+    .slice(0, 20);
+  const identity = options.identity ?? DEFAULTS.identity;
+  return {
+    at: new Date(now).toISOString(),
+    label: options.label ?? DEFAULTS.label,
+    repos,
+    identity: {
+      kind: identity.kind,
+      login: identity.login,
+      hasToken: Boolean(identity.token || identity.tokenEnv),
+    },
+    delivery: options.delivery ?? DEFAULTS.delivery,
+    clear: options.clear ?? DEFAULTS.clear,
+    sweep: options.sweep?.when ?? null,
+    intervalMs: options.intervalMs ?? DEFAULTS.intervalMs,
+    queue: counts,
+    events,
+    polls: repos.map((repo) => ({ repo, ...(source?.repos?.[repo]?.lastPoll ?? {}) })),
+  };
 }
 
 export function buildMessage(count, text, label = "外部收件箱") {

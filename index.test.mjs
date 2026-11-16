@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { buildMessage, deliver, deliveryTargets, detectRepo, filterUndelivered, formatEvents, matchesWatch, mergeConfig, repoOf, wakePlan } from "./index.js";
+import { buildMessage, buildUiPayload, deliver, deliveryTargets, detectRepo, filterUndelivered, formatEvents, matchesWatch, mergeConfig, repoOf, wakePlan } from "./index.js";
 
 const idle = { status: "idle" };
 const running = { status: "running" };
@@ -519,4 +519,45 @@ test("a turn with findings sweeps the inbox and says what it archived", async ()
   } finally {
     removeTree(root);
   }
+});
+
+test("the page sees what is still open, newest first, and nothing already closed", () => {
+  const payload = buildUiPayload({
+    options: {
+      label: "外部收件箱",
+      repos: ["a/b"],
+      identity: { kind: "user", login: "me" },
+      delivery: "quiet",
+      clear: "all",
+      sweep: { when: "events" },
+    },
+    queue: {
+      "a/b#run:1": { status: "done", at: "2026-01-01T00:00:00Z" },
+      "a/b#pr:2:author": { status: "pending", at: "2026-01-02T00:00:00Z" },
+      "a/b#pr:3:reviewer": { status: "delivered", at: "2026-01-03T00:00:00Z" },
+    },
+    source: { repos: { "a/b": { lastPoll: { at: "2026-01-02T01:00:00Z", as: "me", events: 2 } } } },
+    recent: new Map([["a/b#pr:2:author", { kind: "pr", role: "author", title: "标题", url: "https://x" }]]),
+    now: 0,
+  });
+
+  assert.deepEqual(payload.queue, { pending: 1, delivered: 1, done: 1 });
+  assert.deepEqual(payload.events.map((event) => event.key), ["a/b#pr:3:reviewer", "a/b#pr:2:author"]);
+  assert.equal(payload.events[1].title, "标题");
+  assert.equal(payload.events[0].repo, "a/b");
+  assert.equal(payload.delivery, "quiet");
+  assert.equal(payload.sweep, "events");
+  assert.deepEqual(payload.polls, [{ repo: "a/b", at: "2026-01-02T01:00:00Z", as: "me", events: 2 }]);
+  assert.equal(payload.identity.hasToken, false);
+  assert.equal(payload.at, new Date(0).toISOString());
+});
+
+test("the page keeps at most twenty open events", () => {
+  const queue = {};
+  for (let index = 0; index < 30; index += 1) {
+    queue[`a/b#issue:${index}:author`] = { status: "pending", at: `2026-01-01T00:00:${String(index).padStart(2, "0")}Z` };
+  }
+  const payload = buildUiPayload({ options: { label: "外部收件箱" }, queue, now: 0 });
+  assert.equal(payload.events.length, 20);
+  assert.equal(payload.events[0].key, "a/b#issue:29:author");
 });

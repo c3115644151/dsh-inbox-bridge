@@ -99,3 +99,5 @@ node scripts/inbox-bridge.mjs ack --all-delivered --done   # 把所有 delivered
 .work/inbox-bridge/plugin.log    投递、唤醒、skip 的痕迹
 .work/github-inbox/state.json    抓取器：每个仓库一个分片，记上次轮询与已见事件
 ```
+
+页面那一行读的是同源路由 `GET /inbox-bridge/status.json`（只读，内容与 `status` 命令一致）；它不写任何文件，也不改变队列。
