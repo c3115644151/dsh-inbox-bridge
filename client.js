@@ -100,6 +100,7 @@ window.__ModuleLoader__.load({
         clear: "顺手标已读",
         sweep: "清理收件箱",
         quiet: "不替你开轮",
+        unwatched: (repo) => `此会话的 ${repo} 不在订阅列表`,
         open: "打开收件箱",
         more: (n) => `还有 ${n} 条`,
         roles: { author: "作者", reviewer: "评审", assignee: "指派", mention: "提及", ci: "CI", any: "" },
@@ -118,6 +119,7 @@ window.__ModuleLoader__.load({
         clear: "marks read",
         sweep: "sweeps the inbox",
         quiet: "never opens a turn",
+        unwatched: (repo) => `${repo} is not watched by this instance`,
         open: "open the inbox",
         more: (n) => `${n} more`,
         roles: { author: "author", reviewer: "reviewer", assignee: "assignee", mention: "mention", ci: "CI", any: "" },
@@ -379,14 +381,17 @@ window.__ModuleLoader__.load({
       return text.asGh;
     }
 
-    function useStatus() {
+    function useStatus(sessionId) {
       const [state, setState] = React.useState({ status: null, missing: false });
       React.useEffect(() => {
         let alive = true;
         let misses = 0;
+        const url = sessionId
+          ? `/inbox-bridge/status.json?session=${encodeURIComponent(sessionId)}`
+          : "/inbox-bridge/status.json";
         const load = async () => {
           try {
-            const response = await fetch("/inbox-bridge/status.json", { cache: "no-store" });
+            const response = await fetch(url, { cache: "no-store" });
             if (!response.ok) throw new Error(String(response.status));
             const status = await response.json();
             if (!alive) return;
@@ -413,12 +418,13 @@ window.__ModuleLoader__.load({
           window.removeEventListener("focus", onWake);
           document.removeEventListener("visibilitychange", onWake);
         };
-      }, []);
+      }, [sessionId]);
       return state;
     }
 
-    function InboxBar() {
-      const { status, missing } = useStatus();
+    function InboxBar(props) {
+      const sessionId = props?.sessionId ?? null;
+      const { status, missing } = useStatus(sessionId);
       const text = locale();
       const [open, setOpen] = React.useState(false);
       const [geometry, setGeometry] = React.useState(null);
@@ -442,6 +448,12 @@ window.__ModuleLoader__.load({
       React.useEffect(() => {
         try {
           report("mounted");
+          try {
+            const keys = Object.keys(props ?? {});
+            report(`props: ${JSON.stringify(keys)}`);
+          } catch {
+            // keep the geometry report even if props are exotic
+          }
           const host = wrap.current;
           const chipNode = chip.current;
           if (!host || !chipNode) return;
@@ -557,6 +569,12 @@ window.__ModuleLoader__.load({
       const queue = status.queue ?? { pending: 0, delivered: 0, done: 0 };
       const waiting = (queue.pending ?? 0) + (queue.delivered ?? 0);
       const events = status.events ?? [];
+      // A session outside this instance's repositories gets an honest line
+      // instead of an empty list that looks like "all quiet".
+      const sessionRepo = status.scope === "session" ? status.session?.repo ?? null : null;
+      const watchedRepos = status.watched ?? status.repos ?? [];
+      const unwatched =
+        sessionRepo && watchedRepos.length > 0 && !watchedRepos.includes(sessionRepo) ? sessionRepo : null;
       const lastPoll = (status.polls ?? []).map((poll) => poll.at).filter(Boolean).sort().pop();
       const shown = events.slice(0, CARD_ROWS);
       const hidden = Math.max(0, events.length - shown.length);
@@ -579,7 +597,9 @@ window.__ModuleLoader__.load({
               h("span", { style: styles.titleValue }, waiting > 0 ? text.waiting(waiting) : text.empty),
             ),
             h("div", { style: styles.rule }),
-            waiting > 0
+            unwatched
+              ? h("div", { style: styles.emptyLine }, text.unwatched(unwatched))
+              : waiting > 0
               ? h(
                   "div",
                   { style: styles.list },
@@ -670,13 +690,21 @@ window.__ModuleLoader__.load({
         report(`slots api failed: ${error && error.message ? error.message : String(error)}`);
       }
       try {
-        ctx.slots.inject("conversation.composer.dock", () =>
+        const SLOT = "conversation.input.dock";
+        ctx.slots.inject(SLOT, () =>
           ctx.slots.register(
-            { name: "conversation.composer.dock", id: "inbox-bridge-status", order: 30 },
-            () => h(Guard, null, h(InboxBar)),
+            {
+              name: SLOT,
+              id: "inbox-bridge-status",
+              order: 40,
+              // The slot hands over the session it is rendering for; the row
+              // must answer for that session, not for the whole instance.
+              inject: (sessionId) => ({ sessionId }),
+            },
+            (props) => h(Guard, null, h(InboxBar, props)),
           ),
         );
-        report("registered inbox-bridge-status in conversation.composer.dock");
+        report(`registered inbox-bridge-status in ${SLOT}`);
       } catch (error) {
         report(`register failed: ${error && error.message ? error.message : String(error)}`);
       }

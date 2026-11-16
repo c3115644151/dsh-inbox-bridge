@@ -2,6 +2,11 @@
 
 Format: keep a short entry per released version. Dates are UTC.
 
+## 2.11.0
+
+- 状态行改成按会话显示：挂到宿主的 `conversation.input.dock`，由槽位把 `sessionId` 交给插件，页面每次取数都带上它。切到别的会话，看到的是那个会话的仓库与角色，不再永远是同一个仓库。
+- 会话的仓库不在订阅列表里时，浮层直接说明「此会话的 owner/name 不在订阅列表」，而不是给出一个看起来像「一切安静」的空列表。
+- 位置从自造的 `conversation.composer.dock` 换到宿主自己的输入区 dock，字号与间距因此与旁边的统计信息同源。
 ## 2.10.6
 
 - 客户端半边在 `apply` 前声明 `inject: ["slots"]`。服务是显式申请的：少了这一句，`ctx.slots` 在注册时就抛错，整行从未注册，页面里什么都没有——宿主也不会为此报错。

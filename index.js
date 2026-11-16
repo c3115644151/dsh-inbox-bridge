@@ -215,13 +215,23 @@ export function apply(ctx, config) {
    * how it delivers, and the queue as it stands. Statuses come from the queue
    * file (the CLI's record of truth); details come from `recent`.
    */
-  const uiPayload = () =>
-    buildUiPayload({
+  const uiPayload = (sessionId = null) => {
+    const agent = sessionId ? agents.get(sessionId) : null;
+    const session = agent
+      ? {
+          id: sessionId,
+          repo: repoOf(agent),
+          roles: options.roles ?? [],
+        }
+      : null;
+    return buildUiPayload({
       options,
       queue: readJson(join(options.cwd, STATE_REL))?.events,
       source: readJson(join(options.cwd, SOURCE_STATE_REL)),
       recent,
+      session,
     });
+  };
 
   // What the plugin believes it is doing, for `dsh-inbox-bridge status`: the
   // effective config without secrets, plus where the state lives.
@@ -512,6 +522,14 @@ export function apply(ctx, config) {
           path: UI_ROUTE,
           resource: async (request) => {
             served += 1;
+            // Which session asked decides what is shown: two sessions in
+            // different repositories must not read the same list.
+            let sessionId = null;
+            try {
+              sessionId = new URL(request.url).searchParams.get("session");
+            } catch {
+              sessionId = null;
+            }
             // One line per read is too loud for a 20 s poll; the first read and
             // every tenth after it still prove which origin asked.
             if (served === 1 || served % 10 === 0) {
@@ -521,9 +539,9 @@ export function apply(ctx, config) {
               } catch {
                 origin = "unreadable";
               }
-              log(`status read ${served} time(s), origin ${origin}`);
+              log(`status read ${served} time(s), origin ${origin}, session ${sessionId ?? "-"}`);
             }
-            return new Response(`${JSON.stringify(uiPayload())}\n`, {
+            return new Response(`${JSON.stringify(uiPayload(sessionId))}\n`, {
               headers: {
                 "content-type": "application/json; charset=utf-8",
                 "cache-control": "no-store",
@@ -1004,13 +1022,31 @@ function wakeNotice(options, delivery) {
  * and the queue as it stands. Statuses come from the queue file (the CLI's
  * record of truth); titles and links come from what this turn actually saw.
  */
-export function buildUiPayload({ options, queue = {}, source = null, recent = new Map(), now = Date.now() }) {
-  const repos = options.repos?.length > 0 ? options.repos : options.repo ? [options.repo] : [];
+export function buildUiPayload({
+  options,
+  queue = {},
+  source = null,
+  recent = new Map(),
+  now = Date.now(),
+  session = null,
+}) {
+  const configured = options.repos?.length > 0 ? options.repos : options.repo ? [options.repo] : [];
+  // A session sees exactly what a poll would deliver to it: its own repository
+  // and its own roles. Without a session (or without a repository) the payload
+  // describes the whole instance, and says so.
+  const scoped = session !== null;
+  const repos = scoped ? (session.repo ? [session.repo] : []) : configured;
+  const roles = scoped ? (session.roles?.length > 0 ? session.roles : []) : [];
+  const inScope = (event) => {
+    if (!scoped) return true;
+    if (!session.repo) return false;
+    if (String(event.repo ?? "").toLowerCase() !== String(session.repo).toLowerCase()) return false;
+    if (roles.length === 0) return true;
+    const role = event.role ?? "any";
+    return role === "any" || roles.includes(role);
+  };
   const counts = { pending: 0, delivered: 0, done: 0 };
-  for (const entry of Object.values(queue)) {
-    if (entry?.status && entry.status in counts) counts[entry.status] += 1;
-  }
-  const events = Object.entries(queue)
+  const rows = Object.entries(queue)
     .map(([key, entry]) => ({
       key,
       repo: key.includes("#") ? key.slice(0, key.indexOf("#")) : null,
@@ -1018,6 +1054,11 @@ export function buildUiPayload({ options, queue = {}, source = null, recent = ne
       at: entry?.at ?? null,
       ...(recent?.get?.(key) ?? {}),
     }))
+    .filter(inScope);
+  for (const event of rows) {
+    if (event.status in counts) counts[event.status] += 1;
+  }
+  const events = rows
     .filter((event) => event.status !== "done")
     .sort((left, right) => String(right.at ?? "").localeCompare(String(left.at ?? "")))
     .slice(0, 20);
@@ -1025,7 +1066,12 @@ export function buildUiPayload({ options, queue = {}, source = null, recent = ne
   return {
     at: new Date(now).toISOString(),
     label: options.label ?? DEFAULTS.label,
+    scope: scoped ? (session.repo ? "session" : "unbound") : "instance",
+    session: scoped ? { id: session.id ?? null, repo: session.repo ?? null, roles } : null,
     repos,
+    // What this instance polls at all, so a session can tell "nothing for me"
+    // from "nobody watches my repository".
+    watched: configured,
     identity: {
       kind: identity.kind,
       login: identity.login,
@@ -1036,7 +1082,7 @@ export function buildUiPayload({ options, queue = {}, source = null, recent = ne
     sweep: options.sweep?.when ?? null,
     intervalMs: options.intervalMs ?? DEFAULTS.intervalMs,
     queue: counts,
-    events,
+    events: events.slice(0, 20),
     polls: repos.map((repo) => ({ repo, ...(source?.repos?.[repo]?.lastPoll ?? {}) })),
   };
 }
