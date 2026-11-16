@@ -245,6 +245,41 @@ test("PR status transition notifies only when the new digest is unseen", () => {
   assert.deepEqual(repeated.fresh, []);
 });
 
+test("checks still running keep one PR key until one fails", () => {
+  const base = {
+    number: 157,
+    title: "fix: only block commits on the decisions a change references",
+    url: "https://github.com/Noema-Harness/noema-agent/pull/157",
+    reviewDecision: "REVIEW_REQUIRED",
+  };
+  const running = extractPrEvents([
+    { ...base, statusCheckRollup: [
+      { name: "verify", status: "QUEUED" },
+      { name: "platform", status: "IN_PROGRESS" },
+      { name: "collaboration", conclusion: "SUCCESS" },
+    ] },
+  ]);
+  const later = extractPrEvents([
+    { ...base, statusCheckRollup: [
+      { name: "verify", conclusion: "SUCCESS" },
+      { name: "platform", conclusion: "SUCCESS" },
+      { name: "collaboration", conclusion: "SUCCESS" },
+    ] },
+  ]);
+  assert.equal(running.length, 1);
+  assert.equal(later.length, 1);
+  assert.equal(running[0].key, later[0].key);
+  const failed = extractPrEvents([
+    { ...base, statusCheckRollup: [
+      { name: "verify", conclusion: "FAILURE" },
+      { name: "platform", conclusion: "SUCCESS" },
+      { name: "collaboration", conclusion: "SUCCESS" },
+    ] },
+  ]);
+  assert.notEqual(failed[0].key, running[0].key);
+  assert.match(failed[0].reasons.join(" "), /checks failed: verify/u);
+});
+
 test("a moved completion timestamp is not a new PR state", () => {
   const before = prStatusDigest(pullRequest());
   const rechecked = prStatusDigest(

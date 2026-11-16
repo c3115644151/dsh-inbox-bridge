@@ -2,6 +2,10 @@
 
 Format: keep a short entry per released version. Dates are UTC.
 
+## 2.0.2
+
+- PR 事件摘要只看“需要你处理的状态”（失败检查 + 评审决定）：进行中/成功完成的检查不再进入事件 key，同一个 PR 在检查跑完前不会反复触发通知与唤醒。
+
 ## 2.0.1
 
 - 轮询直接抓取仓库的 open issues：GitHub notifications 只覆盖你订阅的线程，别人新开的 issue 以前会被静默漏掉（#156 / #152）。

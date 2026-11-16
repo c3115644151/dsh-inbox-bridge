@@ -152,19 +152,13 @@ export function normalizeState(state) {
   };
 }
 
+const IN_PROGRESS_CHECK_STATES = new Set(["QUEUED", "IN_PROGRESS", "PENDING", "WAITING", "REQUESTED"]);
+
 export function prStatusDigest(pr) {
-  const rollup = Array.isArray(pr?.statusCheckRollup) ? pr.statusCheckRollup : [];
-  // Only the state of each named check matters here: this digest is part of the
-  // event key, so a completion timestamp would mint a new key on every poll and
-  // report one unchanged PR over and over.
-  const states = new Map();
-  for (const check of rollup) {
-    const name = check?.name ?? check?.context ?? check?.workflowName ?? "check";
-    const state = String(check?.conclusion || check?.state || check?.status || "unknown").toUpperCase();
-    states.set(name, state);
-  }
-  const checks = [...states].map(([name, state]) => `${name}:${state}`).sort();
-  return `checks[${checks.join(",")}]|review:${String(pr?.reviewDecision ?? "").toUpperCase() || "NONE"}`;
+  // 摘要只反映“需要你处理的状态”：失败的检查与评审决定。
+  // 进行中或成功完成的检查不进 key，否则同一 PR 在检查跑完前会被反复当成新事件。
+  const failing = failingCheckNames(pr).sort();
+  return `failed[${failing.join(",")}]|review:${String(pr?.reviewDecision ?? "").toUpperCase() || "NONE"}`;
 }
 
 export function failingCheckNames(pr) {
