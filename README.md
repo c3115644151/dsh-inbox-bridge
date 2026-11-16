@@ -89,7 +89,8 @@ gh auth status
 | --- | --- | --- |
 | `label` | `外部收件箱` | 通知标题 |
 | `cwd` | DSH 进程工作目录 | 状态文件所属的工作区，也是推断 `repo` 的起点 |
-| `repo` | 从 `origin` 推断 | 监听的 `owner/name`；也可用 `INBOX_REPO` 环境变量指定 |
+| `repo` | 从 `origin` 推断 | 监听的 `owner/name`；`INBOX_REPO` 可覆盖 |
+| `repos` | `[]` | 同时监听多个仓库：`["owner/one", "owner/two"]`；非空时优先于 `repo` |
 | `intervalMs` | `600000`（10 分钟） | **回合进行中**两次轮询的间隔；空闲时完全不轮询 |
 | `timeoutMs` | `45000` | 单次命令超时 |
 | `maxEvents` | `6` | 每条通知列出的事件数 |
@@ -204,7 +205,7 @@ npm 会把 `--` 之前的 `--done` 当成自己的参数，脚本收不到，于
 - **App 没有用户收件箱**：`kind: "app"` 下 `/notifications` 不可读（403），事件只来自仓库状态的主动查询；没落在 PR/issue/评论上的事不会出现。
 - **角色判定依赖 `identity.login`**：登录名解析失败时角色退化为 `any`（不做身份过滤），宁可多报也不漏报；日志里有排查线索。
 - **`quiet` 下没有实时性**：没人说话就没有回合，通知会一直排队；需要实时提醒就用 `wakeup`，并给出 `wakeOn` 与预算。
-- **单仓库 scoping**：一个实例只服务一个仓库（`repo` / `INBOX_REPO` / 工作区 git remote 三选一），队列与状态放在该工作区的 `.work/inbox-bridge/`。要同时看两个仓库，现在是「一个仓库一个实例」；让一个实例订阅一组仓库见 ROADMAP 第 4 步。
+- **一个实例一组仓库**：`repos` 里的仓库共用一个队列，但状态按仓库分片（`.work/github-inbox/state.json` 的 `repos` 字段），事件 key 带仓库前缀（`owner/name#pr:7:…`）；同一个 PR 号在不同仓库是两个事件。
 - **GitHub API 限流**：每次轮询至少调 3 个 `gh` 接口；被限流时该轮 `skipped` 并写日志。
 - **只在 DSH 运行时工作**：DSH 退出期间不轮询，重启后由下一次轮询按来源的保留窗口补上。
 - **通知正文是中文**：`label` 可改标题，内置提示语固定中文。
@@ -234,7 +235,7 @@ npm test
 node --test index.test.mjs scripts/github-inbox.test.mjs scripts/inbox-bridge.test.mjs
 ```
 
-63 个用例覆盖纯逻辑：三态迁移（不倒退、重复投递推进时间戳）、分类、resurface 窗口、恢复收口、投递守卫、仓库识别、身份与角色路由、唤醒四道门、通知文案、状态输出。
+66 个用例覆盖纯逻辑：三态迁移（不倒退、重复投递推进时间戳）、分类、resurface 窗口、恢复收口、投递守卫、仓库识别、身份与角色路由、唤醒四道门、通知文案、状态输出。
 
 | 文件 | 职责 |
 | --- | --- |

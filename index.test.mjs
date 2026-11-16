@@ -133,6 +133,15 @@ test("one event reaches only the sessions whose repository and role it names", (
   });
 });
 
+test("one instance can watch several repositories, one slice each", () => {
+  const options = mergeConfig({ repos: ["example-org/example-repo", "other/repo"] });
+  assert.deepEqual(options.repos, ["example-org/example-repo", "other/repo"]);
+  const single = mergeConfig({ repo: "example-org/example-repo" });
+  assert.deepEqual(single.repos, ["example-org/example-repo"]);
+  assert.throws(() => mergeConfig({ repos: ["not-a-repo"] }), /not an "owner\/name" repository/u);
+  assert.throws(() => mergeConfig({ repos: "example-org/example-repo" }), /`repos` must be an array/u);
+});
+
 test("an empty roles list accepts every role", () => {
   withRepos(({ repo }) => {
     const mine = { status: "idle", session: { header: { cwd: repo } } };
@@ -304,5 +313,66 @@ test("both delivery paths hand over the whole message, role and id included", ()
     assert.equal(received, message, `${path} must receive the built message itself`);
     assert.equal(received.role, "user", `${path} must keep the role`);
     assert.match(received.id, /^[0-9a-f-]{36}$/u, `${path} must keep the id`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Live wiring: a status event for a session must reach the poll schedule even
+// though the event carries a different object for the same session. This was a
+// real bug: the registry was keyed by object identity, so nothing ever polled.
+// ---------------------------------------------------------------------------
+
+function fakeContext(agentList) {
+  const handlers = new Map();
+  return {
+    agents: { list: () => agentList },
+    on(name, fn) {
+      if (!handlers.has(name)) handlers.set(name, []);
+      handlers.get(name).push(fn);
+    },
+    effect(fn) {
+      return fn();
+    },
+    emit(name, ...args) {
+      for (const fn of handlers.get(name) ?? []) fn(...args);
+    },
+  };
+}
+
+function fakeAgent(cwd, id = "session-1") {
+  return {
+    session: { id, header: { cwd } },
+    status: "idle",
+    ctx: { effect: () => () => {} },
+    inject() {},
+    followup() {},
+  };
+}
+
+test("a status event for the same session reaches the poll schedule", async () => {
+  const root = mkdtempSync(join(tmpdir(), "inbox-live-"));
+  const marker = join(root, "polled.txt");
+  try {
+    const agent = fakeAgent(root);
+    const ctx = fakeContext([agent]);
+    const { apply } = await import("./index.js");
+    apply(ctx, mergeConfig({
+      cwd: root,
+      repo: "owner/name",
+      poll: {
+        command: process.execPath,
+        args: ["-e", `require("node:fs").appendFileSync(${JSON.stringify(marker)}, "x");console.log("{\\"events\\":[]}")`],
+      },
+      ack: { command: process.execPath, args: ["-e", "console.log('{}')"] },
+    }));
+    // The status event hands out a fresh wrapper for the same session.
+    ctx.emit("agent/status", { agent: { session: { id: "session-1" } }, status: "running" });
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline && !(await import("node:fs")).existsSync(marker)) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal((await import("node:fs")).existsSync(marker), true, "the turn start did not poll");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

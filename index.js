@@ -39,6 +39,8 @@ const DEFAULTS = Object.freeze({
   label: "外部收件箱",
   cwd: process.cwd(),
   repo: null,
+  /** Watch several repositories from one instance: `["owner/one", "owner/two"]`. */
+  repos: [],
   /**
    * How often to poll *while a turn is running*. There is no idle polling: a
    * turn start polls once, a long turn re-polls on this interval, and the turn
@@ -86,11 +88,22 @@ const DEFAULTS = Object.freeze({
   ack: { command: process.execPath, args: [CLI, "ack"] },
 });
 
+/**
+ * The one stable handle on a session-backed agent.
+ *
+ * `agent/status` and `session/event` each hand out objects that are equal by
+ * session but not necessarily the same reference the registry holds, so every
+ * lookup goes through this key instead of object identity.
+ */
+export function keyOf(agent) {
+  return agent?.session?.id ?? agent?.id ?? null;
+}
+
 export function apply(ctx, config) {
   const options = mergeConfig(config);
   const stateDir = join(options.cwd, ".work", "inbox-bridge");
   const logPath = join(stateDir, "plugin.log");
-  const agents = new Set();
+  const agents = new Map();
   /** One re-poll timer per session that is currently running a turn. */
   const turnTimers = new Map();
   let polling = false;
@@ -128,6 +141,7 @@ export function apply(ctx, config) {
             at: new Date().toISOString(),
             cwd: options.cwd,
             repo: options.repo,
+            repos: options.repos,
             intervalMs: options.intervalMs,
             delivery: options.delivery,
             wakeOn: options.wakeOn,
@@ -157,7 +171,7 @@ export function apply(ctx, config) {
     if (now - lastOfflineNoticeAt < options.offlineReminderMs) return;
     lastOfflineNoticeAt = now;
     const text = formatOfflineNotice(options, reason);
-    const { ready } = deliveryTargets(agents, options);
+    const { ready } = deliveryTargets([...agents.values()], options);
     // Only sessions that cannot name a repository themselves get the advice:
     // telling a session that already points at a repository is pure noise.
     const targets = ready.filter((agent) => repoOf(agent, options, repoNames) === null);
@@ -185,7 +199,7 @@ export function apply(ctx, config) {
       const payload = await pollEvents(options);
       if (payload.skipped) {
         // No source at all: tell the user once in a while instead of failing silently.
-        if (!options.repo) announceOffline(payload.skipped);
+        if ((options.repos?.length ?? 0) === 0) announceOffline(payload.skipped);
         return;
       }
       const now = Date.now();
@@ -197,7 +211,7 @@ export function apply(ctx, config) {
       );
       if (suppressed > 0) log(`suppressed ${suppressed} event(s) already delivered; waiting for ack`);
       if (events.length === 0) return;
-      const { ready, deferred } = deliveryTargets(agents, options);
+      const { ready, deferred } = deliveryTargets([...agents.values()], options);
       // Each session gets only the events its own repository and role match: one
       // repository's failures must never reach a session working elsewhere.
       const batches = new Map();
@@ -262,28 +276,29 @@ export function apply(ctx, config) {
     }
   };
 
-  const stopTurn = (agent) => {
-    const timer = turnTimers.get(agent);
+  const stopTurn = (key) => {
+    const timer = turnTimers.get(key);
     if (timer) clearInterval(timer);
-    turnTimers.delete(agent);
+    turnTimers.delete(key);
   };
 
-  const startTurn = (agent) => {
-    if (turnTimers.has(agent)) return;
+  const startTurn = (key) => {
+    if (turnTimers.has(key)) return;
     const timer = setInterval(() => {
       void poll();
     }, options.intervalMs);
     timer.unref?.();
-    turnTimers.set(agent, timer);
+    turnTimers.set(key, timer);
   };
 
   const register = (agent) => {
-    if (!agent || agents.has(agent)) return;
-    agents.add(agent);
+    const key = keyOf(agent);
+    if (!key || agents.has(key)) return;
+    agents.set(key, agent);
     lastActive.set(agent, Date.now());
     agent.ctx.effect(() => () => {
-      stopTurn(agent);
-      agents.delete(agent);
+      stopTurn(key);
+      agents.delete(key);
       lastActive.delete(agent);
       wakeStreak.delete(agent);
     });
@@ -292,19 +307,24 @@ export function apply(ctx, config) {
   writeRuntime();
   for (const agent of ctx.agents.list()) register(agent);
   ctx.on("agent/created", ({ agent }) => register(agent));
+  log(
+    `started: ${agents.size} agent(s), poll ${Math.round(options.intervalMs / 60_000)} min ` +
+      `while a turn runs, delivery ${options.delivery}${options.repos?.length ? `, repos ${options.repos.join(", ")}` : ""}`,
+  );
 
   // A turn is the only thing that makes the inbox worth reading: poll when one
   // starts, re-poll while a long one runs, poll once more when it ends. An idle
   // session costs no subprocess and no network — that is the point of owning the
   // schedule here instead of running a fixed timer.
-  ctx.on("agent/status", ({ agent, status } = {}) => {
-    if (!agent || !agents.has(agent)) return;
+  ctx.on("agent/status", ({ agent: incoming, status } = {}) => {
+    const agent = incoming ? agents.get(keyOf(incoming)) : undefined;
+    if (!agent) return;
     lastActive.set(agent, Date.now());
     if (status === "running") {
-      startTurn(agent);
+      startTurn(keyOf(agent));
       void poll();
     } else if (status === "idle") {
-      stopTurn(agent);
+      stopTurn(keyOf(agent));
       void poll();
     }
   });
@@ -314,17 +334,17 @@ export function apply(ctx, config) {
   ctx.on("session/event", (session, event) => {
     if (event?.type !== "user/message") return;
     if (event.data?.source?.kind !== "user") return;
-    for (const agent of agents) {
-      if (agent.session !== session) continue;
-      wakeStreak.delete(agent);
-      lastActive.set(agent, Date.now());
-      startTurn(agent);
-      void poll();
-    }
+    const key = session?.id ?? keyOf({ session });
+    const agent = key ? agents.get(key) : undefined;
+    if (!agent) return;
+    wakeStreak.delete(agent);
+    lastActive.set(agent, Date.now());
+    startTurn(key);
+    void poll();
   });
 
   ctx.effect(() => () => {
-    for (const agent of turnTimers.keys()) stopTurn(agent);
+    for (const key of [...turnTimers.keys()]) stopTurn(key);
     agents.clear();
   });
 }
@@ -449,7 +469,8 @@ export function matchesWatch(agent, event, options, cache) {
 }
 
 function sourceLabel(options) {
-  return options?.repo ? `${options.repo}` : "this workspace";
+  const repos = options?.repos?.length ? options.repos : options?.repo ? [options.repo] : [];
+  return repos.length > 0 ? repos.join(", ") : "this workspace";
 }
 
 export function mergeConfig(config) {
@@ -472,6 +493,18 @@ export function mergeConfig(config) {
     );
   }
   const repo = given.repo ?? detectRepo(given.cwd ?? DEFAULTS.cwd);
+  const repos = given.repos ?? DEFAULTS.repos;
+  if (!Array.isArray(repos) || repos.some((entry) => typeof entry !== "string")) {
+    throw new Error(
+      `inbox-bridge: \`repos\` must be an array of "owner/name", got ${JSON.stringify(repos)}`,
+    );
+  }
+  const watched = repos.length > 0 ? repos : repo ? [repo] : [];
+  for (const entry of watched) {
+    if (!/^[\w.-]+\/[\w.-]+$/u.test(entry)) {
+      throw new Error(`inbox-bridge: not an "owner/name" repository: ${JSON.stringify(entry)}`);
+    }
+  }
   const identity = { ...DEFAULTS.identity, ...(given.identity ?? {}) };
   if (identity.kind !== "user" && identity.kind !== "app") {
     throw new Error(
@@ -522,6 +555,7 @@ export function mergeConfig(config) {
     ...DEFAULTS,
     ...given,
     repo,
+    repos: watched,
     delivery,
     identity,
     roles,
@@ -604,7 +638,11 @@ function runCommand(spec, options, extraEnv = {}) {
         env: {
           ...process.env,
           ...(useNode ? { ELECTRON_RUN_AS_NODE: "1" } : {}),
-          ...(options.repo ? { INBOX_REPO: options.repo } : {}),
+          ...(options.repos?.length > 0
+            ? { INBOX_REPO: options.repos.join(",") }
+            : options.repo
+              ? { INBOX_REPO: options.repo }
+              : {}),
           ...identityEnv(options.identity),
           ...extraEnv,
         },
@@ -672,7 +710,9 @@ export function formatEvents(events, options = DEFAULTS) {
     `只标 delivered 的事件会在 ${resurfaceHours} 小时后再次提醒；\`kind: infra\` 的基础设施失败只提醒一次。`,
     wakeNotice(options, delivery),
     `只在回合边界轮询：回合开始一次、进行中每 ${intervalMinutes} 分钟一次、结束一次；空闲时不访问来源。`,
-    ...(options.repo ? [`只播报 ${options.repo} 的事件，其它仓库的会话不会收到它。`] : []),
+    ...(options.repos?.length
+      ? [`只播报 ${options.repos.join(", ")} 的事件，其它仓库的会话不会收到它。`]
+      : []),
   ].join("\n");
 }
 

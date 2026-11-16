@@ -98,9 +98,10 @@ Usage:
   --json      machine-readable output
   --quiet     suppress the "no new events" status line (new events still print)
   --repeat    list current events without the local seen filter (the bridge owns delivery state)
-  --repo <owner/name>  watch another repository (default: INBOX_REPO or this git remote)
+  --repo <owner/name>  watch a repository; repeat for several
+                       (default: INBOX_REPO, comma or space separated, else this git remote)
 
-State:   .work/github-inbox/state.json
+State:   .work/github-inbox/state.json (one slice per repository)
 History: .work/github-inbox/pending.md`;
 
 // ---------------------------------------------------------------------------
@@ -194,13 +195,52 @@ export function normalizeState(state) {
         }
       : null;
   return {
-    version: 1,
+    version: 2,
     lastPollAt: typeof source.lastPollAt === "string" ? source.lastPollAt : null,
     lastPoll,
     seen,
     lastRun,
     lastPrStatus,
   };
+}
+
+/**
+ * One repo's slice of the state file. A 2.0/2.1 file kept everything at the top
+ * level for the single repo it watched; it is adopted as the slice of the repo
+ * its last poll named, so the first multi-repo poll does not re-send the world.
+ */
+export function normalizeStateFile(state) {
+  const source = state && typeof state === "object" ? state : {};
+  const repos = {};
+  if (source.repos && typeof source.repos === "object" && !Array.isArray(source.repos)) {
+    for (const [repo, slice] of Object.entries(source.repos)) {
+      if (/^[\w.-]+\/[\w.-]+$/u.test(repo)) repos[repo] = normalizeState(slice);
+    }
+  }
+  if (Object.keys(repos).length === 0 && (source.seen || source.lastPollAt)) {
+    const legacy = normalizeState(source);
+    const repo = legacy.lastPoll?.repo ?? null;
+    if (repo) repos[repo] = legacy;
+  }
+  return { version: 2, repos };
+}
+
+export function sliceOf(stateFile, repo) {
+  const file = normalizeStateFile(stateFile);
+  return file.repos[repo] ?? normalizeState({});
+}
+
+/**
+ * Attach the repository to every event and put it in the key. The same PR
+ * number in two repositories is two different facts; a shared queue must not
+ * collapse them into one.
+ */
+export function tagEvents(repo, events = []) {
+  return (Array.isArray(events) ? events : []).map((event) => ({
+    ...event,
+    repo,
+    key: `${repo}#${event.key}`,
+  }));
 }
 
 const IN_PROGRESS_CHECK_STATES = new Set(["QUEUED", "IN_PROGRESS", "PENDING", "WAITING", "REQUESTED"]);
@@ -919,13 +959,18 @@ export function fetchFeed(state, cwd) {
 
 export function parseArgs(argv = []) {
   const options = {
-    repo: process.env.INBOX_REPO ?? null,
+    repos: [],
     repeat: false,
     mode: "poll",
     json: false,
     quiet: false,
     help: false,
   };
+  const fromEnv = (process.env.INBOX_REPO ?? "")
+    .split(/[,\s]+/u)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  options.repos.push(...fromEnv);
   for (const argument of argv) {
     if (argument === "--repeat") {
       options.repeat = true;
@@ -936,7 +981,7 @@ export function parseArgs(argv = []) {
       continue;
     }
     if (options.expectRepo) {
-      options.repo = argument;
+      options.repos.push(argument);
       options.expectRepo = false;
       continue;
     }
@@ -946,6 +991,11 @@ export function parseArgs(argv = []) {
     else if (argument === "--quiet") options.quiet = true;
     else if (argument === "--help" || argument === "-h") options.help = true;
     else throw new Error(`unknown option: ${argument}`);
+  }
+  if (options.expectRepo) throw new Error("`--repo` needs a value");
+  options.repos = [...new Set(options.repos.map((repo) => repo.trim()).filter(Boolean))];
+  for (const repo of options.repos) {
+    if (!/^[\w.-]+\/[\w.-]+$/u.test(repo)) throw new Error(`not an owner/name repository: ${repo}`);
   }
   return options;
 }
@@ -985,42 +1035,63 @@ function identityFromEnv(env = process.env) {
   return { kind, login, token };
 }
 
-function runPoll({ repoRoot, stateFile, pendingFile, state, options, now, me }) {
-  const startedAt = Date.now();
-  const result = pollOnce({
-    state,
-    repeat: options.repeat === true,
-    now,
-    me,
-    fetchRuns: () => fetchRuns(repoRoot),
-    fetchPrs: () => fetchOpenPullRequests(repoRoot),
-    fetchIssues: () => fetchOpenIssues(repoRoot),
-    fetchFeed: (currentState) => fetchFeed(currentState, repoRoot),
-  });
-  if (result.skipped) return printSkipped(options, result.skipped);
-  const withMeta = {
-    ...result.nextState,
-    lastPoll: {
-      at: result.nextState.lastPollAt,
-      as: me ?? null,
-      repo: activeRepo,
-      durationMs: Date.now() - startedAt,
-      events: result.events.length,
-    },
-  };
+function runPoll({ repoRoot, stateFile, pendingFile, state, options, now, me, repos }) {
+  const fresh = [];
+  const skipped = [];
+  const notices = [];
+  const nextRepos = { ...normalizeStateFile(state).repos };
+
+  for (const repo of repos) {
+    const slice = nextRepos[repo] ?? normalizeState({});
+    setRepo(repo);
+    const repoStartedAt = Date.now();
+    const result = pollOnce({
+      state: slice,
+      repeat: options.repeat === true,
+      now,
+      me,
+      fetchRuns: () => fetchRuns(repoRoot),
+      fetchPrs: () => fetchOpenPullRequests(repoRoot),
+      fetchIssues: () => fetchOpenIssues(repoRoot),
+      fetchFeed: (currentState) => fetchFeed(currentState, repoRoot),
+    });
+    if (result.skipped) {
+      skipped.push({ repo, reason: result.skipped });
+      continue;
+    }
+    // Keys carry the repository: the same PR number in two repositories is two
+    // different facts, and the queue must not collapse them into one.
+    const tagged = tagEvents(repo, result.fresh);
+    fresh.push(...tagged);
+    if (result.feedSkipped) notices.push(`${repo}: feed skipped (${result.feedSkipped})`);
+    nextRepos[repo] = {
+      ...result.nextState,
+      lastPoll: {
+        at: result.nextState.lastPollAt,
+        as: me ?? null,
+        repo,
+        durationMs: Date.now() - repoStartedAt,
+        events: result.fresh.length,
+      },
+    };
+  }
+
+  if (Object.keys(nextRepos).length === 0) {
+    return printSkipped(options, skipped[0]?.reason ?? "no repository to watch");
+  }
+  const withMeta = { version: 2, repos: nextRepos };
   writeStateFile(stateFile, withMeta);
-  if (result.fresh.length > 0) appendPendingEvents(pendingFile, result.fresh, now);
+  if (fresh.length > 0) appendPendingEvents(pendingFile, fresh, now);
 
   if (options.json) {
     console.log(
       JSON.stringify(
         {
           command: "poll",
-          repo: activeRepo,
+          repos: Object.keys(nextRepos),
           polledAt: toIso(now),
-          source: result.source,
-          feedSkipped: result.feedSkipped,
-          fresh: result.fresh,
+          skipped,
+          fresh,
           stateFile,
           pendingFile,
           state: withMeta,
@@ -1030,74 +1101,72 @@ function runPoll({ repoRoot, stateFile, pendingFile, state, options, now, me }) 
       ),
     );
   } else {
-    for (const event of result.fresh) console.log(formatEvent(event));
-    if (result.fresh.length === 0 && !options.quiet) {
-      console.log(
-        `github-inbox: no new events (polled ${toIso(now)}${result.source ? `, feed ${result.source}` : ""})`,
-      );
+    for (const event of fresh) console.log(formatEvent(event));
+    if (fresh.length === 0 && !options.quiet) {
+      console.log(`github-inbox: no new events (polled ${toIso(now)}, ${repos.join(", ")})`);
     }
-    if (result.feedSkipped && !options.quiet) {
-      console.log(`github-inbox: feed skipped (${result.feedSkipped})`);
+    for (const entry of skipped) {
+      if (!options.quiet) console.log(`github-inbox: skipped ${entry.repo} (${entry.reason})`);
+    }
+    for (const notice of notices) {
+      if (!options.quiet) console.log(`github-inbox: ${notice}`);
     }
   }
 
   return 0;
 }
 
-function runAll({ repoRoot, stateFile, pendingFile, state, options, now, me }) {
-  const runsResult = fetchRuns(repoRoot);
-  if (!runsResult.ok) return printSkipped(options, runsResult.reason);
-  const prsResult = fetchOpenPullRequests(repoRoot);
-  if (!prsResult.ok) return printSkipped(options, prsResult.reason);
-  const runs = (Array.isArray(runsResult.value) ? runsResult.value : []).slice(0, 20);
-  const prs = Array.isArray(prsResult.value) ? prsResult.value : [];
+function runAll({ repoRoot, stateFile, pendingFile, state, options, now, me, repos }) {
+  const file = normalizeStateFile(state);
+  for (const repo of repos) {
+    setRepo(repo);
+    const runsResult = fetchRuns(repoRoot);
+    if (!runsResult.ok) return printSkipped(options, `${repo}: ${runsResult.reason}`);
+    const prsResult = fetchOpenPullRequests(repoRoot);
+    if (!prsResult.ok) return printSkipped(options, `${repo}: ${prsResult.reason}`);
+    const runs = (Array.isArray(runsResult.value) ? runsResult.value : []).slice(0, 20);
+    const prs = Array.isArray(prsResult.value) ? prsResult.value : [];
+    const slice = file.repos[repo] ?? normalizeState({});
 
-  if (options.json) {
+    if (options.json) {
+      console.log(
+        JSON.stringify(
+          { command: "all", repo, polledAt: toIso(now), runs, prs, stateFile, pendingFile, state: slice },
+          null,
+          2,
+        ),
+      );
+      continue;
+    }
+
     console.log(
-      JSON.stringify(
-        {
-          command: "all",
-          repo: activeRepo,
-          polledAt: toIso(now),
-          runs,
-          prs,
-          stateFile,
-          pendingFile,
-          state,
-        },
-        null,
-        2,
-      ),
+      `github-inbox: all | repo ${repo} | as ${me ?? "(unfiltered)"} | polled ${toIso(now)} | seen ${Object.keys(slice.seen).length}/${MAX_SEEN}`,
     );
-    return 0;
+    console.log(`github-inbox: main runs (newest first) — ${runs.length}`);
+    for (const run of runs) console.log(formatRunLine(run));
+    console.log(`github-inbox: open PRs — ${prs.length}`);
+    for (const pr of prs) console.log(formatPrLine(pr, me));
+    console.log(
+      `github-inbox: lastPollAt=${slice.lastPollAt ?? "(none)"} lastRun=${
+        slice.lastRun ? `${slice.lastRun.id} ${slice.lastRun.conclusion}` : "(none)"
+      }`,
+    );
+    console.log(`github-inbox: state=${stateFile} pending=${pendingFile}`);
   }
-
-  console.log(
-    `github-inbox: all | repo ${activeRepo} | as ${me ?? "(unfiltered)"} | polled ${toIso(now)} | seen ${Object.keys(state.seen).length}/${MAX_SEEN}`,
-  );
-  console.log(`github-inbox: main runs (newest first) — ${runs.length}`);
-  for (const run of runs) console.log(formatRunLine(run));
-  console.log(`github-inbox: open PRs — ${prs.length}`);
-  for (const pr of prs) console.log(formatPrLine(pr, me));
-  console.log(
-    `github-inbox: lastPollAt=${state.lastPollAt ?? "(none)"} lastRun=${
-      state.lastRun ? `${state.lastRun.id} ${state.lastRun.conclusion}` : "(none)"
-    }`,
-  );
-  console.log(`github-inbox: state=${stateFile} pending=${pendingFile}`);
   return 0;
 }
 
 function runCli(argv) {
   const options = parseArgs(argv);
-  options.repo = options.repo ?? repoFromGit(process.cwd());
-  setRepo(options.repo);
-  setIdentity(identityFromEnv());
   if (options.help) {
     console.log(USAGE);
     return 0;
   }
   const repoRoot = process.cwd();
+  const inferred = repoFromGit(repoRoot);
+  const repos = options.repos.length > 0 ? options.repos : inferred ? [inferred] : [];
+  setRepo(repos[0] ?? null);
+  setIdentity(identityFromEnv());
   // Resolved once per poll: it decides which events belong to this identity.
   const me = resolveLogin(repoRoot);
   const workDir = path.join(repoRoot, ".work", "github-inbox");
@@ -1105,10 +1174,11 @@ function runCli(argv) {
   const pendingFile = path.join(workDir, "pending.md");
   const now = new Date();
   const state = readStateFile(stateFile);
+  if (repos.length === 0) return printSkipped(options, "no repository: pass --repo or add a git remote");
   if (options.mode === "all") {
-    return runAll({ repoRoot, stateFile, pendingFile, state, options, now, me });
+    return runAll({ repoRoot, stateFile, pendingFile, state, options, now, me, repos });
   }
-  return runPoll({ repoRoot, stateFile, pendingFile, state, options, now, me });
+  return runPoll({ repoRoot, stateFile, pendingFile, state, options, now, me, repos });
 }
 
 const isDirectInvocation = (() => {

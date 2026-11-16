@@ -217,9 +217,20 @@ export function describeStatus(root, options = {}) {
   }
   const runtime = readJson(resolve(root, RUNTIME_REL));
   const source = readJson(resolve(root, SOURCE_STATE_REL));
+  const repos = Array.isArray(runtime?.repos) && runtime.repos.length > 0 ? runtime.repos : null;
+  // The collector keeps one slice per repository; `lastPoll` is per slice.
+  const slices = source?.repos && typeof source.repos === "object" ? source.repos : null;
+  const lastPolls = slices
+    ? Object.entries(slices)
+        .map(([repo, slice]) => (slice?.lastPoll ? { repo, ...slice.lastPoll } : null))
+        .filter(Boolean)
+    : source?.lastPoll
+      ? [source.lastPoll]
+      : [];
   return {
     cwd: root,
     repo: runtime?.repo ?? (typeof options.repo === "string" ? options.repo : null) ?? git(root),
+    repos,
     identity: runtime?.identity ?? null,
     roles: Array.isArray(runtime?.roles) ? runtime.roles : null,
     delivery: runtime?.delivery ?? null,
@@ -228,7 +239,8 @@ export function describeStatus(root, options = {}) {
     wakeAfterIdleMs: runtime?.wakeAfterIdleMs ?? null,
     wakesPerHour: runtime?.wakesPerHour ?? null,
     queue: counts,
-    lastPoll: source?.lastPoll ?? null,
+    lastPoll: lastPolls[0] ?? source?.lastPoll ?? null,
+    lastPolls,
     stateFile: stateFileOf(root),
     runtimeFile: resolve(root, RUNTIME_REL),
     pluginSeen: runtime !== null,
@@ -237,8 +249,9 @@ export function describeStatus(root, options = {}) {
 
 export function formatStatus(status) {
   const count = status.queue;
+  const repos = status.repos?.length ? status.repos.join(", ") : status.repo;
   const lines = [
-    `repo      ${status.repo ?? "（未识别：工作区没有 GitHub origin）"}`,
+    `repo      ${repos ?? "（未识别：工作区没有 GitHub origin）"}`,
     `identity  ${identityLine(status.identity)}`,
     `roles     ${
       status.roles === null || status.roles.length === 0
@@ -249,6 +262,9 @@ export function formatStatus(status) {
     `queue     pending ${count.pending} · delivered ${count.delivered} · done ${count.done}`,
     `last poll ${pollLine(status.lastPoll)}`,
   ];
+  for (const poll of (status.lastPolls ?? []).slice(1)) {
+    lines.push(`          ${poll.repo}: ${pollLine(poll)}`);
+  }
   if (!status.pluginSeen) {
     lines.push(
       "",

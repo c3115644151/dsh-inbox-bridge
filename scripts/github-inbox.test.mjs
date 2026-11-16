@@ -19,6 +19,9 @@ import {
   setRepo,
   watchedRepo,
   normalizeState,
+  normalizeStateFile,
+  sliceOf,
+  tagEvents,
   parseArgs,
   pollOnce,
   prStatusDigest,
@@ -622,10 +625,11 @@ test("a run that never started is an infrastructure event, not a failure to fix"
   assert.equal(events[0].key, "infra:Desktop checks|main");
 });
 
-test("parseArgs accepts --repo and --repeat", () => {
-  const options = parseArgs(["--poll", "--repeat", "--repo", "someone/other"]);
+test("parseArgs collects repeated --repo and rejects a malformed name", () => {
+  const options = parseArgs(["--poll", "--repeat", "--repo", "someone/other", "--repo", "a/b"]);
   assert.equal(options.repeat, true);
-  assert.equal(options.repo, "someone/other");
+  assert.deepEqual(options.repos, ["someone/other", "a/b"]);
+  assert.throws(() => parseArgs(["--repo", "not-a-repo"]), /not an owner\/name repository/u);
 });
 
 // ---------------------------------------------------------------------------
@@ -724,4 +728,35 @@ test("every event names its repository and role for the delivery filter", () => 
   for (const event of events) assert.equal(event.repo, watchedRepo());
   assert.equal(events.find((event) => event.kind === "ci").role, "ci");
   assert.equal(events.find((event) => event.kind === "pr").role, "author");
+});
+
+test("two repositories keep separate slices, and a legacy file is adopted by its last repo", () => {
+  const legacy = normalizeStateFile({
+    version: 1,
+    lastPollAt: "2026-11-16T00:00:00.000Z",
+    lastPoll: { at: "2026-11-16T00:00:00.000Z", as: "me", repo: "owner/one", durationMs: 1, events: 0 },
+    seen: { "run:1": "2026-11-16T00:00:00.000Z" },
+  });
+  assert.deepEqual(Object.keys(legacy.repos), ["owner/one"]);
+  assert.equal(legacy.repos["owner/one"].lastPollAt, "2026-11-16T00:00:00.000Z");
+
+  const file = normalizeStateFile({
+    version: 2,
+    repos: {
+      "owner/one": { lastPollAt: "2026-11-16T00:00:00.000Z", seen: { "run:1": "2026-11-16T00:00:00.000Z" } },
+      "owner/two": { lastPollAt: "2026-11-16T01:00:00.000Z", seen: {} },
+    },
+  });
+  assert.equal(sliceOf(file, "owner/one").lastPollAt, "2026-11-16T00:00:00.000Z");
+  assert.equal(sliceOf(file, "owner/two").lastPollAt, "2026-11-16T01:00:00.000Z");
+  assert.deepEqual(sliceOf(file, "owner/three").seen, {});
+});
+
+test("the same PR number in two repositories becomes two keys", () => {
+  const one = tagEvents("owner/one", [{ key: "pr:7:author:failed[]|review:NONE", kind: "pr" }]);
+  const two = tagEvents("owner/two", [{ key: "pr:7:author:failed[]|review:NONE", kind: "pr" }]);
+  assert.equal(one[0].key, "owner/one#pr:7:author:failed[]|review:NONE");
+  assert.equal(two[0].key, "owner/two#pr:7:author:failed[]|review:NONE");
+  assert.notEqual(one[0].key, two[0].key);
+  assert.equal(one[0].repo, "owner/one");
 });

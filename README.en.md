@@ -90,6 +90,7 @@ Nothing but GitHub (through `gh`) is contacted, no data is sent anywhere else, a
 | `label` | `外部收件箱` | notice title |
 | `cwd` | DSH process cwd | workspace that owns the state, and the starting point for `repo` inference |
 | `repo` | inferred from `origin` | `owner/name` to watch; `INBOX_REPO` overrides |
+| `repos` | `[]` | watch several repositories from one instance — `["owner/one", "owner/two"]`; wins over `repo` |
 | `intervalMs` | `600000` (10 min) | **in-turn** poll interval; nothing polls while idle |
 | `timeoutMs` | `45000` | per-command timeout |
 | `maxEvents` | `6` | events listed per notice |
@@ -135,7 +136,7 @@ Every real wake writes `woke <session> because <role>:<key>`; a refusal writes `
 | `mention` | a comment mentioning me (`@name` and `@name[bot]` both count) |
 | `ci` | default-branch CI, nobody's in particular |
 
-**Repository affinity** — a notice only reaches sessions whose workspace `origin` equals the watched repository; sessions with no recognisable repository never receive another repository's events. Only keys that were actually delivered are marked `delivered`; the rest stay for the next poll. One instance serves one repository today — run one instance per repository; letting one instance watch a list of repositories is ROADMAP step 4.
+**Repository affinity** — a notice only reaches sessions whose workspace `origin` equals the watched repository; sessions with no recognisable repository never receive another repository's events. Only keys that were actually delivered are marked `delivered`; the rest stay for the next poll. One instance can watch a list of repositories: they share a queue, but the state is sliced per repository (`.work/github-inbox/state.json`, `repos`) and every event key carries its repository (`owner/name#pr:7:…`) — the same PR number in two repositories is two events.
 
 ## Usage
 
@@ -234,7 +235,7 @@ npm test
 node --test index.test.mjs scripts/github-inbox.test.mjs scripts/inbox-bridge.test.mjs
 ```
 
-63 cases cover the pure logic: three-state transitions (no regressions, repeated delivery moves the timestamp), classification, the resurface window, recovery, delivery guards, repository detection, identity and role routing, the four wake gates, notice text and status output.
+66 个用例 cover the pure logic: three-state transitions (no regressions, repeated delivery moves the timestamp), classification, the resurface window, recovery, delivery guards, repository detection, identity and role routing, the four wake gates, notice text and status output.
 
 | File | Responsibility |
 | --- | --- |
