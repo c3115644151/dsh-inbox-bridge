@@ -84,6 +84,12 @@ const DEFAULTS = Object.freeze({
   /** wakeups one agent may take before its next human message, then it only queues */
   maxConsecutiveWakes: 3,
   /**
+   * Optional command that archives the notification inbox after a poll. GitHub
+   * has no API for "Done", so this is a browser action (`scripts/clear-inbox.mjs`).
+   * `when: "events"` (default) only runs it on a turn that found something.
+   */
+  sweep: null,
+  /**
    * Which GitHub identity the poller reads as. `kind: "user"` uses the ambient
    * `gh` login; `kind: "app"` needs a token (`token` or `tokenEnv`) and has no
    * notification stream — the poller then reads repository feeds only.
@@ -163,6 +169,7 @@ export function apply(ctx, config) {
             intervalMs: options.intervalMs,
             delivery: options.delivery,
             clear: options.clear,
+            sweep: options.sweep ? options.sweep.when : null,
             wakeOn: options.wakeOn,
             wakeAfterIdleMs: options.wakeAfterIdleMs,
             wakesPerHour: options.wakesPerHour,
@@ -205,6 +212,22 @@ export function apply(ctx, config) {
     log(`injected offline reminder: ${reason}`);
   };
 
+  // Archiving the notification inbox ("Done") has no API: it is a page action.
+  // A configured sweep command does it through a browser, and this is where the
+  // plugin calls it. `when: "events"` keeps a quiet turn at zero extra cost.
+  const sweepInbox = async (freshCount) => {
+    if (!options.sweep) return;
+    if (options.sweep.when === "events" && freshCount === 0) return;
+    const began = Date.now();
+    try {
+      const stdout = await runCommand(options.sweep, options);
+      const line = String(stdout ?? "").trim().split(/\r?\n/u).pop() ?? "";
+      log(`swept the notification inbox: ${line || "done"} (${Date.now() - began}ms)`);
+    } catch (error) {
+      log(`sweep failed: ${describe(error)}`);
+    }
+  };
+
   let startedAt = 0;
 
   const poll = async () => {
@@ -231,6 +254,7 @@ export function apply(ctx, config) {
         return;
       }
       const now = Date.now();
+      const freshCount = payload.events?.length ?? 0;
       const { events, suppressed } = filterUndelivered(
         payload.events,
         recentlyDelivered,
@@ -239,6 +263,9 @@ export function apply(ctx, config) {
       );
       if (suppressed > 0) log(`suppressed ${suppressed} event(s) already delivered; waiting for ack`);
       if (events.length === 0) return;
+      // Archiving runs alongside delivery: the browser takes seconds, and the
+      // notice must not wait for it.
+      void sweepInbox(freshCount);
       const { ready, deferred } = deliveryTargets([...agents.values()], options);
       // Each session gets only the events its own repository and role match: one
       // repository's failures must never reach a session working elsewhere.
@@ -591,6 +618,27 @@ export function mergeConfig(config) {
       `inbox-bridge: \`clear\` must be "off", "repo" or "all", got ${JSON.stringify(clear)}`,
     );
   }
+  const sweep = given.sweep ?? DEFAULTS.sweep;
+  let sweepSpec = null;
+  if (sweep !== null && sweep !== undefined) {
+    if (typeof sweep !== "object" || Array.isArray(sweep)) {
+      throw new Error(
+        `inbox-bridge: \`sweep\` must be { command, args, when }, got ${JSON.stringify(sweep)}`,
+      );
+    }
+    if (!Array.isArray(sweep.args ?? [])) {
+      throw new Error(
+        `inbox-bridge: \`sweep.args\` must be an array, got ${JSON.stringify(sweep.args)}`,
+      );
+    }
+    const when = sweep.when ?? "events";
+    if (when !== "events" && when !== "always") {
+      throw new Error(
+        `inbox-bridge: \`sweep.when\` must be "events" or "always", got ${JSON.stringify(when)}`,
+      );
+    }
+    sweepSpec = { command: sweep.command ?? "node", args: sweep.args ?? [], when };
+  }
   return {
     ...DEFAULTS,
     ...given,
@@ -600,6 +648,7 @@ export function mergeConfig(config) {
     identity,
     roles,
     clear,
+    sweep: sweepSpec,
     wakeOn,
     intervalMs,
     wakeAfterIdleMs,

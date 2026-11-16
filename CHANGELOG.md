@@ -2,6 +2,11 @@
 
 Format: keep a short entry per released version. Dates are UTC.
 
+## 2.7.0
+
+- 新增 sweep：抓到东西的回合里顺手把通知归档进 Done；空回合不跑，所以安静时零成本。
+- 新增 scripts/clear-inbox.mjs：GitHub 没有 Done 的公开接口，所以它用一次自带浏览器会话完成归档，跑完自己关掉。先 --login 登录一次，之后全在后台跑；--dry-run/--json 可查可脚本化。
+- 插件把 sweep 的结果写进日志（swept the notification inbox: archived N thread(s)），失败也只记一行，不影响投递。
 ## 2.6.1
 
 - `runtime.json` 与启动日志里写明 `clear` 的范围：清理是默认行为，看不见就等于不存在。

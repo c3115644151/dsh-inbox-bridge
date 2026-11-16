@@ -442,3 +442,81 @@ test("the poll child is told which threads to clear", () => {
   const options = mergeConfig({ clear: "off" });
   assert.equal(options.clear, "off");
 });
+
+test("a sweep command is validated, and defaults to running only after a real finding", () => {
+  assert.equal(mergeConfig({}).sweep, null);
+  const sweep = mergeConfig({ sweep: { args: ["scripts/clear-inbox.mjs"] } });
+  assert.deepEqual(sweep.sweep, { command: "node", args: ["scripts/clear-inbox.mjs"], when: "events" });
+  assert.equal(mergeConfig({ sweep: { command: "node", args: [], when: "always" } }).sweep.when, "always");
+  assert.throws(() => mergeConfig({ sweep: "browser" }), /`sweep` must be \{ command, args, when \}/u);
+  assert.throws(() => mergeConfig({ sweep: { args: "nope" } }), /`sweep.args` must be an array/u);
+  assert.throws(() => mergeConfig({ sweep: { when: "rarely" } }), /`sweep.when` must be "events" or "always"/u);
+});
+
+test("the inbox is swept only on a turn that found something", async () => {
+  // GitHub has no "done" API, so archiving is a browser action behind `sweep`.
+  // The cost rule that makes it affordable: an empty poll runs nothing.
+  const root = mkdtempSync(join(tmpdir(), "inbox-sweep-"));
+  const marker = join(root, "swept.txt");
+  try {
+    const ctx = fakeContext([fakeAgent(root)]);
+    const { apply } = await import("./index.js");
+    apply(ctx, mergeConfig({
+      cwd: root,
+      repo: "owner/name",
+      poll: {
+        command: process.execPath,
+        args: ["-e", `console.log(JSON.stringify({ events: [] }))`],
+      },
+      ack: { command: process.execPath, args: ["-e", "console.log('{}')"] },
+      sweep: {
+        command: process.execPath,
+        args: ["-e", `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "swept");console.log("archived 3 thread(s)")`],
+      },
+    }));
+    ctx.emit("agent/status", { agent: { session: { id: "session-1" } }, status: "running" });
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    const fs = await import("node:fs");
+    assert.equal(fs.existsSync(marker), false, "an empty poll paid for a sweep");
+  } finally {
+    removeTree(root);
+  }
+});
+
+test("a turn with findings sweeps the inbox and says what it archived", async () => {
+  const root = mkdtempSync(join(tmpdir(), "inbox-sweep-live-"));
+  const marker = join(root, "swept.txt");
+  const logPath = join(root, ".work", "inbox-bridge", "plugin.log");
+  try {
+    const ctx = fakeContext([fakeAgent(root)]);
+    const { apply } = await import("./index.js");
+    apply(ctx, mergeConfig({
+      cwd: root,
+      repo: "owner/name",
+      poll: {
+        command: process.execPath,
+        args: [
+          "-e",
+          `console.log(JSON.stringify({ events: [{ key: "run:1", kind: "ci", title: "ci failed", role: "ci", repo: "owner/name" }] }))`,
+        ],
+      },
+      ack: { command: process.execPath, args: ["-e", "console.log('{}')"] },
+      sweep: {
+        command: process.execPath,
+        args: ["-e", `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "swept");console.log("archived 3 thread(s)")`],
+      },
+    }));
+    ctx.emit("agent/status", { agent: { session: { id: "session-1" } }, status: "running" });
+    const fs = await import("node:fs");
+    const deadline = Date.now() + 6_000;
+    const swept = () => fs.existsSync(marker);
+    const logged = () => fs.existsSync(logPath) && fs.readFileSync(logPath, "utf8").includes("swept the notification inbox: archived 3 thread(s)");
+    while (Date.now() < deadline && !(swept() && logged())) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(swept(), true, "a poll with findings did not sweep");
+    assert.equal(logged(), true, "the sweep result was not logged");
+  } finally {
+    removeTree(root);
+  }
+});

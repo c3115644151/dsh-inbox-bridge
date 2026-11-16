@@ -29,6 +29,7 @@ The bracket says **how it relates to you**: `reviewer` means it is waiting for y
 - **No message from you, no request to GitHub.** Polling follows your conversation: once when you start talking, every ten minutes while a long turn runs, once when the turn ends; an idle session costs nothing.
 - **It does not start a turn for you.** Notices wait in the queue and arrive the next time you speak. If you want it to reach you while you are away, you have to switch on waking and name the roles that may wake it.
 - **It marks what it read as read.** The notices it handled do not pile up in your unread list; set `clear: all` to quiet the whole account. GitHub only exposes "mark read" — there is no "done" API.
+- **It can archive them too, if you ask.** With `sweep` configured, a turn that actually found something also moves those threads into Done (one browser run, 3–5 seconds; quiet turns pay nothing). Sign in once first: `node scripts/clear-inbox.mjs --login`.
 
 ## Install once
 
