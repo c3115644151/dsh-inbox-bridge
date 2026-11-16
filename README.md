@@ -15,11 +15,11 @@
 
 通知长这样，出现在你下一轮对话的开头：
 
-> 外部收件箱（后台轮询，不是用户提问）· 以 c3115644151 的身份读取：
+> 外部收件箱（后台轮询，不是用户提问）· 读取身份：c3115644151：
 > - [PR/reviewer] #23 有人请你评审：fix: retry on flaky upload https://github.com/…
 > - [CI] run 43934997486 failed: chore: release 2.3.1 https://github.com/…
 >
-> 只在它影响当前工作时处理；处理完运行 `node scripts/inbox-bridge.mjs ack --done -- <key>` 标记完成。
+> 只在它影响当前工作时处理；处理完运行 `node "...\dsh-inbox-bridge\scripts\inbox-bridge.mjs" ack --done -- <key>` 标记完成。
 
 方括号里是**它跟这件事的关系**：`reviewer` 是请你评审，`author` 是你提交的，`assignee` 是派给你的，`mention` 是有人 @你。处理完把那条划掉（ack）；没处理的，六小时后再提一次——提醒会回来，但不会因为你没理它就无限重复。
 

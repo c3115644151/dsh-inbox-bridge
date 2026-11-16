@@ -205,7 +205,7 @@ test("the notice names the identity it reads as and the role of each event", () 
       repo: "example-org/example-repo",
     },
   );
-  assert.match(text, /以 App noema-agent\[bot\] 的身份读取/u);
+  assert.match(text, /读取身份：App noema-agent\[bot\]/u);
   assert.match(text, /\[pr\/reviewer\] PR #1/u);
   // The role is redundant on CI lines: every CI event is the same relationship.
   assert.match(text, /\[ci\] ci failed/u);

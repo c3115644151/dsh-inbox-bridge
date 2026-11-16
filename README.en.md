@@ -15,11 +15,11 @@ While you work, it takes a quick look at GitHub: did the PR you are involved in 
 
 A notice looks like this, at the top of your next turn:
 
-> External inbox (background poll, not a question from the user) · read as c3115644151:
+> External inbox (background poll, not a question from the user) · read as: c3115644151:
 > - [PR/reviewer] #23 review requested: fix: retry on flaky upload https://github.com/…
 > - [CI] run 43934997486 failed: chore: release 2.3.1 https://github.com/…
 >
-> Act only where it affects the current work; when done, run `node scripts/inbox-bridge.mjs ack --done -- <key>`.
+> Act only where it affects the current work; when done, run `node "...\dsh-inbox-bridge\scripts\inbox-bridge.mjs" ack --done -- <key>`.
 
 The bracket says **how it relates to you**: `reviewer` means it is waiting for your review, `author` means you opened it, `assignee` means it is assigned to you, `mention` means someone wrote @you. When you are done, acknowledge the line; anything you leave alone comes back once after six hours — it reminds you, it does not nag forever.
 

@@ -720,12 +720,12 @@ export function formatEvents(events, options = DEFAULTS) {
   const intervalMinutes = Math.max(1, Math.round((options.intervalMs ?? DEFAULTS.intervalMs) / 60_000));
   const lines = events.slice(0, maxEvents).map((event) => `- ${describeEvent(event)}`);
   if (events.length > maxEvents)
-    lines.push(`- 其余 ${events.length - maxEvents} 条见 \`npm run inbox\``);
+    lines.push(`- 其余 ${events.length - maxEvents} 条见 \`node "${CLI}" list\``);
   const identity = options.identity ?? DEFAULTS.identity;
   const who =
     identity.kind === "app" ? `App ${identity.login ?? ""}`.trim() : (identity.login ?? "本机 gh");
   return [
-    `${options.label ?? "外部收件箱"}（后台轮询，不是用户提问）· 以 ${who} 的身份读取：`,
+    `${options.label ?? "外部收件箱"}（后台轮询，不是用户提问）· 读取身份：${who}：`,
     ...lines,
     "",
     `只在它影响当前工作时处理；处理完运行 \`${ackHint}\` 标记完成。`,
