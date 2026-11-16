@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { buildMessage, deliver, deliveryTargets, detectRepo, filterUndelivered, formatEvents, mergeConfig, wakeTargets } from "./index.js";
+import { buildMessage, deliver, deliveryTargets, detectRepo, filterUndelivered, formatEvents, matchesRepo, mergeConfig, repoOf, wakeTargets } from "./index.js";
 
 const idle = { status: "idle" };
 const running = { status: "running" };
@@ -45,13 +45,39 @@ test("the interrupt switch delivers to running agents too", () => {
   assert.deepEqual(deferred, []);
 });
 
-test("wake defaults to one idle agent so a notice starts a turn", () => {
-  assert.deepEqual(wakeTargets([idle, unknown], {}), [idle]);
+test("quiet delivery never opens a turn on its own", () => {
+  assert.deepEqual(wakeTargets([idle, unknown], {}), []);
+  assert.deepEqual(wakeTargets([idle, unknown], { delivery: "quiet" }), []);
 });
 
-test("wake can cover every idle agent or be turned off", () => {
-  assert.deepEqual(wakeTargets([idle, unknown], { wake: "all" }), [idle, unknown]);
-  assert.deepEqual(wakeTargets([idle, unknown], { wake: "off" }), []);
+test("wakeup opens one turn and spends that agent's wake budget", () => {
+  const streak = new Map();
+  const strict = { delivery: "wakeup", maxConsecutiveWakes: 2 };
+
+  assert.deepEqual(wakeTargets([idle, unknown], strict, streak), [idle]);
+
+  streak.set(idle, 2);
+  assert.deepEqual(wakeTargets([idle, unknown], strict, streak), [unknown]);
+
+  streak.set(unknown, 2);
+  assert.deepEqual(wakeTargets([idle, unknown], strict, streak), []);
+});
+
+test("a session only hears about the repository its own workspace points at", () => {
+  withRepos(({ repo, plain }) => {
+    const mine = { status: "idle", session: { header: { cwd: repo } } };
+    const theirs = { status: "idle", session: { header: { cwd: plain } } };
+    const options = { repo: "example-org/example-repo", cwd: plain };
+
+    assert.equal(repoOf(mine, options), "example-org/example-repo");
+    assert.equal(repoOf(theirs, options), null);
+    assert.equal(matchesRepo(mine, options), true);
+    assert.equal(matchesRepo(theirs, options), false);
+  });
+});
+
+test("without a configured source every session matches", () => {
+  assert.equal(matchesRepo({}, { repo: null }), true);
 });
 
 test("an agent without a status field is treated as idle", () => {
@@ -81,7 +107,7 @@ test("the notice says when it was queued and how to stop the reminder", () => {
     ],
     { maxEvents: 1, label: "外部收件箱", ackHint: "npm run inbox:ack -- --done -- <key>" },
   );
-  assert.match(text, /本轮开始前注入/u);
+  assert.match(text, /只在你发消息时随该轮进入上下文/u);
   assert.match(text, /其余 1 条/u);
   // Teach the command that actually marks the event done: npm eats `--done`
   // when it sits before `--`, so the flag has to follow the separator.
@@ -116,6 +142,8 @@ test("config keeps the turn-boundary default and merges poll/ack commands", () =
   withRepos(({ repo, plain }) => {
     const inRepo = mergeConfig({ cwd: repo });
     assert.equal(inRepo.injectWhileRunning, false);
+    assert.equal(inRepo.delivery, "quiet");
+    assert.equal(inRepo.maxConsecutiveWakes, 3);
     assert.equal(inRepo.repo, "example-org/example-repo");
     // The plugin runs the CLI that ships inside the package, from any workspace.
     assert.match(inRepo.poll.args[0], /inbox-bridge\.mjs$/u);
@@ -125,6 +153,17 @@ test("config keeps the turn-boundary default and merges poll/ack commands", () =
     const outside = mergeConfig({ cwd: plain });
     assert.equal(outside.repo, null);
   });
+});
+
+test("the removed wake key and malformed delivery settings fail loudly", () => {
+  assert.throws(
+    () => mergeConfig({ wake: "first" }),
+    /`wake` was replaced by `delivery`/u,
+  );
+  assert.throws(() => mergeConfig({ delivery: "sometimes" }), /must be "quiet" or "wakeup"/u);
+  assert.throws(() => mergeConfig({ maxConsecutiveWakes: -1 }), /non-negative integer/u);
+  assert.throws(() => mergeConfig({ maxConsecutiveWakes: 1.5 }), /non-negative integer/u);
+  assert.equal(mergeConfig({ delivery: "wakeup", maxConsecutiveWakes: 0 }).delivery, "wakeup");
 });
 
 test("both delivery paths hand over the whole message, role and id included", () => {

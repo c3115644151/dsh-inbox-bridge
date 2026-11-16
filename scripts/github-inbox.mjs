@@ -154,19 +154,16 @@ export function normalizeState(state) {
 
 export function prStatusDigest(pr) {
   const rollup = Array.isArray(pr?.statusCheckRollup) ? pr.statusCheckRollup : [];
-  const checks = rollup
-    .map((check) => {
-      const name = check?.name ?? check?.context ?? check?.workflowName ?? "check";
-      const state = String(
-        check?.conclusion || check?.state || check?.status || "unknown",
-      ).toUpperCase();
-      const finishedAt =
-        check?.completedAt && check.completedAt !== "0001-01-01T00:00:00Z"
-          ? `@${check.completedAt}`
-          : "";
-      return `${name}:${state}${finishedAt}`;
-    })
-    .sort();
+  // Only the state of each named check matters here: this digest is part of the
+  // event key, so a completion timestamp would mint a new key on every poll and
+  // report one unchanged PR over and over.
+  const states = new Map();
+  for (const check of rollup) {
+    const name = check?.name ?? check?.context ?? check?.workflowName ?? "check";
+    const state = String(check?.conclusion || check?.state || check?.status || "unknown").toUpperCase();
+    states.set(name, state);
+  }
+  const checks = [...states].map(([name, state]) => `${name}:${state}`).sort();
   return `checks[${checks.join(",")}]|review:${String(pr?.reviewDecision ?? "").toUpperCase() || "NONE"}`;
 }
 

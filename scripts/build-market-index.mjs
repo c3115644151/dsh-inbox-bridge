@@ -83,6 +83,7 @@ function build() {
 }
 
 const isCheck = process.argv.includes("--check");
+const isRelease = process.argv.includes("--release");
 const index = build();
 const text = `${JSON.stringify(index, null, 2)}\n`;
 
@@ -105,11 +106,8 @@ if (isCheck) {
     console.error("docs/index.json does not pin a 40-hex commit");
     process.exit(1);
   }
-  const meta = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
-  if (entry.versions[0].version !== meta.version) {
-    console.error(
-      `docs/index.json lists ${entry.versions[0].version} but package.json is ${meta.version}: run \`npm run market\``,
-    );
+  if (entry.versions[0].source?.type !== "git" || entry.versions[0].source?.url !== GIT) {
+    console.error(`docs/index.json must install from ${GIT}`);
     process.exit(1);
   }
   try {
@@ -124,16 +122,20 @@ if (isCheck) {
     console.error(`docs/index.json says ${entry.versions[0].version} but commit ${pinned.slice(0, 7)} says ${pinnedVersion}`);
     process.exit(1);
   }
-  const changed = git(["diff", "--name-only", `${pinned}..HEAD`, "--", "index.js", "scripts", "cordis.patch.yml", "locale", "package.json"])
-    .split("\n")
-    .filter((file) => file !== "" && file !== "scripts/build-market-index.mjs");
-  if (changed.length > 0) {
-    console.error(
-      `the pinned commit ${pinned.slice(0, 7)} is older than the shipped plugin code (${changed.join(", ")}): run \`npm run market\` and commit`,
-    );
-    process.exit(1);
+  console.log(`market index is valid (${entry.versions[0].version} @ ${pinned.slice(0, 7)})`);
+  if (isRelease) {
+    const head = git(["rev-parse", "HEAD"]);
+    const meta = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+    if (pinned !== head) {
+      console.error(`release: docs/index.json pins ${pinned.slice(0, 7)} but HEAD is ${head.slice(0, 7)}: run \`npm run market\` and commit`);
+      process.exit(1);
+    }
+    if (entry.versions[0].version !== meta.version) {
+      console.error(`release: docs/index.json lists ${entry.versions[0].version} but package.json is ${meta.version}`);
+      process.exit(1);
+    }
+    console.log(`release index is current (${meta.version} @ ${head.slice(0, 7)})`);
   }
-  console.log(`market index is current (${entry.versions[0].version} @ ${pinned.slice(0, 7)})`);
 } else {
   fs.mkdirSync(path.dirname(OUT), { recursive: true });
   fs.writeFileSync(OUT, text, "utf8");

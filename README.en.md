@@ -73,13 +73,13 @@ Configuration goes under the `inbox-bridge` row of `cordis.patch.yml`, for examp
       config:
         label: 外部收件箱
         intervalMs: 45000
-        wake: first
+        delivery: quiet
 ```
 
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `label` | `外部收件箱` | notice title |
-| `cwd` | the DSH process cwd | workspace the state belongs to |
+| `cwd` | the DSH process cwd | workspace the state belongs to, and the starting point for the `repo` lookup |
 | `repo` | inferred from the `origin` remote | `owner/name` to watch; can also be set with the `INBOX_REPO` environment variable |
 | `intervalMs` | `45000` | poll interval |
 | `timeoutMs` | `45000` | per-command timeout |
@@ -87,9 +87,15 @@ Configuration goes under the `inbox-bridge` row of `cordis.patch.yml`, for examp
 | `resurfaceMs` | `21600000` (6 h) | when a `delivered` event comes back |
 | `offlineReminderMs` | `43200000` (12 h) | minimum gap between "source unavailable" reminders, only when no repository is being watched |
 | `injectWhileRunning` | `false` | inject mid-turn (interrupts tool loops) |
-| `wake` | `first` | `first` uses followup to start a turn on one idle agent; `all` wakes every idle agent; `off` only injects and waits for the next turn |
+| `delivery` | `quiet` | `quiet` only queues the notice for a session's next turn; `wakeup` also starts a turn with followup |
+| `maxConsecutiveWakes` | `3` | with `wakeup`, how many turns one session may have opened before the user speaks again; beyond it the notice is queued |
 | `ackHint` | `ack --done -- <key>` | how the notice tells the agent to mark an event done |
 | `poll` / `ack` | the bundled CLI | `{ command, args }` for any custom source |
+
+`wake` was replaced by `delivery` in 2.0.0; the old key makes the plugin refuse to start with an explanation instead of silently changing behaviour.
+
+**Repository association** — a notice only reaches sessions whose workspace `origin` equals the watched `owner/name`. Sessions in another repository stay silent even when idle: that is someone else's CI, not yours. A session whose workspace names no repository gets no event notices (only the "no repository to watch" infrastructure reminder).
+
 
 The `poll` command only has to print one JSON line to stdout: `{ "events": [...], "skipped": null }`. The `ack` command receives event keys through the `INBOX_BRIDGE_KEYS` environment variable and accepts a `--done` flag. Implement those two commands and any source works.
 
@@ -119,8 +125,8 @@ State lives in `.work/inbox-bridge/state.json`; the append-only log is `.work/in
 ## How it works
 
 1. Every `intervalMs`, the plugin runs the `poll` command and takes the events that still deserve attention.
-2. Only idle agents are targeted: idle ones receive the notice immediately, running ones are held until `agent/status` becomes `idle`.
-3. `wake` picks the delivery method: `first` uses `followup` (starts a turn) on the first idle agent and `inject` on the rest; `all` uses followup for every idle agent; `off` only injects and waits for the next turn.
+2. Only idle agents are targeted, and only those whose workspace `origin` matches the watched repository: idle ones receive the notice immediately, running ones are held until `agent/status` becomes `idle`.
+3. `delivery` picks the method: `quiet` (the default) always `inject`s, so the notice waits for that session's next turn and never opens one; `wakeup` also uses `followup` on the first session that has not exceeded `maxConsecutiveWakes`, a budget reset whenever the user speaks.
 4. A successful delivery acks `delivered`; `kind: infra` events are also acked `done`.
 5. On later polls, `delivered` events older than `resurfaceMs` return to `pending` and are reminded again; `done` never returns.
 6. When a newer run succeeds, older failures of the same workflow and branch are closed by the `recovered` event.
@@ -130,10 +136,19 @@ A notice is a `source.kind = inbox-bridge` message carrying the event keys and t
 ## Known limitations
 
 - **GitHub read state is not synced** — the plugin only changes local state. It does not mark GitHub notifications as read, and reading them on GitHub does not mark them `done`.
+- **`quiet` is not real-time** — with no turn starting, a notice can stay queued indefinitely. For real-time reminders set `delivery: wakeup` and accept that it opens turns for you (bounded by `maxConsecutiveWakes`).
 - **One repository per workspace** — `repo` / `INBOX_REPO` / the git remote pick a single repository, and state is stored per workspace under `.work/`. For several repositories, use several workspaces or a custom `poll`.
 - **GitHub API rate limits** — each poll calls at least 3 `gh` endpoints; when rate-limited, that poll is skipped and logged. A larger `intervalMs` lowers the rate.
 - **Polling only runs while DSH runs** — nothing is pushed while DSH is stopped; after a restart, the next poll picks up whatever the source still keeps.
 - **The notice body is Chinese** — `label` changes the title, but the built-in guidance text is fixed Chinese.
+
+### Upgrade note (1.5.x to 2.0.0)
+
+2.0.0 changes *when* a notice enters your conversation:
+
+- `wake` became `delivery` (default `quiet`). The old key makes the plugin fail to start with an explanation instead of silently changing behaviour; replace `wake: first` with `delivery: quiet`.
+- Notices only reach sessions whose workspace repository matches the watched one, so another repository's CI stops showing up in front of you.
+- PR event keys are built from each check's state and the review decision only — no completion timestamps — so re-polling an unchanged PR no longer reports it again.
 
 ### Upgrade note (1.5.0 to 1.5.1)
 
@@ -147,15 +162,29 @@ npm test
 node --test index.test.mjs scripts/github-inbox.test.mjs scripts/inbox-bridge.test.mjs
 ```
 
-The 41 tests cover the pure logic: state transitions (never backwards, a repeated delivery moves the timestamp forward), event classification, the resurface window, recovery/auto-close, the delivery guard, repo detection and notice formatting.
+The 45 tests cover the pure logic: state transitions (never backwards, a repeated delivery moves the timestamp forward), event classification, the resurface window, recovery/auto-close, the delivery guard, repository association, the wake budget and notice formatting.
 
 | File | Responsibility |
 | --- | --- |
-| `index.js` | DSH plugin: poll scheduling, turn-boundary delivery, wake, logging |
+| `index.js` | DSH plugin: poll scheduling, per-repository targeting, delivery, wake budget, logging |
 | `scripts/inbox-bridge.mjs` | three-state CLI: `poll` / `list` / `ack` |
 | `scripts/github-inbox.mjs` | default poller: main-branch CI, open PRs, comments and issues |
 | `cordis.patch.yml` | bundle patch: plugin id and default config |
 | `locale/*.json` | plugin market title and description |
+
+### Release (market index)
+
+The market index `docs/index.json` pins one pushed commit, and installs fetch that
+commit. To release:
+
+```powershell
+npm run market          # rebuild docs/index.json from HEAD
+npm run market:release  # check the index pins HEAD and matches package.json
+```
+
+PR CI only validates the index shape, that the pinned commit is still in history,
+and that the pinned version matches the index (`npm run market:check`), so the
+index may lag behind unreleased changes. A release commit must pin itself.
 
 ## License
 

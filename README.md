@@ -73,13 +73,13 @@ gh auth status
       config:
         label: 外部收件箱
         intervalMs: 45000
-        wake: first
+        delivery: quiet
 ```
 
 | 键 | 默认值 | 含义 |
 | --- | --- | --- |
 | `label` | `外部收件箱` | 通知标题 |
-| `cwd` | DSH 进程工作目录 | 状态文件所属的工作区 |
+| `cwd` | DSH 进程工作目录 | 状态文件所属的工作区，也是推断 `repo` 的起点 |
 | `repo` | 从 `origin` 远程推断 | 监听的 `owner/name`；也可用 `INBOX_REPO` 环境变量指定 |
 | `intervalMs` | `45000` | 轮询间隔 |
 | `timeoutMs` | `45000` | 单次命令超时 |
@@ -87,9 +87,15 @@ gh auth status
 | `resurfaceMs` | `21600000`（6 小时） | `delivered` 事件再次提醒的间隔 |
 | `offlineReminderMs` | `43200000`（12 小时） | `poll` 返回 `skipped` 时的提醒最小间隔（仅在没有可监听仓库时） |
 | `injectWhileRunning` | `false` | 允许在运行中注入（会打断工具循环） |
-| `wake` | `first` | `first` 用 followup 唤醒一个空闲智能体开一轮；`all` 唤醒所有空闲智能体；`off` 只注入、等下一回合 |
+| `delivery` | `quiet` | `quiet` 只把通知排进会话的下一次回合；`wakeup` 还会用 followup 开一轮 |
+| `maxConsecutiveWakes` | `3` | `wakeup` 下同一个会话在用户再次发言前最多被开几轮，超出后降级为排队 |
 | `ackHint` | `ack --done -- <key>` | 通知里告诉智能体如何标记完成 |
 | `poll` / `ack` | 内置 CLI | `{ command, args }`，可指向任意来源脚本 |
+
+`wake` 在 2.0.0 已被 `delivery` 取代；旧配置项会让插件启动时直接报错说明，而不是静默改变行为。
+
+**仓库关联**：通知只投给工作区 `origin` 与监听的 `owner/name` 相同的会话。别的仓库的会话即使空闲也不会收到——它们是别人的 CI，不是你的。无法从工作区推断出仓库的会话不发事件提醒（只可能收到“没有可监听仓库”的基础设施提醒）。
+
 
 `poll` 命令只需向 stdout 打一行 JSON：`{ "events": [...], "skipped": null }`；`ack` 命令从 `INBOX_BRIDGE_KEYS` 环境变量接收事件 key，并接受 `--done` 标志。只实现这两个命令，就能接非 GitHub 的来源。
 
@@ -119,8 +125,8 @@ npm 会把 `--` 之前的 `--done` 当成自己的参数，脚本收不到它，
 ## 工作原理
 
 1. 插件每隔 `intervalMs` 运行一次 `poll` 命令，取出仍值得提醒的事件。
-2. 只看空闲智能体：空闲的立即投递，运行中的先挂起，等 `agent/status` 变为 `idle` 再试。
-3. `wake` 决定投递方式：`first` 对第一个空闲智能体用 `followup`（开一轮），其余用 `inject`（等下一回合）；`all` 全部 followup；`off` 全部 inject。
+2. 只看空闲智能体，并且只挑工作区 `origin` 与监听仓库相同的会话；空闲的立即投递，运行中的先挂起，等 `agent/status` 变为 `idle` 再试。
+3. `delivery` 决定投递方式：`quiet`（默认）一律 `inject`，通知排队等该会话下一次回合开始，绝不替用户开轮；`wakeup` 还会对第一个未超预算的会话用 `followup` 开一轮，预算 `maxConsecutiveWakes` 在用户发话后归零。
 4. 投递成功即 ack `delivered`；`kind: infra` 的事件同时 ack `done`。
 5. 后续轮询中，`delivered` 超过 `resurfaceMs` 的回到 `pending` 再次提醒；`done` 永不回来。
 6. 更新运行成功后，同 workflow + 分支的旧失败由 `recovered` 事件自动收口。
@@ -130,10 +136,19 @@ npm 会把 `--` 之前的 `--done` 当成自己的参数，脚本收不到它，
 ## 已知限制
 
 - **GitHub 未读状态不联动**：插件只改本地三态，不会把 GitHub 通知标为已读；你在 GitHub 上读了也不会自动变成 `done`。
+- **`quiet` 下没有实时性**：没人说话就没有回合开始，通知会一直排队；要实时提醒就把 `delivery` 设成 `wakeup`，并接受它替你开轮（受 `maxConsecutiveWakes` 约束）。
 - **单仓库 scoping**：一个工作区只监听一个仓库（`repo` / `INBOX_REPO` / git remote 三选一），状态也按工作区存放在 `.work/`。要同时看多个仓库，就开多个工作区，或自定义 `poll`。
 - **GitHub API 限流**：每次轮询至少调 3 个 `gh` 接口，被限流时该轮 skipped 并写日志；提高 `intervalMs` 可降低频率。
 - **只在 DSH 运行时轮询**：DSH 退出期间不推送，重启后由下一次轮询按来源的保留窗口补上。
 - **通知正文是中文**：`label` 可改标题，内置提示语固定中文。
+
+### 升级注意（1.5.x → 2.0.0）
+
+2.0.0 改的是「这条通知什么时候进入你的对话」：
+
+- `wake` 换成 `delivery`（默认 `quiet`）。旧配置项会让插件启动时报错说明，不会静默改行为；把 `wake: first` 改成 `delivery: quiet` 即可。
+- 通知只投给工作区仓库与监听仓库相同的会话，不再把别人的 CI 送到你面前。
+- PR 的事件 key 只看各检查项的状态和 review 决定，不再含完成时间戳——同一个状态重复轮询不会再播报一次。
 
 ### 升级注意（1.5.0 → 1.5.1）
 
@@ -147,15 +162,26 @@ npm test
 node --test index.test.mjs scripts/github-inbox.test.mjs scripts/inbox-bridge.test.mjs
 ```
 
-41 个用例覆盖纯逻辑：状态迁移（不倒退、重复投递推进时间戳）、事件分类、resurface 窗口、恢复/自动收口、投递守卫、仓库识别与通知格式化。
+45 个用例覆盖纯逻辑：状态迁移（不倒退、重复投递推进时间戳）、事件分类、resurface 窗口、恢复/自动收口、投递守卫、仓库识别、wake 预算与通知格式化。
 
 | 文件 | 职责 |
 | --- | --- |
-| `index.js` | DSH 插件：轮询调度、回合边界投递、wake、日志 |
+| `index.js` | DSH 插件：轮询调度、按仓库挑会话、delivery 投递、wake 预算、日志 |
 | `scripts/inbox-bridge.mjs` | 三态 CLI：`poll` / `list` / `ack` |
 | `scripts/github-inbox.mjs` | 默认 poller：main 分支 CI、开放 PR、评论与 issue |
 | `cordis.patch.yml` | bundle patch：插件 id 与默认 config |
 | `locale/*.json` | 插件市场标题与描述 |
+
+### 发布（市场索引）
+
+市场索引 `docs/index.json` 固定到一个已推送的提交，安装方按该提交取代码。发布时：
+
+```powershell
+npm run market          # 用 HEAD 重建 docs/index.json
+npm run market:release  # 校验索引恰好固定在 HEAD，且版本与 package.json 一致
+```
+
+PR 的 CI 只校验索引格式、固定的提交仍在历史里、固定的版本与索引一致（`npm run market:check`），因此索引落后于尚未发布的改动是允许的；发布提交必须让 `docs/index.json` 指向它自己。
 
 ## 许可证
 

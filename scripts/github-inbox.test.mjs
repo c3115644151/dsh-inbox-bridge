@@ -245,6 +245,25 @@ test("PR status transition notifies only when the new digest is unseen", () => {
   assert.deepEqual(repeated.fresh, []);
 });
 
+test("a moved completion timestamp is not a new PR state", () => {
+  const before = prStatusDigest(pullRequest());
+  const rechecked = prStatusDigest(
+    pullRequest({
+      updatedAt: "2026-11-15T05:30:00Z",
+      statusCheckRollup: [checkRun({ completedAt: "2026-11-15T05:29:41Z" })],
+    }),
+  );
+  assert.equal(rechecked, before);
+
+  // A real transition still has to change the digest, in both directions.
+  const passing = prStatusDigest(
+    pullRequest({ statusCheckRollup: [checkRun({ conclusion: "SUCCESS" })] }),
+  );
+  assert.notEqual(passing, before);
+  const reviewed = prStatusDigest(pullRequest({ reviewDecision: "REVIEW_REQUIRED" }));
+  assert.notEqual(reviewed, before);
+});
+
 test("PR asking for a review notifies; green PR stays silent", () => {
   assert.equal(
     extractPrEvents([pullRequest({ reviewDecision: "REVIEW_REQUIRED", statusCheckRollup: [] })])
