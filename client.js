@@ -1,25 +1,24 @@
 /**
  * The plugin's visual surface in the Web page.
  *
- * A quiet line in the composer dock says whether anything is waiting, and on
- * hover it opens a small card above itself: which repository, which relation to
- * me (author, reviewer, assignee, mention), the title, and the link GitHub would
- * open. It reads the Host route this bundle registers
- * (`/inbox-bridge/status.json`), so the page needs no CORS, no second port, and
- * no credentials.
+ * It borrows the host's own statistics language instead of inventing one: the
+ * trigger is the same pill the composer already draws for its counters (14px
+ * glyph, 13px tertiary label, 1px/8px padding, radius-sm, hover tint), and the
+ * panel is the same menu surface the host opens from those pills (menu
+ * background, radius-lg, prominent elevation, 16px padding, 12px/18px text).
+ * Tokens are referenced by name, never by literal colour, so the surface follows
+ * whatever theme the shell is in.
  *
- * Layout rules that matter, learned against the real shell:
- * - The dock is a single dense line shared with the host's own counters, so the
- *   chip inherits the host's font metrics and never grows the row.
- * - The card is positioned against the chip's own box (`position: absolute`
- *   inside a wrapper we own), not against the viewport: the shell's panels are
- *   transformed, and `position: fixed` lands in the wrong coordinate space.
- * - Everything inside the card clips: a long key is truncated, never spilled
- *   over the conversation.
+ * Placement uses CSS anchor positioning, exactly as the host's ContextMeter and
+ * stat dialogs do: the pill carries an `anchor-name`, the portaled panel sets
+ * `position-anchor` and hangs off `anchor(top)` with the same 12px window inset
+ * and 8px gap. Where the engine cannot do that yet, the panel falls back to a
+ * measured fixed position against the pill's rect.
  *
- * Nothing here decides anything: the queue file stays the record of truth and
- * the agent still marks events done. The chip renders nothing at all when the
- * route is absent (a composition without a Web host) instead of an empty shell.
+ * It reads the Host route this bundle registers (`/inbox-bridge/status.json`),
+ * so the page needs no CORS, no second port, and no credentials. Nothing here
+ * decides anything: the queue file stays the record of truth and the agent still
+ * marks events done. Nothing renders at all when the route is absent.
  */
 window.__ModuleLoader__.load({
   id: "dsh-inbox-bridge",
@@ -27,7 +26,7 @@ window.__ModuleLoader__.load({
     const React = require("react");
     const h = React.createElement;
     // A portal is the only way to paint above a shell panel that clips its
-    // overflow; without react-dom the card stays inside the slot and accepts
+    // overflow; without react-dom the panel stays inside the slot and accepts
     // the clip.
     let ReactDOM = null;
     try {
@@ -37,7 +36,7 @@ window.__ModuleLoader__.load({
     }
     const canPortal = Boolean(ReactDOM && typeof ReactDOM.createPortal === "function");
 
-    /** One fixed, pointer-transparent layer for the card, created on first use. */
+    /** One fixed, pointer-transparent layer for the panel, created on first use. */
     let layerNode = null;
     function layer() {
       if (typeof document === "undefined") return null;
@@ -47,7 +46,7 @@ window.__ModuleLoader__.load({
       Object.assign(layerNode.style, {
         position: "fixed",
         inset: "0",
-        zIndex: "70",
+        zIndex: "1090",
         pointerEvents: "none",
       });
       document.body.appendChild(layerNode);
@@ -56,9 +55,9 @@ window.__ModuleLoader__.load({
 
     const REFRESH_MS = 20_000;
     const OPEN_DELAY_MS = 120;
-    const CLOSE_DELAY_MS = 220;
-    const CARD_MAX_WIDTH = 380;
+    const CLOSE_DELAY_MS = 200;
     const CARD_ROWS = 5;
+    const FALLBACK_WIDTH = 320;
 
     /**
      * The page cannot write to the Host log, so it reports through a tiny route.
@@ -92,14 +91,7 @@ window.__ModuleLoader__.load({
         quiet: "不替你开轮",
         open: "打开收件箱",
         more: (n) => `还有 ${n} 条`,
-        roles: {
-          author: "作者",
-          reviewer: "评审",
-          assignee: "指派",
-          mention: "提及",
-          ci: "CI",
-          any: "",
-        },
+        roles: { author: "作者", reviewer: "评审", assignee: "指派", mention: "提及", ci: "CI", any: "" },
         ago: { now: "刚刚", minutes: (n) => `${n} 分钟前`, hours: (n) => `${n} 小时前`, days: (n) => `${n} 天前` },
       },
       en: {
@@ -117,32 +109,13 @@ window.__ModuleLoader__.load({
         quiet: "never opens a turn",
         open: "open the inbox",
         more: (n) => `${n} more`,
-        roles: {
-          author: "author",
-          reviewer: "reviewer",
-          assignee: "assignee",
-          mention: "mention",
-          ci: "CI",
-          any: "",
-        },
+        roles: { author: "author", reviewer: "reviewer", assignee: "assignee", mention: "mention", ci: "CI", any: "" },
         ago: { now: "just now", minutes: (n) => `${n}m ago`, hours: (n) => `${n}h ago`, days: (n) => `${n}d ago` },
       },
     };
 
     function repo(repos) {
       return Array.isArray(repos) && repos.length > 0 ? repos[0] : "no repository";
-    }
-
-    function viewportWidth() {
-      if (typeof document !== "undefined" && document.documentElement?.clientWidth) {
-        return document.documentElement.clientWidth;
-      }
-      return typeof window === "undefined" ? 360 : window.innerWidth;
-    }
-
-    function viewportHeight() {
-      if (typeof window !== "undefined" && window.visualViewport?.height) return window.visualViewport.height;
-      return typeof window === "undefined" ? 700 : window.innerHeight;
     }
 
     function locale() {
@@ -164,143 +137,196 @@ window.__ModuleLoader__.load({
       return text.ago.days(Math.round(hours / 24));
     }
 
-    /** The host's own dock line: inherit its size, colour and spacing. */
+    /** A key is not a sentence: when the title is missing, say what the key means. */
+    function fallbackTitle(key) {
+      const raw = String(key ?? "");
+      const bare = raw.includes("#") ? raw.slice(raw.indexOf("#") + 1) : raw;
+      const parts = bare.split(":");
+      const head = parts[0] ?? "";
+      if (head === "pr") return `PR #${parts[1] ?? "?"}${parts[2] ? ` · ${parts[2]}` : ""}`;
+      if (head === "issue") return `Issue #${parts[1] ?? "?"}${parts[2] ? ` · ${parts[2]}` : ""}`;
+      if (head === "run") return `run ${parts[1] ?? "?"}${bare.includes("recovered") ? " · recovered" : ""}`;
+      if (head === "comment") return "comment";
+      if (head === "infra") return `workflow ${parts[1] ?? ""}`.trim();
+      return bare || raw;
+    }
+
+    /**
+     * Host tokens only. The sizes below are the ones the composer's own counter
+     * pills use, so this control sits in the row without being a foreign body.
+     */
     const styles = {
-      wrap: { position: "relative", display: "inline-flex", alignItems: "center", minWidth: 0, maxWidth: "100%" },
-      chip: {
+      wrap: {
+        display: "inline-flex",
+        minWidth: 0,
+        maxWidth: "100%",
+        position: "relative",
+        fontSize: "calc(var(--dsh-content-font-size-secondary, 13px) - 1px)",
+        lineHeight: "calc(20px + var(--dsh-content-font-delta-secondary, 0px))",
+      },
+      pill: {
         display: "inline-flex",
         alignItems: "center",
-        gap: "4px",
+        gap: "6px",
         boxSizing: "border-box",
         maxWidth: "100%",
-        height: "18px",
-        padding: "0 4px",
+        padding: "1px 8px",
         margin: 0,
         border: 0,
-        borderRadius: "4px",
+        borderRadius: "var(--dsw-radius-sm)",
         background: "transparent",
-        color: "inherit",
+        color: "var(--dsw-alias-label-tertiary)",
         font: "inherit",
-        lineHeight: "18px",
-        cursor: "pointer",
+        fontVariantNumeric: "tabular-nums",
+        lineHeight: "inherit",
         whiteSpace: "nowrap",
-        overflow: "hidden",
-      },
-      chipOn: { background: "var(--dsw-alias-bg-hover, rgba(127,127,127,.14))" },
-      dot: (active) => ({
-        width: "5px",
-        height: "5px",
-        borderRadius: "999px",
-        flex: "0 0 auto",
-        background: active ? "var(--dsw-alias-accent-primary, #2f6feb)" : "var(--dsw-alias-border-strong, #9ca3af)",
-        opacity: active ? 1 : 0.6,
-      }),
-      count: { flex: "0 0 auto", opacity: 0.85, fontVariantNumeric: "tabular-nums" },
-      label: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
-      card: (geometry) => ({
-        position: geometry.fixed ? "fixed" : "absolute",
-        bottom: `${geometry.fixed ? geometry.fixedBottom : geometry.bottom}px`,
-        left: `${geometry.fixed ? geometry.fixedLeft : geometry.left}px`,
-        width: `${geometry.width}px`,
-        maxWidth: "calc(100vw - 16px)",
-        maxHeight: `${geometry.maxHeight}px`,
-        zIndex: 60,
-        display: "grid",
-        gridTemplateRows: "auto minmax(0, 1fr) auto",
-        boxSizing: "border-box",
-        padding: "6px",
-        overflow: "hidden",
-        pointerEvents: "auto",
-        borderRadius: "10px",
-        border: "1px solid var(--dsw-alias-border-subtle, rgba(128,128,128,.3))",
-        background: "var(--dsw-alias-bg-raised, Canvas)",
-        boxShadow: "0 12px 28px rgba(0,0,0,.20)",
-        color: "CanvasText",
-        font: "12px/1.45 inherit",
+        cursor: "pointer",
         textAlign: "left",
+      },
+      pillOn: {
+        background: "var(--dsw-alias-interactive-bg-hover)",
+        color: "var(--dsw-alias-label-secondary)",
+      },
+      icon: { width: "14px", height: "14px", flex: "none", display: "block" },
+      label: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" },
+      count: { fontVariantNumeric: "tabular-nums" },
+      sep: { color: "var(--dsw-alias-separator-primary)", margin: "0 6px" },
+      panel: (geometry) => ({
+        position: "fixed",
+        zIndex: 1100,
+        boxSizing: "border-box",
+        width: "max-content",
+        minWidth: `min(${FALLBACK_WIDTH}px, calc(100vw - 24px))`,
+        maxWidth: "min(440px, calc(100vw - 24px))",
+        padding: "16px",
+        border: 0,
+        borderRadius: "var(--dsw-radius-lg)",
+        background: "var(--dsw-specific-menu)",
+        backdropFilter: "var(--dsw-menu-backdrop-filter)",
+        boxShadow: "var(--dsw-elevation-prominent)",
+        fontSize: "12px",
+        lineHeight: "18px",
+        color: "var(--dsw-alias-label-secondary)",
         cursor: "default",
+        margin: 0,
+        maxHeight:
+          geometry?.maxHeight != null
+            ? `${geometry.maxHeight}px`
+            : "calc(100dvh - 12px - max(12px, var(--dsh-frame-overlay-top, 12px)))",
+        overflowX: "hidden",
+        overflowY: "auto",
+        pointerEvents: "auto",
+        // Position comes from the measured chip; the host's anchor() fallback chain is not
+        // something a plugin can reproduce faithfully, and a wrong guess stretches the panel.
+        left: `${geometry?.left ?? 12}px`,
+        bottom: `${geometry?.bottom ?? 12}px`,
+        width: `${geometry?.width ?? FALLBACK_WIDTH}px`,
       }),
-      list: { display: "grid", gap: "1px", minHeight: 0, overflow: "auto", overscrollBehavior: "contain" },
-      head: {
+      title: {
         display: "flex",
-        alignItems: "baseline",
         justifyContent: "space-between",
+        alignItems: "baseline",
+        gap: "16px",
+        marginBottom: "8px",
+        color: "var(--dsw-alias-label-primary)",
+        fontWeight: 500,
+      },
+      titleValue: { fontVariantNumeric: "tabular-nums", flex: "none" },
+      titleLabel: {
+        display: "inline-flex",
+        alignItems: "center",
+        gap: "6px",
+        minWidth: 0,
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap",
+      },
+      rule: { marginBottom: "10px", borderTop: "0.5px solid var(--dsw-alias-border-l2)" },
+      list: { display: "grid", gap: "2px", minWidth: 0 },
+      row: {
+        display: "grid",
+        gridTemplateColumns: "auto minmax(0, 1fr) auto",
+        alignItems: "baseline",
         gap: "8px",
         minWidth: 0,
-        padding: "2px 4px 6px",
-        fontSize: "11px",
-        color: "var(--dsw-alias-text-secondary, #6b7280)",
-        borderBottom: "1px solid var(--dsw-alias-border-subtle, rgba(128,128,128,.18))",
+        padding: "2px 4px",
+        margin: "0 -4px",
+        borderRadius: "var(--dsw-radius-sm)",
       },
-      headLeft: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
-      headRight: { display: "inline-flex", gap: "8px", alignItems: "baseline", flex: "0 0 auto" },
-      open: {
+      rowOn: { background: "var(--dsw-alias-interactive-bg-hover)" },
+      tag: {
+        color: "var(--dsw-alias-label-tertiary)",
+        fontSize: "11px",
+        lineHeight: "18px",
+        whiteSpace: "nowrap",
+        fontVariantNumeric: "tabular-nums",
+      },
+      link: {
+        color: "var(--dsw-alias-label-secondary)",
+        textDecoration: "none",
+        minWidth: 0,
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap",
+        display: "block",
+      },
+      age: {
+        color: "var(--dsw-alias-label-tertiary)",
+        fontSize: "11px",
+        fontVariantNumeric: "tabular-nums",
+        whiteSpace: "nowrap",
+      },
+      more: { padding: "2px 0 0", color: "var(--dsw-alias-label-tertiary)" },
+      emptyLine: {
+        color: "var(--dsw-alias-label-tertiary)",
+        padding: "2px 0",
+      },
+      meta: {
+        display: "grid",
+        gridTemplateColumns: "auto minmax(0, 1fr)",
+        gap: "6px 16px",
+        marginTop: "12px",
+        paddingTop: "10px",
+        borderTop: "0.5px solid var(--dsw-alias-border-l2)",
+        color: "var(--dsw-alias-label-tertiary)",
+        fontSize: "11px",
+        lineHeight: "18px",
+      },
+      metaValue: {
+        color: "var(--dsw-alias-label-secondary)",
+        textAlign: "right",
+        minWidth: 0,
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap",
+      },
+      openLink: {
         color: "inherit",
         textDecoration: "none",
         borderBottom: "1px dotted currentColor",
         whiteSpace: "nowrap",
       },
-      row: {
-        display: "grid",
-        gridTemplateColumns: "auto minmax(0, 1fr) auto",
-        alignItems: "baseline",
-        gap: "6px",
-        minWidth: 0,
-        padding: "4px",
-        borderRadius: "6px",
-        overflow: "hidden",
-      },
-      rowOn: { background: "var(--dsw-alias-bg-hover, rgba(127,127,127,.14))" },
-      tag: {
-        display: "inline-block",
-        maxWidth: "96px",
-        overflow: "hidden",
-        textOverflow: "ellipsis",
-        whiteSpace: "nowrap",
-        padding: "0 4px",
-        borderRadius: "4px",
-        fontSize: "10px",
-        lineHeight: "15px",
-        border: "1px solid var(--dsw-alias-border-subtle, rgba(128,128,128,.28))",
-        color: "var(--dsw-alias-text-secondary, #6b7280)",
-        verticalAlign: "baseline",
-      },
-      title: {
-        display: "block",
-        minWidth: 0,
-        overflow: "hidden",
-        textOverflow: "ellipsis",
-        whiteSpace: "nowrap",
-        color: "inherit",
-        textDecoration: "none",
-      },
-      age: {
-        flex: "0 0 auto",
-        fontSize: "10.5px",
-        color: "var(--dsw-alias-text-secondary, #6b7280)",
-        whiteSpace: "nowrap",
-        fontVariantNumeric: "tabular-nums",
-      },
-      more: { padding: "4px", fontSize: "11px", opacity: 0.7 },
-      meta: {
-        display: "flex",
-        flexWrap: "wrap",
-        gap: "2px 10px",
-        minWidth: 0,
-        padding: "6px 4px 2px",
-        marginTop: "2px",
-        fontSize: "10.5px",
-        color: "var(--dsw-alias-text-secondary, #6b7280)",
-        borderTop: "1px solid var(--dsw-alias-border-subtle, rgba(128,128,128,.18))",
-      },
-      metaItem: { whiteSpace: "nowrap" },
     };
 
-    function identityLine(status, text) {
-      const identity = status.identity ?? {};
-      if (identity.kind === "app") return text.asApp(identity.login ?? "app");
-      if (identity.login) return text.asUser(identity.login);
-      return text.asGh;
+    /** The host draws a 14px glyph beside each counter; match that weight. */
+    function TrayIcon() {
+      return h(
+        "svg",
+        {
+          viewBox: "0 0 14 14",
+          width: 14,
+          height: 14,
+          fill: "none",
+          stroke: "currentColor",
+          strokeWidth: 1.2,
+          strokeLinecap: "round",
+          strokeLinejoin: "round",
+          "aria-hidden": true,
+          style: styles.icon,
+        },
+        h("path", { d: "M1.9 8.2 2.9 3.4a1 1 0 0 1 1-.8h6.2a1 1 0 0 1 1 .8l1 4.8" }),
+        h("path", { d: "M1.9 8.2h2.7l.7 1.4h3.4l.7-1.4h2.7v2.7a1 1 0 0 1-1 1H2.9a1 1 0 0 1-1-1V8.2Z" }),
+      );
     }
 
     function Role({ role, text }) {
@@ -309,25 +335,12 @@ window.__ModuleLoader__.load({
       return h("span", { style: styles.tag }, label);
     }
 
-    /** A key is not a sentence: when the title is missing, say what the key means. */
-    function fallbackTitle(key) {
-      const bare = String(key ?? "").includes("#") ? String(key).slice(String(key).indexOf("#") + 1) : String(key ?? "");
-      const parts = bare.split(":");
-      const head = parts[0] ?? "";
-      if (head === "pr") return `PR #${parts[1] ?? "?"}${parts[2] ? ` · ${parts[2]}` : ""}`;
-      if (head === "issue") return `Issue #${parts[1] ?? "?"}${parts[2] ? ` · ${parts[2]}` : ""}`;
-      if (head === "run") return `run ${parts[1] ?? "?"}${bare.includes("recovered") ? " · recovered" : ""}`;
-      if (head === "comment") return "comment";
-      if (head === "infra") return `workflow ${parts[1] ?? ""}`.trim();
-      return bare || String(key ?? "");
-    }
-
     function Row({ event, text }) {
       const [hover, setHover] = React.useState(false);
       const title = event.title || fallbackTitle(event.key);
       const body = event.url
-        ? h("a", { href: event.url, target: "_blank", rel: "noreferrer", style: styles.title, title }, title)
-        : h("span", { style: styles.title, title }, title);
+        ? h("a", { href: event.url, target: "_blank", rel: "noreferrer", style: styles.link, title }, title)
+        : h("span", { style: styles.link, title }, title);
       return h(
         "div",
         {
@@ -337,7 +350,7 @@ window.__ModuleLoader__.load({
         },
         h(
           "span",
-          { style: { display: "inline-flex", gap: "4px", alignItems: "baseline", minWidth: 0 } },
+          { style: { display: "inline-flex", gap: "6px", alignItems: "baseline", minWidth: 0 } },
           h(Role, { role: event.kind === "ci" ? "ci" : event.role, text }),
           event.repo
             ? h("span", { style: styles.tag, title: event.repo }, event.repo.split("/").pop())
@@ -348,16 +361,62 @@ window.__ModuleLoader__.load({
       );
     }
 
+    function identityLine(status, text) {
+      const identity = status.identity ?? {};
+      if (identity.kind === "app") return text.asApp(identity.login ?? "app");
+      if (identity.login) return text.asUser(identity.login);
+      return text.asGh;
+    }
+
+    function useStatus() {
+      const [state, setState] = React.useState({ status: null, missing: false });
+      React.useEffect(() => {
+        let alive = true;
+        let misses = 0;
+        const load = async () => {
+          try {
+            const response = await fetch("/inbox-bridge/status.json", { cache: "no-store" });
+            if (!response.ok) throw new Error(String(response.status));
+            const status = await response.json();
+            if (!alive) return;
+            misses = 0;
+            setState({ status, missing: false });
+          } catch {
+            if (!alive) return;
+            misses += 1;
+            // One dropped read keeps the last picture; two in a row means the
+            // host route is gone and the surface should step out of the way.
+            if (misses >= 2) setState({ status: null, missing: true });
+          }
+        };
+        void load();
+        const timer = setInterval(load, REFRESH_MS);
+        const onWake = () => {
+          if (document.visibilityState === "visible") void load();
+        };
+        window.addEventListener("focus", onWake);
+        document.addEventListener("visibilitychange", onWake);
+        return () => {
+          alive = false;
+          clearInterval(timer);
+          window.removeEventListener("focus", onWake);
+          document.removeEventListener("visibilitychange", onWake);
+        };
+      }, []);
+      return state;
+    }
+
     function InboxBar() {
       const { status, missing } = useStatus();
+      const text = locale();
       const [open, setOpen] = React.useState(false);
-      const [pinned, setPinned] = React.useState(false);
       const [geometry, setGeometry] = React.useState(null);
+      // A click that closes the panel must survive the pointer still resting on the pill.
+      const dismissed = React.useRef(false);
       const wrap = React.useRef(null);
       const chip = React.useRef(null);
-      const cardRef = React.useRef(null);
+      const panelRef = React.useRef(null);
       const timers = React.useRef({ open: null, close: null });
-      const text = locale();
 
       const clearTimers = () => {
         if (timers.current.open) clearTimeout(timers.current.open);
@@ -367,16 +426,15 @@ window.__ModuleLoader__.load({
 
       React.useEffect(() => clearTimers, []);
 
-      // One diagnostic line per page load: which box we actually live in, what
-      // it clips, and whether a portal would even be possible. Guesswork about
-      // the shell's layout is what made the first two versions wrong.
+      // One diagnostic per mount: where the slot actually sits in the shell.
       React.useEffect(() => {
         const host = wrap.current;
-        if (!host) return;
-        const chipStyle = chip.current ? getComputedStyle(chip.current) : null;
-        const chain = [];
-        let node = host.parentElement;
+        const chipNode = chip.current;
+        if (!host || !chipNode) return;
+        const chipStyle = getComputedStyle(chipNode);
         let clipping = "none";
+        let node = host.parentElement;
+        const chain = [];
         for (let depth = 0; node && depth < 12; depth += 1) {
           const style = getComputedStyle(node);
           const clips = style.overflow !== "visible" || style.overflowY !== "visible";
@@ -391,260 +449,179 @@ window.__ModuleLoader__.load({
           if (clipping === "none" && clips) clipping = node.tagName.toLowerCase();
           node = node.parentElement;
         }
+        const rect = host.getBoundingClientRect();
         report(
           [
-            `slot=${Math.round(host.getBoundingClientRect().width)}x${Math.round(host.getBoundingClientRect().height)}`,
-            `chip=${chipStyle ? chipStyle.fontSize : "?"}`,
+            `slot=${Math.round(rect.width)}x${Math.round(rect.height)}`,
+            `chip=${chipStyle.fontSize}`,
             `clipper=${clipping}`,
             `ancestors=${chain.slice(0, 4).join(">") || "clean"}`,
           ].join(" "),
         );
       }, []);
 
+      // Escape closes; so does a click anywhere outside the pill and the panel.
       React.useEffect(() => {
         if (!open) return undefined;
         const onKey = (event) => {
           if (event.key === "Escape") {
-            setPinned(false);
+            dismissed.current = true;
             setOpen(false);
           }
         };
+        const onPointer = (event) => {
+          const target = event.target;
+          if (wrap.current?.contains(target) || panelRef.current?.contains(target)) return;
+          dismissed.current = true;
+          setOpen(false);
+        };
         window.addEventListener("keydown", onKey);
-        return () => window.removeEventListener("keydown", onKey);
+        document.addEventListener("pointerdown", onPointer, true);
+        return () => {
+          window.removeEventListener("keydown", onKey);
+          document.removeEventListener("pointerdown", onPointer, true);
+        };
       }, [open]);
 
-      /**
-       * Second pass: the shell may scale or transform the page, so the first
-       * estimate can still land the card past the edge. Measure the card itself
-       * and slide it back. One correction is enough; it converges immediately.
-       * Declared before any early return so the hook order never changes.
-       */
-      React.useLayoutEffect(() => {
-        if (!open) return;
-        const anchor = chip.current;
-        const card = cardRef.current;
-        if (!anchor || !card) return;
-        const cardRect = card.getBoundingClientRect();
-        const chipRect = anchor.getBoundingClientRect();
-        const room = viewportWidth();
-        let dx = 0;
-        if (cardRect.right > room - 8) dx = room - 8 - cardRect.right;
-        else if (cardRect.left < 8) dx = 8 - cardRect.left;
-        const targetBottom = Math.max(8, viewportHeight() - chipRect.top + 6);
-        setGeometry((current) => {
-          if (!current) return current;
-          const moveX = Math.abs(dx) > 1;
-          const moveY = current.fixed && Math.abs((current.fixedBottom ?? 0) - targetBottom) > 1;
-          if (!moveX && !moveY) return current;
-          const next = { ...current };
-          if (moveX) {
-            if (current.fixed) next.fixedLeft = current.fixedLeft + dx;
-            else next.left = current.left + dx;
-          }
-          if (moveY) next.fixedBottom = targetBottom;
-          return next;
-        });
-      }, [open, geometry]);
-
-      if (missing || !status) return null;
-
-      const queue = status.queue ?? { pending: 0, delivered: 0, done: 0 };
-      const waiting = (queue.pending ?? 0) + (queue.delivered ?? 0);
-      const active = waiting > 0;
-      const events = status.events ?? [];
-      const lastPoll = (status.polls ?? []).map((poll) => poll.at).filter(Boolean).sort().pop();
-      const summary = active ? text.waiting(waiting) : text.empty;
-
-      /**
-       * The card hangs off the chip: measured against the chip's own rect and
-       * expressed in the wrapper's coordinates, so the shell can transform
-       * anything it likes above us and the card still lands on the chip.
-       */
+      // The panel is measured from the pill: no anchor() guesses, no clipping.
       const measure = () => {
         const host = wrap.current;
         const anchor = chip.current;
         if (!host || !anchor) return null;
-        const hostRect = host.getBoundingClientRect();
-        const chipRect = anchor.getBoundingClientRect();
-        const room = viewportWidth();
-        const height = viewportHeight();
-        const width = Math.max(260, Math.min(CARD_MAX_WIDTH, room - 16));
-        const centered = chipRect.left + chipRect.width / 2 - width / 2;
-        const lowest = room - width - 8;
-        const targetLeft = Math.min(Math.max(8, centered), Math.max(8, lowest));
-        return {
-          fixed: canPortal,
-          left: targetLeft - hostRect.left,
-          bottom: hostRect.height + 6,
-          fixedLeft: targetLeft,
-          fixedBottom: Math.max(8, height - chipRect.top + 6),
-          width,
-          maxHeight: Math.max(120, Math.min(420, Math.min(chipRect.top - 20, height - 80))),
-        };
+        const rect = anchor.getBoundingClientRect();
+        // documentElement.clientWidth can disagree with the visible viewport when the shell
+        // paints inside a scaled frame; trust whichever is smaller so the panel never overflows.
+        const room = Math.min(
+          window.innerWidth || Infinity,
+          document.documentElement?.clientWidth || Infinity,
+        );
+        const width = Math.max(280, Math.min(FALLBACK_WIDTH, room - 24));
+        const left = Math.min(Math.max(12, rect.left), Math.max(12, room - width - 12));
+        // Keep the panel inside the space that actually exists above the chip.
+        const floor = 16 + 8;
+        const maxHeight = Math.max(160, Math.round(rect.top - floor));
+        return { left, bottom: Math.max(12, window.innerHeight - rect.top + 8), width, maxHeight };
       };
 
       const reveal = () => {
         clearTimers();
+        if (dismissed.current) return;
         timers.current.open = setTimeout(() => {
-          const next = measure();
-          if (next) {
-            setGeometry(next);
-            setOpen(true);
-          }
+          setGeometry(measure());
+          setOpen(true);
         }, OPEN_DELAY_MS);
       };
 
       const conceal = () => {
         clearTimers();
-        if (pinned) return;
-        timers.current.close = setTimeout(() => setOpen(false), CLOSE_DELAY_MS);
+        timers.current.close = setTimeout(() => {
+          setOpen(false);
+          // Leaving the pill also clears a deliberate close, so hovering opens again next time.
+          dismissed.current = false;
+        }, CLOSE_DELAY_MS);
       };
 
+      // Hover opens; a click closes it and keeps it closed until the pointer leaves the pill.
       const toggle = () => {
         clearTimers();
-        if (open && pinned) {
-          setPinned(false);
+        if (open) {
+          dismissed.current = true;
           setOpen(false);
           return;
         }
-        const next = measure();
-        if (next) setGeometry(next);
-        setPinned(true);
+        dismissed.current = false;
+        setGeometry(measure());
         setOpen(true);
       };
 
+      // Hooks above, early return below: the hook order must not change.
+      if (missing || !status) return null;
+
+      const queue = status.queue ?? { pending: 0, delivered: 0, done: 0 };
+      const waiting = (queue.pending ?? 0) + (queue.delivered ?? 0);
+      const events = status.events ?? [];
+      const lastPoll = (status.polls ?? []).map((poll) => poll.at).filter(Boolean).sort().pop();
       const shown = events.slice(0, CARD_ROWS);
       const hidden = Math.max(0, events.length - shown.length);
-      const card =
-        open && geometry
-          ? h(
+
+      const panel = open
+        ? h(
+            "div",
+            {
+              ref: panelRef,
+              role: "dialog",
+              "aria-label": status.label ?? text.label,
+              style: styles.panel(geometry),
+              onMouseEnter: () => clearTimers(),
+              onMouseLeave: conceal,
+            },
+            h(
               "div",
-              {
-                ref: cardRef,
-                role: "dialog",
-                "aria-label": text.label,
-                style: styles.card(geometry),
-                onMouseEnter: () => clearTimers(),
-                onMouseLeave: conceal,
-              },
+              { style: styles.title },
+              h("span", { style: styles.titleLabel }, h(TrayIcon), status.label ?? text.label),
+              h("span", { style: styles.titleValue }, waiting > 0 ? text.waiting(waiting) : text.empty),
+            ),
+            h("div", { style: styles.rule }),
+            waiting > 0
+              ? h(
+                  "div",
+                  { style: styles.list },
+                  shown.map((event) => h(Row, { key: event.key, event, text })),
+                  hidden > 0 ? h("div", { style: styles.more }, text.more(hidden)) : null,
+                )
+              : h("div", { style: styles.emptyLine }, text.empty),
+            h(
+              "div",
+              { style: styles.meta },
+              h("span", null, text.watching(status.repos)),
+              h("span", { style: styles.metaValue }, (status.repos ?? [])[0] ?? ""),
+              h("span", null, identityLine(status, text)),
+              h("span", { style: styles.metaValue }, lastPoll ? text.synced(ago(lastPoll, text)) : text.never),
+              h("span", null, status.sweep ? text.sweep : text.clear),
               h(
-                "div",
-                { style: styles.head },
-                h("span", { style: styles.headLeft }, active ? text.waiting(waiting) : text.empty),
+                "span",
+                { style: styles.metaValue },
                 h(
-                  "span",
-                  { style: styles.headRight },
-                  h("span", null, lastPoll ? text.synced(ago(lastPoll, text)) : text.never),
-                  h(
-                    "a",
-                    {
-                      href: "https://github.com/notifications",
-                      target: "_blank",
-                      rel: "noreferrer",
-                      style: styles.open,
-                    },
-                    text.open,
-                  ),
+                  "a",
+                  { href: "https://github.com/notifications", target: "_blank", rel: "noreferrer", style: styles.openLink },
+                  text.open,
                 ),
               ),
-              h(
-                "div",
-                { style: styles.list },
-                shown.map((event) => h(Row, { key: event.key, event, text })),
-                hidden > 0 ? h("div", { style: styles.more }, text.more(hidden)) : null,
-              ),
-              h(
-                "div",
-                { style: styles.meta },
-                h("span", { style: styles.metaItem }, identityLine(status, text)),
-                h("span", { style: styles.metaItem }, text.watching(status.repos)),
-                h("span", { style: styles.metaItem }, status.sweep ? text.sweep : text.clear),
-                h("span", { style: styles.metaItem }, text.quiet),
-              ),
-            )
-          : null;
-
-      const floating = card && canPortal ? ReactDOM.createPortal(card, layer()) : card;
+            ),
+          )
+        : null;
 
       return h(
-        "div",
-        {
-          ref: wrap,
-          style: styles.wrap,
-          onMouseEnter: reveal,
-          onMouseLeave: conceal,
-        },
+        "span",
+        { ref: wrap, style: styles.wrap, onMouseEnter: reveal, onMouseLeave: conceal },
         h(
           "button",
           {
             ref: chip,
             type: "button",
-            onClick: toggle,
-            style: { ...styles.chip, ...(open ? styles.chipOn : {}) },
-            title: `${text.label} · ${summary}${lastPoll ? ` · ${text.synced(ago(lastPoll, text))}` : ""}`,
+            "aria-haspopup": "dialog",
             "aria-expanded": open,
-            "aria-label": `${text.label} ${summary}`,
+            "aria-label": `${text.label} · ${waiting > 0 ? text.waiting(waiting) : text.empty}`,
+            onClick: toggle,
+            onFocus: reveal,
+            onBlur: conceal,
+            style: { ...styles.pill, ...(open ? styles.pillOn : {}) },
           },
-          h("span", { style: styles.dot(active) }),
+          h(TrayIcon),
           h("span", { style: styles.label }, text.label),
-          active ? h("span", { style: styles.count }, `· ${waiting}`) : null,
+          waiting > 0 ? h("span", { style: styles.sep }, "·") : null,
+          waiting > 0 ? h("span", { style: styles.count }, String(waiting)) : null,
         ),
-        floating,
+        panel ? (canPortal ? ReactDOM.createPortal(panel, layer()) : panel) : null,
       );
     }
 
-    function useStatus() {
-      const [status, setStatus] = React.useState(null);
-      const [missing, setMissing] = React.useState(false);
-      React.useEffect(() => {
-        let alive = true;
-        const load = async () => {
-          try {
-            const response = await fetch("/inbox-bridge/status.json", { cache: "no-store" });
-            if (!response.ok) throw new Error(String(response.status));
-            const next = await response.json();
-            if (!alive) return;
-            setStatus(next);
-            setMissing(false);
-          } catch {
-            // A composition without the Host route, or a page that cannot reach
-            // it: show nothing rather than an empty shell that never fills.
-            if (alive) setMissing(true);
-          }
-        };
-        void load();
-        const timer = setInterval(() => {
-          if (typeof document === "undefined" || document.visibilityState === "visible") void load();
-        }, REFRESH_MS);
-        const onVisible = () => {
-          if (typeof document === "undefined" || document.visibilityState === "visible") void load();
-        };
-        window.addEventListener("focus", onVisible);
-        document.addEventListener("visibilitychange", onVisible);
-        return () => {
-          alive = false;
-          clearInterval(timer);
-          window.removeEventListener("focus", onVisible);
-          document.removeEventListener("visibilitychange", onVisible);
-        };
-      }, []);
-      return { status, missing };
+    function apply(ctx) {
+      ctx.slots.inject("conversation.composer.dock", () =>
+        ctx.slots.register({ name: "conversation.composer.dock", id: "inbox-bridge-status", order: 30 }, InboxBar),
+      );
     }
 
-    return {
-      inject: ["slots"],
-      apply(ctx) {
-        ctx.slots.inject("conversation.composer.dock", () =>
-          ctx.slots.register(
-            {
-              name: "conversation.composer.dock",
-              id: "inbox-bridge-status",
-              order: 40,
-            },
-            InboxBar,
-          ),
-        );
-      },
-    };
+    return { apply };
   },
 });
