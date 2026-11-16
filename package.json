@@ -1,0 +1,40 @@
+{
+  "name": "dsh-inbox-bridge",
+  "version": "1.4.0",
+  "description": "Poll any external source (CI, issues, mail, any command) and inject new events into the next DeepSeek Harness agent step, with delivered/handled bookkeeping, resurfacing and auto-close.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "github",
+    "inbox",
+    "ci"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "scripts/*.mjs",
+    "README.md",
+    "icon.svg",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test index.test.mjs scripts/github-inbox.test.mjs scripts/inbox-bridge.test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

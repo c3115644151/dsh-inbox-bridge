@@ -1,0 +1,4 @@
+{
+  "title": "Inbox bridge",
+  "description": "Inject new events from any external source (CI, issues, mail, command output) into the next conversation step."
+}

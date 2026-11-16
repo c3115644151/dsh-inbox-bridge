@@ -1,0 +1,8 @@
+- insert:
+    - id: inbox-bridge
+      name: dsh-inbox-bridge
+      config:
+        label: 外部收件箱
+        intervalMs: 120000
+        timeoutMs: 45000
+        maxEvents: 6
