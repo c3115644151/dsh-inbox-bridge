@@ -1,0 +1,162 @@
+[中文](README.md)
+
+# dsh-inbox-bridge
+
+Turns external events into one notice at the start of the next conversation turn.
+
+A DeepSeek Harness plugin: it polls an external source (GitHub by default) on an interval, injects new events at the start of the agent's next turn, and keeps `pending` / `delivered` / `done` state so the same event is not pushed over and over. It was extracted from the [Noema](https://github.com/Noema-Harness/noema-agent) workspace; nothing in it is Noema-specific.
+
+- Repository: <https://github.com/c3115644151/dsh-inbox-bridge>
+- Version: 1.5.1, MIT
+- Environment: Node.js >= 20; the plugin starts with the DSH process
+
+## What it solves
+
+Dumping a raw feed into a conversation either floods it or gets ignored. The plugin keeps three states per event:
+
+| State | Meaning | Comes back |
+| --- | --- | --- |
+| `pending` | fetched, not delivered yet | next idle turn |
+| `delivered` | delivered once, nobody handled it | after `resurfaceMs` (6 hours by default) |
+| `done` | handled, or superseded | never |
+
+On top of that:
+
+- **Turn-boundary delivery** — events are injected only while the agent is idle, so a notice appears at the start of the next real turn instead of interrupting a tool loop. Events that arrive mid-run are held and delivered when the run goes idle.
+- **Bounded noise** — at most `maxEvents` events per notice; the rest stay visible in the CLI.
+- **Recovery closes what it supersedes** — a later successful run of the same workflow and branch auto-closes the older failure.
+- **Infrastructure failures are reported once** — `startup_failure` (a runner that never started) is not fixable by a code change, so it is marked `done` right after delivery.
+- **A failing ack cannot loop** — delivered keys are remembered in-process, so a broken bookkeeping command degrades to a single notice instead of one every interval.
+
+## Install
+
+Pick one of three ways. Restart DSH afterwards so the new plugin is loaded.
+
+**1. DSH plugin market**
+
+Search for `dsh-inbox-bridge` in the DSH plugin market. Add `https://c3115644151.github.io/dsh-inbox-bridge/index.json` to the plugin market indexes in DSH settings, then install this plugin from the list. It installs from a pinned commit, so no npm account is needed.
+
+**2. Local directory**
+
+```powershell
+dsh plugin add C:\path\to\dsh-inbox-bridge
+```
+
+**3. npm package** (available after the npm release)
+
+```powershell
+npm i -g dsh-inbox-bridge
+dsh plugin add dsh-inbox-bridge
+```
+
+After install, the plugin entry lives in the `inbox-bridge` row of `cordis.patch.yml`. Restart DSH after changing the plugin's code or config.
+
+## Prerequisites
+
+The default source is GitHub, read through the `gh` CLI:
+
+```powershell
+gh auth login
+gh auth status
+```
+
+The plugin contacts nothing except GitHub (via `gh`), sends no data to third parties, and stores state locally under `.work/`.
+
+## Configuration
+
+Configuration goes under the `inbox-bridge` row of `cordis.patch.yml`, for example:
+
+```yaml
+- insert:
+    - id: inbox-bridge
+      name: dsh-inbox-bridge
+      config:
+        label: 外部收件箱
+        intervalMs: 45000
+        wake: first
+```
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `label` | `外部收件箱` | notice title |
+| `cwd` | the DSH process cwd | workspace the state belongs to |
+| `repo` | inferred from the `origin` remote | `owner/name` to watch; can also be set with the `INBOX_REPO` environment variable |
+| `intervalMs` | `45000` | poll interval |
+| `timeoutMs` | `45000` | per-command timeout |
+| `maxEvents` | `6` | events listed per notice |
+| `resurfaceMs` | `21600000` (6 h) | when a `delivered` event comes back |
+| `offlineReminderMs` | `43200000` (12 h) | minimum gap between "source unavailable" reminders, only when no repository is being watched |
+| `injectWhileRunning` | `false` | inject mid-turn (interrupts tool loops) |
+| `wake` | `first` | `first` uses followup to start a turn on one idle agent; `all` wakes every idle agent; `off` only injects and waits for the next turn |
+| `ackHint` | `ack --done -- <key>` | how the notice tells the agent to mark an event done |
+| `poll` / `ack` | the bundled CLI | `{ command, args }` for any custom source |
+
+The `poll` command only has to print one JSON line to stdout: `{ "events": [...], "skipped": null }`. The `ack` command receives event keys through the `INBOX_BRIDGE_KEYS` environment variable and accepts a `--done` flag. Implement those two commands and any source works.
+
+## Usage
+
+The CLI shares state with the plugin. This package only ships a `test` script; if a project wires the CLI up as `npm run inbox` / `npm run inbox:ack`, those are equivalent to the commands below:
+
+```powershell
+node scripts/inbox-bridge.mjs list                  # three states, human readable
+node scripts/inbox-bridge.mjs list --json           # machine readable
+node scripts/inbox-bridge.mjs poll                  # what the plugin runs
+node scripts/inbox-bridge.mjs ack --done -- <key>   # handled: stop reminding
+node scripts/inbox-bridge.mjs ack -- <key>          # seen: remind again in 6 hours
+node scripts/inbox-bridge.mjs ack --all-delivered --done
+```
+
+When invoked through an npm script, `--done` must sit after `--`:
+
+```powershell
+npm run inbox:ack -- --done -- <key>
+```
+
+npm keeps the `--done` before the separator for itself, so the script never receives it and the event is only marked `delivered`; the CLI says so on stderr when that happens.
+
+State lives in `.work/inbox-bridge/state.json`; the append-only log is `.work/inbox-bridge/plugin.log`.
+
+## How it works
+
+1. Every `intervalMs`, the plugin runs the `poll` command and takes the events that still deserve attention.
+2. Only idle agents are targeted: idle ones receive the notice immediately, running ones are held until `agent/status` becomes `idle`.
+3. `wake` picks the delivery method: `first` uses `followup` (starts a turn) on the first idle agent and `inject` on the rest; `all` uses followup for every idle agent; `off` only injects and waits for the next turn.
+4. A successful delivery acks `delivered`; `kind: infra` events are also acked `done`.
+5. On later polls, `delivered` events older than `resurfaceMs` return to `pending` and are reminded again; `done` never returns.
+6. When a newer run succeeds, older failures of the same workflow and branch are closed by the `recovered` event.
+
+A notice is a `source.kind = inbox-bridge` message carrying the event keys and the ack command. It means "there is new external input", not "the user asked something".
+
+## Known limitations
+
+- **GitHub read state is not synced** — the plugin only changes local state. It does not mark GitHub notifications as read, and reading them on GitHub does not mark them `done`.
+- **One repository per workspace** — `repo` / `INBOX_REPO` / the git remote pick a single repository, and state is stored per workspace under `.work/`. For several repositories, use several workspaces or a custom `poll`.
+- **GitHub API rate limits** — each poll calls at least 3 `gh` endpoints; when rate-limited, that poll is skipped and logged. A larger `intervalMs` lowers the rate.
+- **Polling only runs while DSH runs** — nothing is pushed while DSH is stopped; after a restart, the next poll picks up whatever the source still keeps.
+- **The notice body is Chinese** — `label` changes the title, but the built-in guidance text is fixed Chinese.
+
+### Upgrade note (1.5.0 to 1.5.1)
+
+The 1.5.0 wake (`followup`) path delivered a stripped-down message object. DSH journaled it without `role`, and the session could no longer be opened. 1.5.1 passes the whole message object on both `followup` and `inject`, and `index.test.mjs` pins both paths. If you ran 1.5.0, upgrade first; a session already damaged that way needs a separate repair (the journal is append-only, so rolling the version back does not fix it).
+
+## Development
+
+```powershell
+npm test
+# same as
+node --test index.test.mjs scripts/github-inbox.test.mjs scripts/inbox-bridge.test.mjs
+```
+
+The 41 tests cover the pure logic: state transitions (never backwards, a repeated delivery moves the timestamp forward), event classification, the resurface window, recovery/auto-close, the delivery guard, repo detection and notice formatting.
+
+| File | Responsibility |
+| --- | --- |
+| `index.js` | DSH plugin: poll scheduling, turn-boundary delivery, wake, logging |
+| `scripts/inbox-bridge.mjs` | three-state CLI: `poll` / `list` / `ack` |
+| `scripts/github-inbox.mjs` | default poller: main-branch CI, open PRs, comments and issues |
+| `cordis.patch.yml` | bundle patch: plugin id and default config |
+| `locale/*.json` | plugin market title and description |
+
+## License
+
+MIT, see [LICENSE](LICENSE).

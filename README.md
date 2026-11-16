@@ -1,99 +1,162 @@
+[English](README.en.md)
+
 # dsh-inbox-bridge
 
-A [DeepSeek Harness](https://github.com/Noema-Harness) plugin that puts an external inbox in front of an agent: it polls a source on an interval, injects new events as a notice at the start of the agent's next turn, and keeps the delivered/handled bookkeeping that stops the same event from interrupting every turn.
+把外部事件变成下一次对话回合开头的一条通知。
 
-It was extracted from the [Noema](https://github.com/Noema-Harness/noema-agent) workspace, where it keeps CI failures, PR state and review requests in front of a long-running agent. Nothing in it is Noema-specific.
+DeepSeek Harness 插件：按固定间隔轮询一个外部来源（默认 GitHub），把新事件注入智能体的下一回合开头，并维护 `pending` / `delivered` / `done` 三态，使同一条事件不会被反复推送。它从 [Noema](https://github.com/Noema-Harness/noema-agent) 工作区抽出，本身不依赖 Noema。
 
-## Why not just dump a feed into the chat
+- 仓库：<https://github.com/c3115644151/dsh-inbox-bridge>
+- 版本：1.5.1，MIT
+- 环境：Node.js ≥ 20；插件跟随 DSH 进程启动
 
-A raw feed either floods the conversation or is ignored. This plugin keeps three states per event:
+## 解决什么问题
 
-| state | meaning | comes back |
+把原始 feed 直接倒进对话，要么刷屏，要么被忽略。插件给每条事件三个状态：
+
+| 状态 | 含义 | 何时回来 |
 | --- | --- | --- |
-| `pending` | fetched, never delivered | next idle turn |
-| `delivered` | injected once, nobody handled it | after `resurfaceMs` (default 6 h) |
-| `done` | handled, or superseded | never |
+| `pending` | 已抓取，尚未投递 | 下一个空闲回合 |
+| `delivered` | 投递过一次，还没有人处理 | `resurfaceMs` 之后（默认 6 小时） |
+| `done` | 已处理，或被更新的状态取代 | 不再回来 |
 
-On top of that:
+在此之上：
 
-- **Turn-boundary delivery** — events are injected only while the agent is idle, so a notice appears at the start of the next real turn instead of interrupting a tool loop.
-- **Bounded noise** — at most `maxEvents` per notice; one reminder at a time.
-- **Recovery closes the failure it supersedes** — a later successful CI run auto-closes the older failure of the same workflow.
-- **Infrastructure failures never resurface** — a runner that never started cannot be fixed by the agent, so it is reported once.
-- **A failing ack cannot loop** — the plugin remembers what it delivered in this process, so a broken bookkeeping command degrades to a single notice instead of one every interval.
+- **回合边界投递**：只在智能体空闲时注入，通知出现在下一回合开头，不会打断正在运行的工具循环；运行中到来的事件先挂起，等空闲再投递。
+- **有上限的噪音**：每条通知最多列 `maxEvents` 条事件，多出来的只在 CLI 里查看。
+- **恢复自动收口**：同一 workflow + 分支的更新运行成功后，旧失败自动标记为 `done`。
+- **基础设施失败只提醒一次**：`startup_failure`（runner 根本没启动）不是改代码能修的，投递后直接标记 `done`。
+- **ack 失败不会成环**：进程内记住已投递的 key，记账命令坏掉时最多退化成一条通知，而不是每个轮询周期都来一遍。
 
-## Install
+## 安装
+
+三种方式任选其一。装好后重启 DSH，新插件才会被加载。
+
+**1. DSH 插件市场**
+
+在 DSH 插件市场里搜索 `dsh-inbox-bridge`。把索引地址 `https://c3115644151.github.io/dsh-inbox-bridge/index.json` 加进 DSH 设置的插件市场索引列表，即可在列表里看到并一键安装（从固定 commit 安装，不依赖 npm 账号）。
+
+**2. 本地目录**
 
 ```powershell
 dsh plugin add C:\path\to\dsh-inbox-bridge
 ```
 
-or publish it as a bundle and install it by package name. After changing the plugin's own code, restart DSH so the new generation is loaded.
-
-## Sources
-
-The default source is GitHub: CI runs on the main branch, open PR check status, and review requests. It shells out to [the `gh` CLI](https://cli.github.com/), so `gh auth status` must already succeed.
-
-The watched repository is, in order: `--repo owner/name`, `INBOX_REPO`, then the `origin` remote of the current directory.
-
-Any other source works too: the plugin only requires that the `poll` command prints a JSON line with an `events` array (or `skipped`), and that the `ack` command accepts event keys and a status. Point `poll`/`ack` at your own script in `config`.
-
-## CLI
-
-The CLI ships inside the package, so it always matches the plugin:
+**3. npm 包**（npm 发布后可用）
 
 ```powershell
-node scripts/inbox-bridge.mjs list                     # three states, human readable
-node scripts/inbox-bridge.mjs list --json              # machine readable
-node scripts/inbox-bridge.mjs poll                     # what the plugin runs
-node scripts/inbox-bridge.mjs ack --done -- <key>      # handled: stop reminding
-node scripts/inbox-bridge.mjs ack -- <key>             # seen: remind again in 6 h
+npm i -g dsh-inbox-bridge
+dsh plugin add dsh-inbox-bridge
+```
+
+安装后插件条目会出现在 `cordis.patch.yml` 的 `inbox-bridge` 行；改代码或改配置后都需要重启 DSH。
+
+## 前置条件
+
+默认来源是 GitHub，通过 `gh` CLI 只读访问：
+
+```powershell
+gh auth login
+gh auth status
+```
+
+除 GitHub（经 `gh`）外不访问网络，不向第三方发送数据，状态只写本地 `.work/` 目录。
+
+## 配置
+
+配置写在 `cordis.patch.yml` 的 `inbox-bridge` 行下，例如：
+
+```yaml
+- insert:
+    - id: inbox-bridge
+      name: dsh-inbox-bridge
+      config:
+        label: 外部收件箱
+        intervalMs: 45000
+        wake: first
+```
+
+| 键 | 默认值 | 含义 |
+| --- | --- | --- |
+| `label` | `外部收件箱` | 通知标题 |
+| `cwd` | DSH 进程工作目录 | 状态文件所属的工作区 |
+| `repo` | 从 `origin` 远程推断 | 监听的 `owner/name`；也可用 `INBOX_REPO` 环境变量指定 |
+| `intervalMs` | `45000` | 轮询间隔 |
+| `timeoutMs` | `45000` | 单次命令超时 |
+| `maxEvents` | `6` | 每条通知列出的事件数 |
+| `resurfaceMs` | `21600000`（6 小时） | `delivered` 事件再次提醒的间隔 |
+| `offlineReminderMs` | `43200000`（12 小时） | `poll` 返回 `skipped` 时的提醒最小间隔（仅在没有可监听仓库时） |
+| `injectWhileRunning` | `false` | 允许在运行中注入（会打断工具循环） |
+| `wake` | `first` | `first` 用 followup 唤醒一个空闲智能体开一轮；`all` 唤醒所有空闲智能体；`off` 只注入、等下一回合 |
+| `ackHint` | `ack --done -- <key>` | 通知里告诉智能体如何标记完成 |
+| `poll` / `ack` | 内置 CLI | `{ command, args }`，可指向任意来源脚本 |
+
+`poll` 命令只需向 stdout 打一行 JSON：`{ "events": [...], "skipped": null }`；`ack` 命令从 `INBOX_BRIDGE_KEYS` 环境变量接收事件 key，并接受 `--done` 标志。只实现这两个命令，就能接非 GitHub 的来源。
+
+## 用法
+
+CLI 与插件共用同一份状态。本包只带 `test` 脚本；如果项目把 CLI 接成 `npm run inbox` / `npm run inbox:ack`，它们与下面的命令等价：
+
+```powershell
+node scripts/inbox-bridge.mjs list                  # 三态列表，人可读
+node scripts/inbox-bridge.mjs list --json           # 机器可读
+node scripts/inbox-bridge.mjs poll                  # 插件实际运行的命令
+node scripts/inbox-bridge.mjs ack --done -- <key>   # 已处理：不再提醒
+node scripts/inbox-bridge.mjs ack -- <key>          # 只标 delivered：6 小时后再说
 node scripts/inbox-bridge.mjs ack --all-delivered --done
 ```
 
-`--done` must sit after `--` when invoked through `npm run`:
+通过 npm 脚本调用时，`--done` 必须放在 `--` 之后：
 
 ```powershell
 npm run inbox:ack -- --done -- <key>
 ```
 
-npm keeps the `--done` before the separator for itself, so `npm run inbox:ack --done -- <key>` silently marks the event `delivered` only — the CLI says so on stderr when that happens.
+npm 会把 `--` 之前的 `--done` 当成自己的参数，脚本收不到它，于是只标了 `delivered`；CLI 检测到这种情况会在 stderr 明确说明。
 
-State lives in `.work/inbox-bridge/state.json` under the working directory; the append-only log is `.work/inbox-bridge/plugin.log`.
+状态文件：`.work/inbox-bridge/state.json`；日志：`.work/inbox-bridge/plugin.log`（只追加）。
 
-## Config
+## 工作原理
 
-| key | default | meaning |
-| --- | --- | --- |
-| `label` | `外部收件箱` | how the notice is titled |
-| `cwd` | the DSH process cwd | workspace the state belongs to |
-| `intervalMs` | `45000` | poll interval |
-| `timeoutMs` | `45000` | per-command timeout |
-| `maxEvents` | `6` | events listed per notice |
-| `resurfaceMs` | `21600000` (6 h) | when a delivered event comes back |
-| `offlineReminderMs` | `43200000` (12 h) | how often to say the source is unreachable |
-| `injectWhileRunning` | `false` | inject mid-turn (interrupts tool loops) |
-| `wake` | `first` | `followup` one idle agent so a notice starts a turn; `all` every idle agent, `off` inject only |
-| `poll` / `ack` | the bundled CLI | `{ command, args }` for any custom source |
+1. 插件每隔 `intervalMs` 运行一次 `poll` 命令，取出仍值得提醒的事件。
+2. 只看空闲智能体：空闲的立即投递，运行中的先挂起，等 `agent/status` 变为 `idle` 再试。
+3. `wake` 决定投递方式：`first` 对第一个空闲智能体用 `followup`（开一轮），其余用 `inject`（等下一回合）；`all` 全部 followup；`off` 全部 inject。
+4. 投递成功即 ack `delivered`；`kind: infra` 的事件同时 ack `done`。
+5. 后续轮询中，`delivered` 超过 `resurfaceMs` 的回到 `pending` 再次提醒；`done` 永不回来。
+6. 更新运行成功后，同 workflow + 分支的旧失败由 `recovered` 事件自动收口。
 
-## A notice must be a whole message
+通知是 `source.kind = inbox-bridge` 的 notice 消息，正文带事件 key 与 ack 命令；它只表示“外部有新事件”，不是用户提问。
 
-DSH journals whatever object the bridge hands to `agent.inject` / `agent.followup`, so both paths must receive the object `buildMessage` returns — `id`, `role` and `source` included. Delivering a stripped `{ content, source }` writes a `user/message` event with no `role`, and the session can never be opened again:
+## 已知限制
 
-```
-stored session "session-…" is corrupt: session event at seq 123 message must have role "user"
-```
+- **GitHub 未读状态不联动**：插件只改本地三态，不会把 GitHub 通知标为已读；你在 GitHub 上读了也不会自动变成 `done`。
+- **单仓库 scoping**：一个工作区只监听一个仓库（`repo` / `INBOX_REPO` / git remote 三选一），状态也按工作区存放在 `.work/`。要同时看多个仓库，就开多个工作区，或自定义 `poll`。
+- **GitHub API 限流**：每次轮询至少调 3 个 `gh` 接口，被限流时该轮 skipped 并写日志；提高 `intervalMs` 可降低频率。
+- **只在 DSH 运行时轮询**：DSH 退出期间不推送，重启后由下一次轮询按来源的保留窗口补上。
+- **通知正文是中文**：`label` 可改标题，内置提示语固定中文。
 
-Version 1.5.0 did exactly that on the `followup` path (the wake-up turn); 1.5.1 passes the whole message. The log is append-only, so a session damaged this way needs a repair pass over `session.v4.jsonl.zstd`: decompress every zstd frame, add the missing `role` to the offending rows, re-compress. `deliver()` in `index.js` is the one place that picks `followup`/`inject`; `index.test.mjs` pins that both paths get the message itself.
+### 升级注意（1.5.0 → 1.5.1）
 
-## Tests
+1.5.0 的 wake（`followup`）路径投递了裁剪过的消息对象，DSH 记下后缺少 `role`，会话无法再次打开；1.5.1 对 `followup` 和 `inject` 都投递完整消息对象，`index.test.mjs` 覆盖了这两条路径。若你用过 1.5.0，先升级；已被写坏的会话需要单独修复（日志只追加，回滚版本不能修复它）。
+
+## 开发
 
 ```powershell
 npm test
+# 等价于
+node --test index.test.mjs scripts/github-inbox.test.mjs scripts/inbox-bridge.test.mjs
 ```
 
-Covers the pure parts: state transitions (never backwards, repeat delivery moves the timestamp forward), event classification, resurface windows, recovery/auto-close, the delivery guard, repo detection and notice formatting.
+41 个用例覆盖纯逻辑：状态迁移（不倒退、重复投递推进时间戳）、事件分类、resurface 窗口、恢复/自动收口、投递守卫、仓库识别与通知格式化。
 
-## License
+| 文件 | 职责 |
+| --- | --- |
+| `index.js` | DSH 插件：轮询调度、回合边界投递、wake、日志 |
+| `scripts/inbox-bridge.mjs` | 三态 CLI：`poll` / `list` / `ack` |
+| `scripts/github-inbox.mjs` | 默认 poller：main 分支 CI、开放 PR、评论与 issue |
+| `cordis.patch.yml` | bundle patch：插件 id 与默认 config |
+| `locale/*.json` | 插件市场标题与描述 |
 
-MIT
+## 许可证
+
+MIT，见 [LICENSE](LICENSE)。

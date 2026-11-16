@@ -1,4 +1,7 @@
 {
-  "title": "外部收件箱",
-  "description": "把任意外部来源的新事件（CI、issue、邮件、脚本输出）注入下一次对话步骤。"
+  "meta": {
+    "title": "外部收件箱桥",
+    "description": "轮询任意外部来源（GitHub 的 CI、issue、PR，邮件，或一条本地命令），把新事件交给下一次对话步骤。条目有 pending / delivered / done 三个状态，同一条事件不会被无限重复提醒；新事件还可以唤醒一个空闲会话，不用你每次来问。",
+    "detail": "docs/DETAIL.zh.md"
+  }
 }

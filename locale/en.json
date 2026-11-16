@@ -1,4 +1,7 @@
 {
-  "title": "Inbox bridge",
-  "description": "Inject new events from any external source (CI, issues, mail, command output) into the next conversation step."
+  "meta": {
+    "title": "Inbox bridge",
+    "description": "Poll any external source (GitHub CI, issues, pull requests, mail, a local command) and hand new events to the next conversation step. Items have three states: pending, delivered and done, so the same event is not repeated forever. New events can wake one idle session so you do not have to ask again.",
+    "detail": "docs/DETAIL.md"
+  }
 }
