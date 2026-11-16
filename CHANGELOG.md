@@ -2,6 +2,9 @@
 
 Format: keep a short entry per released version. Dates are UTC.
 
+## 2.11.2
+
+- 浮层底部改成三行标签（读取 / 订阅 / 上次同步）加一行动作。之前仓库名被印了两遍——一次作为说明、一次作为值，看起来像重复。会话的仓库不在订阅里时，订阅那行标出订阅的是什么、并且不再显示一个没有意义的上次同步。
 ## 2.11.1
 
 - 胶囊回到它原来的位置：`conversation.composer.dock`（输入框下方那行状态，和「N 轮 · N tok/s」同一行）。这个槽位声明为 `scope: session`，注册时通过 `inject: (sessionId) => …` 就能拿到会话，所以按会话显示不必换位置。

@@ -101,6 +101,10 @@ window.__ModuleLoader__.load({
         sweep: "清理收件箱",
         quiet: "不替你开轮",
         unwatched: (repo) => `此会话的 ${repo} 不在订阅列表`,
+        scopeRead: "读取",
+        scopeWatch: "订阅",
+        scopeSync: "上次同步",
+        none: "未配置仓库",
         open: "打开收件箱",
         more: (n) => `还有 ${n} 条`,
         roles: { author: "作者", reviewer: "评审", assignee: "指派", mention: "提及", ci: "CI", any: "" },
@@ -120,6 +124,10 @@ window.__ModuleLoader__.load({
         sweep: "sweeps the inbox",
         quiet: "never opens a turn",
         unwatched: (repo) => `${repo} is not watched by this instance`,
+        scopeRead: "reads as",
+        scopeWatch: "watching",
+        scopeSync: "last sync",
+        none: "no repositories configured",
         open: "open the inbox",
         more: (n) => `${n} more`,
         roles: { author: "author", reviewer: "reviewer", assignee: "assignee", mention: "mention", ci: "CI", any: "" },
@@ -296,14 +304,31 @@ window.__ModuleLoader__.load({
       },
       meta: {
         display: "grid",
-        gridTemplateColumns: "auto minmax(0, 1fr)",
-        gap: "6px 16px",
+        gap: "2px",
         marginTop: "12px",
         paddingTop: "10px",
         borderTop: "0.5px solid var(--dsw-alias-border-l2)",
         color: "var(--dsw-alias-label-tertiary)",
         fontSize: "11px",
         lineHeight: "18px",
+      },
+      metaRow: {
+        display: "flex",
+        alignItems: "baseline",
+        justifyContent: "space-between",
+        gap: "12px",
+        minWidth: 0,
+      },
+      metaFoot: {
+        display: "flex",
+        alignItems: "baseline",
+        gap: "12px",
+        marginTop: "6px",
+        paddingTop: "8px",
+        borderTop: "0.5px solid var(--dsw-alias-border-l2)",
+      },
+      warnValue: {
+        color: "var(--dsw-alias-label-warning, var(--dsw-alias-label-secondary))",
       },
       metaValue: {
         color: "var(--dsw-alias-label-secondary)",
@@ -575,6 +600,14 @@ window.__ModuleLoader__.load({
       const watchedRepos = status.watched ?? status.repos ?? [];
       const unwatched =
         sessionRepo && watchedRepos.length > 0 && !watchedRepos.includes(sessionRepo) ? sessionRepo : null;
+      const watchedLabel = watchedRepos.length > 0 ? watchedRepos.join("  ") : text.none;
+      const metaRow = (name, value, extra) =>
+        h(
+          "div",
+          { style: styles.metaRow },
+          h("span", null, name),
+          h("span", { style: { ...styles.metaValue, ...(extra ?? {}) } }, value),
+        );
       const lastPoll = (status.polls ?? []).map((poll) => poll.at).filter(Boolean).sort().pop();
       const shown = events.slice(0, CARD_ROWS);
       const hidden = Math.max(0, events.length - shown.length);
@@ -610,14 +643,19 @@ window.__ModuleLoader__.load({
             h(
               "div",
               { style: styles.meta },
-              h("span", null, text.watching(status.repos)),
-              h("span", { style: styles.metaValue }, (status.repos ?? [])[0] ?? ""),
-              h("span", null, identityLine(status, text)),
-              h("span", { style: styles.metaValue }, lastPoll ? text.synced(ago(lastPoll, text)) : text.never),
-              h("span", null, status.sweep ? text.sweep : text.clear),
+              metaRow(text.scopeRead, identityLine(status, text)),
+              metaRow(text.scopeWatch, watchedLabel, unwatched ? styles.warnValue : null),
+              unwatched
+                ? null
+                : metaRow(
+                    text.scopeSync,
+                    lastPoll ? ago(lastPoll, text) : text.never,
+                  ),
               h(
-                "span",
-                { style: styles.metaValue },
+                "div",
+                { style: styles.metaFoot },
+                h("span", null, status.sweep ? text.sweep : text.clear),
+                h("span", null, status.delivery === "wakeup" ? "" : text.quiet),
                 h(
                   "a",
                   { href: "https://github.com/notifications", target: "_blank", rel: "noreferrer", style: styles.openLink },
