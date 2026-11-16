@@ -1,0 +1,67 @@
+{
+  "format": 1,
+  "title": {
+    "en": "c3115644151 DSH plugins",
+    "zh": "c3115644151 的 DSH 插件"
+  },
+  "description": {
+    "en": "Plugins maintained by c3115644151 for DeepSeek Harness.",
+    "zh": "c3115644151 为 DeepSeek Harness 维护的插件。"
+  },
+  "metadata": {
+    "categories": {
+      "tools": {
+        "title": {
+          "en": "Tools",
+          "zh": "工具"
+        }
+      }
+    },
+    "labels": {},
+    "sortKeys": {}
+  },
+  "plugins": [
+    {
+      "name": "dsh-inbox-bridge",
+      "title": {
+        "en": "Inbox bridge",
+        "zh": "外部收件箱桥"
+      },
+      "description": {
+        "en": "Poll any external source (GitHub CI, issues, pull requests, mail, a local command) and hand new events to the next conversation step. Items have three states: pending, delivered and done, so the same event is not repeated forever. New events can wake one idle session so you do not have to ask again.",
+        "zh": "轮询任意外部来源（GitHub 的 CI、issue、PR，邮件，或一条本地命令），把新事件交给下一次对话步骤。条目有 pending / delivered / done 三个状态，同一条事件不会被无限重复提醒；新事件还可以唤醒一个空闲会话，不用你每次来问。"
+      },
+      "icon": "icon.svg",
+      "author": "c3115644151",
+      "homepage": "https://github.com/c3115644151/dsh-inbox-bridge#readme",
+      "repository": {
+        "url": "https://github.com/c3115644151/dsh-inbox-bridge"
+      },
+      "metadata": {
+        "category": "tools",
+        "keywords": [
+          "deepseek-harness",
+          "github",
+          "inbox",
+          "ci"
+        ],
+        "labels": [],
+        "sortKeys": {}
+      },
+      "versions": [
+        {
+          "version": "1.5.1",
+          "publishTimestamp": 1794835541,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/c3115644151/dsh-inbox-bridge",
+            "commit": "c7e23e29a27028e7eab8829717abee9bd9746274"
+          },
+          "engines": {
+            "dsh": ">=0.1.0"
+          }
+        }
+      ]
+    }
+  ]
+}
