@@ -23,18 +23,46 @@
 window.__ModuleLoader__.load({
   id: "dsh-inbox-bridge",
   factory(require) {
-    const React = require("react");
+    /**
+     * The page cannot write to the Host log, so it reports through a tiny route.
+     * It is defined before anything else and never throws: this line is the only
+     * evidence that separates "the bundle never ran" from "it ran and drew
+     * nothing", and an import failure must not swallow it.
+     */
+    function report(message) {
+      try {
+        void fetch("/inbox-bridge/client-log", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ message: String(message).slice(0, 380) }),
+        }).catch(() => {});
+      } catch {
+        // ignore
+      }
+    }
+
+    report("module loaded");
+
+    // Shared modules may arrive as the module itself or as { default: module },
+    // depending on how the host interop is configured. Normalise once.
+    const own = (module, key) => {
+      if (module && typeof module[key] === "function") return module;
+      if (module && module.default && typeof module.default[key] === "function") return module.default;
+      return module && module.default ? module.default : module;
+    };
+    const React = own(require("react"), "createElement");
     const h = React.createElement;
     // A portal is the only way to paint above a shell panel that clips its
     // overflow; without react-dom the panel stays inside the slot and accepts
     // the clip.
     let ReactDOM = null;
     try {
-      ReactDOM = require("react-dom");
+      ReactDOM = own(require("react-dom"), "createPortal");
     } catch {
       ReactDOM = null;
     }
     const canPortal = Boolean(ReactDOM && typeof ReactDOM.createPortal === "function");
+    report(`module ready (react ${typeof React.version === "string" ? React.version : "unknown"}, portal ${canPortal})`);
 
     /** One fixed, pointer-transparent layer for the panel, created on first use. */
     let layerNode = null;
@@ -58,27 +86,6 @@ window.__ModuleLoader__.load({
     const CLOSE_DELAY_MS = 200;
     const CARD_ROWS = 5;
     const FALLBACK_WIDTH = 320;
-
-    /**
-     * The page cannot write to the Host log, so it reports through a tiny route.
-     * Failures are ignored: diagnostics must never break the surface.
-     */
-    function report(message) {
-      try {
-        void fetch("/inbox-bridge/client-log", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ message: String(message).slice(0, 380) }),
-        }).catch(() => {});
-      } catch {
-        // ignore
-      }
-    }
-
-    // The very first thing the module does. If the Host log never shows this,
-    // the bundle never ran in the page at all — which is a different problem
-    // from "it ran and drew nothing", and the two must not be confused.
-    report(`module loaded (react ${typeof React?.version === "string" ? React.version : "unknown"})`);
 
     const COPY = {
       zh: {

@@ -2,6 +2,9 @@
 
 Format: keep a short entry per released version. Dates are UTC.
 
+## 2.10.4
+
+- 客户端模块在导入 React 之前就先报一声，导入之后再报一次（含 React 版本与 portal 能力）；React/react-dom 的模块形状（本体还是 { default }）两种都接受。之前一旦导入失败，整行会毫无痕迹地消失。
 ## 2.10.3
 
 - 客户端模块在加载的第一行就向 Host 报告自己已经执行（连同 React 版本），用来区分「模块没跑到」和「跑了但没画出东西」。这两种情况以前在日志里长得一样。
