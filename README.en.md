@@ -172,6 +172,20 @@ The 45 tests cover the pure logic: state transitions (never backwards, a repeate
 | `cordis.patch.yml` | bundle patch: plugin id and default config |
 | `locale/*.json` | plugin market title and description |
 
+### Release (market index)
+
+The market index `docs/index.json` pins one pushed commit, and installs fetch that
+commit. To release:
+
+```powershell
+npm run market          # rebuild docs/index.json from HEAD
+npm run market:release  # check the index pins HEAD and matches package.json
+```
+
+PR CI only validates the index shape, that the pinned commit is still in history,
+and that the pinned version matches the index (`npm run market:check`), so the
+index may lag behind unreleased changes. A release commit must pin itself.
+
 ## License
 
 MIT, see [LICENSE](LICENSE).

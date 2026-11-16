@@ -42,7 +42,8 @@
   "scripts": {
     "test": "node --test index.test.mjs scripts/github-inbox.test.mjs scripts/inbox-bridge.test.mjs",
     "market": "node scripts/build-market-index.mjs",
-    "market:check": "node scripts/build-market-index.mjs --check"
+    "market:check": "node scripts/build-market-index.mjs --check",
+    "market:release": "node scripts/build-market-index.mjs --check --release"
   },
   "engines": {
     "node": ">=20",

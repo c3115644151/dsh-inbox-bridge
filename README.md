@@ -172,6 +172,17 @@ node --test index.test.mjs scripts/github-inbox.test.mjs scripts/inbox-bridge.te
 | `cordis.patch.yml` | bundle patch：插件 id 与默认 config |
 | `locale/*.json` | 插件市场标题与描述 |
 
+### 发布（市场索引）
+
+市场索引 `docs/index.json` 固定到一个已推送的提交，安装方按该提交取代码。发布时：
+
+```powershell
+npm run market          # 用 HEAD 重建 docs/index.json
+npm run market:release  # 校验索引恰好固定在 HEAD，且版本与 package.json 一致
+```
+
+PR 的 CI 只校验索引格式、固定的提交仍在历史里、固定的版本与索引一致（`npm run market:check`），因此索引落后于尚未发布的改动是允许的；发布提交必须让 `docs/index.json` 指向它自己。
+
 ## 许可证
 
 MIT，见 [LICENSE](LICENSE)。
