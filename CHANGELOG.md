@@ -2,6 +2,10 @@
 
 Format: keep a short entry per released version. Dates are UTC.
 
+## 2.9.1
+
+- 卡片默认更宽（380px，窄屏按视口收），底行各项不再从中间断行。
+- 没有标题的事件不再把整条 key 当标题：按 key 说的是什么显示「PR #23 · reviewer」「Issue #3 · author」「run 4394…」。
 ## 2.9.0
 
 - 状态行只留一个胶囊：状态点、计数、标签。宽度不够时截断，不折行，也不再和 DSH 自己的状态行抢空间。

@@ -57,7 +57,7 @@ window.__ModuleLoader__.load({
     const REFRESH_MS = 20_000;
     const OPEN_DELAY_MS = 120;
     const CLOSE_DELAY_MS = 220;
-    const CARD_MAX_WIDTH = 340;
+    const CARD_MAX_WIDTH = 380;
     const CARD_ROWS = 5;
 
     /**
@@ -293,6 +293,7 @@ window.__ModuleLoader__.load({
         color: "var(--dsw-alias-text-secondary, #6b7280)",
         borderTop: "1px solid var(--dsw-alias-border-subtle, rgba(128,128,128,.18))",
       },
+      metaItem: { whiteSpace: "nowrap" },
     };
 
     function identityLine(status, text) {
@@ -308,9 +309,22 @@ window.__ModuleLoader__.load({
       return h("span", { style: styles.tag }, label);
     }
 
+    /** A key is not a sentence: when the title is missing, say what the key means. */
+    function fallbackTitle(key) {
+      const bare = String(key ?? "").includes("#") ? String(key).slice(String(key).indexOf("#") + 1) : String(key ?? "");
+      const parts = bare.split(":");
+      const head = parts[0] ?? "";
+      if (head === "pr") return `PR #${parts[1] ?? "?"}${parts[2] ? ` · ${parts[2]}` : ""}`;
+      if (head === "issue") return `Issue #${parts[1] ?? "?"}${parts[2] ? ` · ${parts[2]}` : ""}`;
+      if (head === "run") return `run ${parts[1] ?? "?"}${bare.includes("recovered") ? " · recovered" : ""}`;
+      if (head === "comment") return "comment";
+      if (head === "infra") return `workflow ${parts[1] ?? ""}`.trim();
+      return bare || String(key ?? "");
+    }
+
     function Row({ event, text }) {
       const [hover, setHover] = React.useState(false);
-      const title = event.title || event.key;
+      const title = event.title || fallbackTitle(event.key);
       const body = event.url
         ? h("a", { href: event.url, target: "_blank", rel: "noreferrer", style: styles.title, title }, title)
         : h("span", { style: styles.title, title }, title);
@@ -454,7 +468,7 @@ window.__ModuleLoader__.load({
         const chipRect = anchor.getBoundingClientRect();
         const room = viewportWidth();
         const height = viewportHeight();
-        const width = Math.max(220, Math.min(CARD_MAX_WIDTH, room - 16));
+        const width = Math.max(260, Math.min(CARD_MAX_WIDTH, room - 16));
         const centered = chipRect.left + chipRect.width / 2 - width / 2;
         const lowest = room - width - 8;
         const targetLeft = Math.min(Math.max(8, centered), Math.max(8, lowest));
@@ -542,10 +556,10 @@ window.__ModuleLoader__.load({
               h(
                 "div",
                 { style: styles.meta },
-                h("span", null, identityLine(status, text)),
-                h("span", null, text.watching(status.repos)),
-                h("span", null, status.sweep ? text.sweep : text.clear),
-                h("span", null, text.quiet),
+                h("span", { style: styles.metaItem }, identityLine(status, text)),
+                h("span", { style: styles.metaItem }, text.watching(status.repos)),
+                h("span", { style: styles.metaItem }, status.sweep ? text.sweep : text.clear),
+                h("span", { style: styles.metaItem }, text.quiet),
               ),
             )
           : null;
