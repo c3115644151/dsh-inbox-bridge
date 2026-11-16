@@ -119,8 +119,7 @@ export function apply(ctx, config) {
       for (const agent of ready) {
         try {
           const message = buildMessage(events.length, text, options.label);
-          if (waking.has(agent)) agent.followup({ content: message.content, source: message.source });
-          else agent.inject(message);
+          deliver(agent, message, waking);
           delivered += 1;
         } catch (error) {
           log(`inject failed: ${describe(error)}`);
@@ -191,6 +190,18 @@ export function deliveryTargets(agents, options) {
     else deferred.push(agent);
   }
   return { ready, deferred };
+}
+
+/**
+ * Hand one notice to one agent. Both paths take the whole message object: DSH
+ * journals whatever it is given, so a stripped `{ content, source }` replays as a
+ * user event with no id and no role and makes the stored session unreadable.
+ * `waking` is the set from `wakeTargets`: those agents get `followup` (starts a
+ * turn), the rest get `inject` (waits for their next step).
+ */
+export function deliver(agent, message, waking) {
+  if (waking.has(agent)) agent.followup(message);
+  else agent.inject(message);
 }
 
 /**

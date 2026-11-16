@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { deliveryTargets, detectRepo, filterUndelivered, formatEvents, mergeConfig, wakeTargets } from "./index.js";
+import { buildMessage, deliver, deliveryTargets, detectRepo, filterUndelivered, formatEvents, mergeConfig, wakeTargets } from "./index.js";
 
 const idle = { status: "idle" };
 const running = { status: "running" };
@@ -125,4 +125,25 @@ test("config keeps the turn-boundary default and merges poll/ack commands", () =
     const outside = mergeConfig({ cwd: plain });
     assert.equal(outside.repo, null);
   });
+});
+
+test("both delivery paths hand over the whole message, role and id included", () => {
+  const seen = [];
+  const agent = {
+    followup: (message) => seen.push(["followup", message]),
+    inject: (message) => seen.push(["inject", message]),
+  };
+  const message = buildMessage(1, "text", "外部收件箱");
+
+  deliver(agent, message, new Set([agent]));
+  deliver(agent, message, new Set());
+
+  assert.deepEqual(seen.map(([path]) => path), ["followup", "inject"]);
+  // DSH journals the object it is handed; rebuilding it here strips `role` (and
+  // `id`) and the stored session can never be opened again.
+  for (const [path, received] of seen) {
+    assert.equal(received, message, `${path} must receive the built message itself`);
+    assert.equal(received.role, "user", `${path} must keep the role`);
+    assert.match(received.id, /^[0-9a-f-]{36}$/u, `${path} must keep the id`);
+  }
 });

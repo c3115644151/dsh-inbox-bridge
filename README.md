@@ -76,6 +76,16 @@ State lives in `.work/inbox-bridge/state.json` under the working directory; the 
 | `wake` | `first` | `followup` one idle agent so a notice starts a turn; `all` every idle agent, `off` inject only |
 | `poll` / `ack` | the bundled CLI | `{ command, args }` for any custom source |
 
+## A notice must be a whole message
+
+DSH journals whatever object the bridge hands to `agent.inject` / `agent.followup`, so both paths must receive the object `buildMessage` returns — `id`, `role` and `source` included. Delivering a stripped `{ content, source }` writes a `user/message` event with no `role`, and the session can never be opened again:
+
+```
+stored session "session-…" is corrupt: session event at seq 123 message must have role "user"
+```
+
+Version 1.5.0 did exactly that on the `followup` path (the wake-up turn); 1.5.1 passes the whole message. The log is append-only, so a session damaged this way needs a repair pass over `session.v4.jsonl.zstd`: decompress every zstd frame, add the missing `role` to the offending rows, re-compress. `deliver()` in `index.js` is the one place that picks `followup`/`inject`; `index.test.mjs` pins that both paths get the message itself.
+
 ## Tests
 
 ```powershell
