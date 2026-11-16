@@ -17,6 +17,24 @@ function git(cwd, args) {
 
 // The repository is inferred from the workspace's git remote, so the test
 // builds its own checkout instead of depending on this machine's paths.
+/**
+ * Windows refuses to remove a directory while a just-spawned child still holds
+ * it as its cwd (EBUSY/EPERM). The poll child outlives our assertion by a few
+ * milliseconds, so cleanup retries instead of failing an otherwise green test.
+ */
+function removeTree(dir) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (error.code !== "EBUSY" && error.code !== "EPERM" && error.code !== "ENOTEMPTY") throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+    }
+  }
+  rmSync(dir, { recursive: true, force: true });
+}
+
 function withRepos(run) {
   const root = mkdtempSync(join(tmpdir(), "inbox-bridge-test-"));
   const repo = join(root, "workspace");
@@ -27,7 +45,7 @@ function withRepos(run) {
     git(root, ["init", "--quiet", plain]);
     return run({ repo, plain });
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    removeTree(root);
   }
 }
 
@@ -379,7 +397,7 @@ test("a status event for the same session reaches the poll schedule", async () =
     }
     assert.equal((await import("node:fs")).existsSync(marker), true, "the turn start did not poll");
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    removeTree(root);
   }
 });
 
@@ -407,6 +425,6 @@ test("a poll that cannot reach the source says so in the log", async () => {
     }
     assert.equal(logged(), true, "a skipped poll left no trace");
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    removeTree(root);
   }
 });
