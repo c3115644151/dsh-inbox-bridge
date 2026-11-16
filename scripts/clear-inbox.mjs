@@ -169,7 +169,7 @@ async function main(argv) {
   };
 
   try {
-    await waitForEndpoint(base);
+    const browserInfo = await waitForEndpoint(base);
     const created = await fetch(`${base}/json/new?${encodeURIComponent(NOTIFICATIONS)}`, {
       method: "PUT",
     }).then((response) => response.json());
@@ -245,10 +245,22 @@ async function main(argv) {
       devtools.close();
     }
   } finally {
+    if (!options.keepOpen) {
+      // Killing the process throws away the profile's in-memory cookies, which
+      // would cost you a sign-in every run. Ask the browser to close itself,
+      // then kill whatever is somehow still there.
+      try {
+        const admin = await connect(browserInfo.webSocketDebuggerUrl);
+        await admin.send("Browser.close");
+        admin.close();
+      } catch {
+        // the browser is already gone
+      }
+      await sleep(1500);
+    }
     cleanup();
-    await sleep(300);
-    if (!options.keepOpen && options.login) {
-      // A signed-in profile must survive, the window must not.
+    if (!options.keepOpen) {
+      // A graceful close removes the lock; a kill can leave it behind.
       try {
         rmSync(join(profileDir, "SingletonLock"), { force: true });
       } catch {
