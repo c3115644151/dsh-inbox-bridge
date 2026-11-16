@@ -4,7 +4,7 @@
 
 把 GitHub 的 CI、PR 与 issue 变成下一次对话开头的一条通知。
 
-DeepSeek Harness 插件：每 45 秒读一次 GitHub 的 CI 运行、PR 检查和 issue，把需要处理的变化按 `pending` / `delivered` / `done` 三态管理，投递到对话回合边界；默认只排队，`wakeup` 模式下会唤醒一个空闲会话。它从 [Noema](https://github.com/Noema-Harness/noema-agent) 工作区抽出，本身不依赖 Noema。
+DeepSeek Harness 插件：把 GitHub 的 CI 运行、PR 检查和 issue 按 `pending` / `delivered` / `done` 三态管理，在对话回合边界投递；默认只排队，不替你开轮，`wakeup` 模式下会唤醒一个空闲会话。采集在后台轮询（见「工作原理」）。它从 [Noema](https://github.com/Noema-Harness/noema-agent) 工作区抽出，本身不依赖 Noema。
 
 - 仓库：<https://github.com/c3115644151/dsh-inbox-bridge>
 - 版本：2.0.3，MIT

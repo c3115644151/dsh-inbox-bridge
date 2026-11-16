@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "GitHub inbox",
-    "description": "Reads GitHub CI runs, pull requests and issues every 45 seconds, queues one notice for the next turn, and can wake one idle session in wakeup mode. Items move through pending / delivered / done so the same event is not repeated forever.",
+    "description": "Turns GitHub CI runs, pull requests and issues into one notice queued at the start of the next turn: it queues by default and does not open a turn, and wakeup mode wakes one idle session. Items move through pending / delivered / done so the same event is not repeated forever.",
     "detail": "docs/DETAIL.md"
   }
 }

@@ -1,8 +1,8 @@
 {
   "name": "dsh-inbox-bridge",
-  "version": "2.0.3",
+  "version": "2.0.4",
   "displayName": "GitHub inbox",
-  "description": "GitHub inbox for DeepSeek Harness: reads CI runs, pull requests and issues on an interval, queues one notice for the next turn, and can wake one idle session.",
+  "description": "GitHub inbox for DeepSeek Harness: turns CI runs, pull requests and issues into one notice queued at the start of the next turn, and can wake one idle session in wakeup mode.",
   "type": "module",
   "license": "MIT",
   "author": "c3115644151",

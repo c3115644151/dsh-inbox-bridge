@@ -4,7 +4,7 @@
 
 Turns GitHub CI, pull requests and issues into one notice at the start of the next conversation turn.
 
-A DeepSeek Harness plugin: every 45 seconds it reads GitHub CI runs, pull request checks and issues, keeps each change in `pending` / `delivered` / `done` state, and delivers it at a turn boundary. It queues by default; `wakeup` mode also opens one idle session. It was extracted from the [Noema](https://github.com/Noema-Harness/noema-agent) workspace; nothing in it is Noema-specific.
+A DeepSeek Harness plugin: it keeps GitHub CI runs, pull request checks and issues in `pending` / `delivered` / `done` state and delivers them at a turn boundary. It queues by default and does not open a turn; `wakeup` mode wakes one idle session. Collection happens by polling in the background (see "How it works"). It was extracted from the [Noema](https://github.com/Noema-Harness/noema-agent) workspace; nothing in it is Noema-specific.
 
 - Repository: <https://github.com/c3115644151/dsh-inbox-bridge>
 - Version: 2.0.3, MIT

@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "GitHub 收件箱",
-    "description": "每 45 秒读一次 GitHub 的 CI、PR 检查和 issue，把需要处理的变化排进下一次对话开头；默认只排队，wakeup 模式会唤醒一个空闲会话。条目分 pending / delivered / done 三态，同一事件不会无限重复。",
+    "description": "把 GitHub 的 CI、PR 和 issue 变成下一次对话开头的一条通知：默认只排队，不替你开轮；wakeup 模式会唤醒一个空闲会话。条目分 pending / delivered / done 三态，同一事件不会无限重复。",
     "detail": "docs/DETAIL.zh.md"
   }
 }
