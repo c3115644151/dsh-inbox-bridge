@@ -367,7 +367,8 @@ export function apply(ctx, config) {
   });
   log(
     `started: ${agents.size} agent(s), poll every ${pollLabel(options.intervalMs)} ` +
-      `while a turn runs, delivery ${options.delivery}, clear ${options.clear}${options.repos?.length ? `, repos ${options.repos.join(", ")}` : ""}`,
+      `while a turn runs, delivery ${options.delivery}, clear ${options.clear}` +
+      `${options.sweep ? `, sweep ${options.sweep.when}` : ""}${options.repos?.length ? `, repos ${options.repos.join(", ")}` : ""}`,
   );
 
   // A turn is the only thing that makes the inbox worth reading: poll when one
