@@ -1,18 +1,21 @@
 /**
  * Inbox bridge for DeepSeek Harness.
  *
- * Owns: polling one external source on an interval, injecting new events into
- * the next admitted agent step as a notice-form context, and remembering what
- * was delivered so the same notice is not injected twice. Delivery is not the
- * end: the agent must mark an event done (config `ackHint`; the notice repeats
- * it verbatim); if it stays delivered for `resurfaceMs` the notice comes back once.
- * Delivery respects the agent's turn boundary: events are injected only while the
- * agent is idle, so they appear at the start of the next real turn instead of
- * interrupting a running tool loop; a poll that hits a running agent is held and
- * retried when the run goes idle. `wake` (default `first`) delivers the notice to
- * one idle agent with `followup`, which also starts a turn; other agents still
- * receive it through `inject`. Does not own: fetching the source (the
- * configured poller does) or the meaning of "handled" (the ack command decides).
+ * Owns: polling one external source on an interval, naming the events it found,
+ * and delivering them to agents whose session workspace is connected to that
+ * source, remembering what was delivered so the same notice is not injected
+ * twice. Delivery is not the end: the agent must mark an event done (config
+ * `ackHint`; the notice repeats it verbatim); if it stays delivered for
+ * `resurfaceMs` the notice comes back once.
+ *
+ * Delivery is passive by default (`delivery: "quiet"`): an event is only queued
+ * for an agent's next turn (`inject`), never opens a turn on its own, so the
+ * user decides when notices enter the conversation. `delivery: "wakeup"` also
+ * opens one turn per poll with `followup`, bounded by `maxConsecutiveWakes` and
+ * reset by any human-authored message. Polling never interrupts a running tool
+ * loop: a poll that hits a running agent is held (no ack) and retried when the
+ * run goes idle. Does not own: fetching the source (the configured poller does)
+ * or the meaning of "handled" (the ack command decides).
  */
 import { execFile, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -29,6 +32,9 @@ const CLI = fileURLToPath(new URL("./scripts/inbox-bridge.mjs", import.meta.url)
 /** What the notice tells the agent to run once an event is handled. */
 export const DEFAULT_ACK_HINT = "ack --done -- <key>";
 
+/** How long a session workspace's `owner/name` is trusted before re-reading git. */
+const REPO_TTL_MS = 10 * 60 * 1000;
+
 const DEFAULTS = Object.freeze({
   label: "外部收件箱",
   cwd: process.cwd(),
@@ -44,8 +50,13 @@ const DEFAULTS = Object.freeze({
   offlineReminderMs: 12 * 60 * 60 * 1000,
   /** inject while the agent is running (interrupts tool loops; off by default) */
   injectWhileRunning: false,
-  /** wake a turn with followup: `first` one idle agent, `all` every idle agent, `off` never */
-  wake: "first",
+  /**
+   * `quiet` only queues the notice for an agent's next turn; `wakeup` also opens
+   * one turn per poll with `followup`. Mirrors tool-jobs' `completionDelivery`.
+   */
+  delivery: "quiet",
+  /** wakeups one agent may take before its next human message, then it only queues */
+  maxConsecutiveWakes: 3,
   poll: { command: process.execPath, args: [CLI, "poll"] },
   ack: { command: process.execPath, args: [CLI, "ack"] },
 });
@@ -59,6 +70,10 @@ export function apply(ctx, config) {
   // Keys injected in this process; used when the ack command fails so a broken
   // ack cannot turn into an every-interval notification loop.
   const recentlyDelivered = new Map();
+  /** Per-agent `owner/name` of its session workspace, refreshed on a TTL. */
+  const repoNames = new Map();
+  /** Wakeups taken since each agent's last human message, for `maxConsecutiveWakes`. */
+  const wakeStreak = new Map();
   let lastOfflineNoticeAt = 0;
 
   const log = (line) => {
@@ -76,8 +91,11 @@ export function apply(ctx, config) {
     lastOfflineNoticeAt = now;
     const text = formatOfflineNotice(options, reason);
     const { ready } = deliveryTargets(agents, options);
-    if (ready.length === 0) return;
-    for (const agent of ready) {
+    // Only sessions that cannot name a repository themselves get the advice:
+    // telling a session that already points at a repository is pure noise.
+    const targets = ready.filter((agent) => repoOf(agent, options, repoNames) === null);
+    if (targets.length === 0) return;
+    for (const agent of targets) {
       try {
         agent.inject(buildMessage(0, text, options.label));
       } catch (error) {
@@ -107,16 +125,24 @@ export function apply(ctx, config) {
       if (suppressed > 0) log(`suppressed ${suppressed} event(s) already delivered; waiting for ack`);
       if (events.length === 0) return;
       const { ready, deferred } = deliveryTargets(agents, options);
-      if (ready.length === 0) {
+      // A session is only told about the source its own workspace points at.
+      // Agents in another repository (or in none) must not see this repository's
+      // failures just because they happen to be idle in the same host.
+      const targets = ready.filter((agent) => matchesRepo(agent, options, repoNames));
+      const unassociated = ready.length - targets.length;
+      if (targets.length === 0) {
         // A running tool loop must not be interrupted: keep the events pending
         // (no ack) and deliver them when the run goes idle.
-        log(`held ${events.length} event(s): ${deferred.length} agent(s) running`);
+        log(
+          `held ${events.length} event(s): ${deferred.length} agent(s) running` +
+            (unassociated > 0 ? `, ${unassociated} not on ${sourceLabel(options)}` : ""),
+        );
         return;
       }
       const text = formatEvents(events, options);
-      const waking = new Set(wakeTargets(ready, options));
+      const waking = new Set(wakeTargets(targets, options, wakeStreak));
       let delivered = 0;
-      for (const agent of ready) {
+      for (const agent of targets) {
         try {
           const message = buildMessage(events.length, text, options.label);
           deliver(agent, message, waking);
@@ -127,10 +153,14 @@ export function apply(ctx, config) {
       }
       if (delivered > 0) {
         for (const event of events) recentlyDelivered.set(event.key, now);
+        // Only a wake that actually happened spends the budget; a queued notice
+        // never does, because it does not open a turn.
+        for (const agent of waking) wakeStreak.set(agent, (wakeStreak.get(agent) ?? 0) + 1);
         log(
-          `injected ${events.length} event(s) into ${delivered} idle agent(s)` +
+          `injected ${events.length} event(s) into ${delivered} agent(s) [${options.delivery}]` +
             (waking.size > 0 ? `; woke ${waking.size} agent(s)` : "") +
-            (deferred.length > 0 ? `; ${deferred.length} running agent(s) skipped` : ""),
+            (deferred.length > 0 ? `; ${deferred.length} running agent(s) skipped` : "") +
+            (unassociated > 0 ? `; ${unassociated} not on ${sourceLabel(options)}` : ""),
         );
         await ackEvents(options, events, "delivered");
         // Infrastructure failures cannot be fixed by a code change: report once.
@@ -165,6 +195,15 @@ export function apply(ctx, config) {
     // A run just finished: deliver whatever was held while it was busy, so the
     // notice is queued for the next turn start instead of mid-run.
     if (status === "idle") void poll();
+  });
+  // A human-authored message proves the agent is responsive again, so its wake
+  // budget restarts from zero (the rule tool-jobs' maxConsecutiveWakes uses).
+  ctx.on("session/event", (session, event) => {
+    if (event?.type !== "user/message") return;
+    if (event.data?.source?.kind !== "user") return;
+    for (const agent of agents) {
+      if (agent.session === session) wakeStreak.delete(agent);
+    }
   });
 
   ctx.effect(() => () => {
@@ -206,23 +245,73 @@ export function deliver(agent, message, waking) {
 
 /**
  * Which ready agents get the notice as a `followup` (starts a turn) instead of an
- * `inject` (waits for the next step). `first` keeps the cost predictable when
- * several sessions are idle; `all` is opt-in.
+ * `inject` (waits for the next step). `quiet` (the default) never wakes anyone;
+ * `wakeup` wakes one agent per poll, until that agent has taken
+ * `maxConsecutiveWakes` wakeups since its last human message — a woken turn can
+ * produce the very event that wakes it again, so the budget has to exist.
  */
-export function wakeTargets(ready, options) {
-  const mode = options?.wake ?? "first";
-  if (mode === "all") return ready.slice();
-  if (mode === "first") return ready.slice(0, 1);
+export function wakeTargets(ready, options, streak) {
+  if ((options?.delivery ?? DEFAULTS.delivery) !== "wakeup") return [];
+  const cap = options?.maxConsecutiveWakes ?? DEFAULTS.maxConsecutiveWakes;
+  for (const agent of ready) {
+    if ((streak?.get(agent) ?? 0) >= cap) continue;
+    return [agent];
+  }
   return [];
+}
+
+/** `owner/name` a session workspace points at, cached for a short while. */
+export function repoOf(agent, options, cache = new Map(), now = Date.now()) {
+  const hit = cache.get(agent);
+  if (hit && now - hit.at < REPO_TTL_MS) return hit.repo;
+  const cwd = agent?.session?.header?.cwd ?? options?.cwd ?? DEFAULTS.cwd;
+  const repo = detectRepo(cwd);
+  cache.set(agent, { repo, at: now });
+  return repo;
+}
+
+/**
+ * Whether an agent's session belongs to the polled source. Without a configured
+ * source there is nothing to associate, so every agent matches; with one, an
+ * agent that cannot name a repository is *not* a match — silence is better than
+ * telling the wrong session about someone else's CI.
+ */
+export function matchesRepo(agent, options, cache) {
+  const repo = options?.repo ?? null;
+  if (!repo) return true;
+  return repoOf(agent, options, cache) === repo;
+}
+
+function sourceLabel(options) {
+  return options?.repo ? `${options.repo}` : "this workspace";
 }
 
 export function mergeConfig(config) {
   const given = config ?? {};
+  if (given.wake !== undefined) {
+    throw new Error(
+      'inbox-bridge: `wake` was replaced by `delivery` — set `delivery: "quiet"` (queue only) or `delivery: "wakeup"` (also open one turn), and delete `wake`',
+    );
+  }
+  const delivery = given.delivery ?? DEFAULTS.delivery;
+  if (delivery !== "quiet" && delivery !== "wakeup") {
+    throw new Error(
+      `inbox-bridge: \`delivery\` must be "quiet" or "wakeup", got ${JSON.stringify(delivery)}`,
+    );
+  }
+  const maxConsecutiveWakes = given.maxConsecutiveWakes ?? DEFAULTS.maxConsecutiveWakes;
+  if (!Number.isInteger(maxConsecutiveWakes) || maxConsecutiveWakes < 0) {
+    throw new Error(
+      `inbox-bridge: \`maxConsecutiveWakes\` must be a non-negative integer, got ${JSON.stringify(maxConsecutiveWakes)}`,
+    );
+  }
   const repo = given.repo ?? detectRepo(given.cwd ?? DEFAULTS.cwd);
   return {
     ...DEFAULTS,
     ...given,
     repo,
+    delivery,
+    maxConsecutiveWakes,
     poll: { ...DEFAULTS.poll, ...(given.poll ?? {}) },
     ack: { ...DEFAULTS.ack, ...(given.ack ?? {}) },
   };
@@ -335,6 +424,7 @@ export function filterUndelivered(events, seen, now, resurfaceMs) {
 export function formatEvents(events, options = DEFAULTS) {
   const ackHint = options.ackHint ?? DEFAULT_ACK_HINT;
   const maxEvents = options.maxEvents ?? 6;
+  const delivery = options.delivery ?? DEFAULTS.delivery;
   const lines = events.slice(0, maxEvents).map((event) => `- ${describeEvent(event)}`);
   if (events.length > maxEvents)
     lines.push(`- 其余 ${events.length - maxEvents} 条见 \`npm run inbox\``);
@@ -345,7 +435,10 @@ export function formatEvents(events, options = DEFAULTS) {
     `只在它影响当前工作时处理；处理完运行 \`${ackHint}\` 标记完成。`,
     ...(ackHint.startsWith("npm ") ? ["（`--done` 放在 `--` 之后，否则被 npm 吞掉，只标 delivered）"] : []),
     "只标 delivered 的事件会在 6 小时后再次提醒；`kind: infra` 的基础设施失败只提醒一次。",
-    "这条通知只在本轮开始前注入；执行中到来的事件会等这次执行结束后再进入下一轮。",
+    delivery === "wakeup"
+      ? "这条通知随下一轮开始进入上下文；长时间没人发言时，插件也会为它开一轮。"
+      : "这条通知只在你发消息时随该轮进入上下文，不会替你另开一轮。",
+    ...(options.repo ? [`只播报 ${options.repo} 的事件，其它仓库的会话不会收到它。`] : []),
   ].join("\n");
 }
 
