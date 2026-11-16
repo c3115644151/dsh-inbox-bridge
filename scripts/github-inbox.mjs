@@ -742,11 +742,13 @@ function formatPrLine(pr) {
 export function readStateFile(file) {
   try {
     const raw = fs.readFileSync(file, "utf8");
-    return normalizeState(JSON.parse(raw));
+    // The file is multi-repository: normalise it as a file, not as one slice, or
+    // every poll would start from an empty `seen` and re-derive `lastRun`.
+    return normalizeStateFile(JSON.parse(raw));
   } catch {
     // Missing or corrupt state must never break a poll; it only means the
     // first poll sees everything as new.
-    return normalizeState({});
+    return normalizeStateFile({});
   }
 }
 

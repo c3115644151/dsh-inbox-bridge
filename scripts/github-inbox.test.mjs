@@ -1,8 +1,11 @@
 // Tests for the pure parts of scripts/github-inbox.mjs.
-// No network, no `gh`, no filesystem: every remote read goes through the
-// injectable `pollOnce` seams and fixed fixtures.
+// No network and no `gh`: every remote read goes through the injectable `pollOnce`
+// seams and fixed fixtures.
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   MAX_SEEN,
@@ -25,6 +28,7 @@ import {
   parseArgs,
   pollOnce,
   prStatusDigest,
+  readStateFile,
   sortEvents,
   updateState,
 } from "./github-inbox.mjs";
@@ -750,6 +754,33 @@ test("two repositories keep separate slices, and a legacy file is adopted by its
   assert.equal(sliceOf(file, "owner/one").lastPollAt, "2026-11-16T00:00:00.000Z");
   assert.equal(sliceOf(file, "owner/two").lastPollAt, "2026-11-16T01:00:00.000Z");
   assert.deepEqual(sliceOf(file, "owner/three").seen, {});
+});
+
+test("reading the state file back keeps every slice, so a poll does not start blind", () => {
+  const dir = mkdtempSync(join(tmpdir(), "inbox-state-"));
+  try {
+    const file = join(dir, "state.json");
+    const written = {
+      version: 2,
+      repos: {
+        "owner/one": {
+          lastPollAt: "2026-11-16T00:00:00.000Z",
+          seen: { "run:1": "2026-11-16T00:00:00.000Z" },
+          lastRun: { id: 1, conclusion: "failure" },
+        },
+      },
+    };
+    writeFileSync(file, JSON.stringify(written), "utf8");
+    const read = readStateFile(file);
+    assert.deepEqual(Object.keys(read.repos), ["owner/one"]);
+    // Losing these would make every poll a "first poll": the whole branch would
+    // be re-read, and `seen` would never grow.
+    assert.equal(read.repos["owner/one"].lastPollAt, "2026-11-16T00:00:00.000Z");
+    assert.deepEqual(read.repos["owner/one"].seen, { "run:1": "2026-11-16T00:00:00.000Z" });
+    assert.deepEqual(read.repos["owner/one"].lastRun, { id: 1, conclusion: "failure" });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("the same PR number in two repositories becomes two keys", () => {
