@@ -1,19 +1,17 @@
 # GitHub inbox
 
-**Before your agent says anything, it already knows what changed on GitHub — only the parts that concern its work.**
+`dsh-inbox-bridge` is a DSH plugin. For each session it looks at the GitHub repository that session lives in, collects the events that concern you (failed checks, review requests, issues assigned to you, comments mentioning you), and delivers them as one message at the next turn boundary. It reads only, never acts on your behalf, and does not start a turn on its own.
 
-While you work, it takes a quick look at GitHub: did the PR you are involved in break, is someone waiting for your review, did anyone answer the issue assigned to you, is the default branch, or the branch your own pull request lives on, red. The things you should handle get picked out and dropped into the context as a few lines when your next turn starts; everything else stays out of sight. While you are not talking to your agent, it does not touch GitHub at all.
+## What it does
 
-## What it takes off your plate
-
-- **A check failed on your PR while you were busy elsewhere.** By the time you come back to the topic, the agent already knows which check, which commit, and where the link is.
-- **Someone asked for your review.** That is one of the few things that actually blocks other people, so you can let it call you even when you are silent.
-- **The default branch went red and nobody mentioned it.** Your agent sees the failure before its next change, not when a merge goes wrong.
-- **A mention or an issue assigned to you.** If it was not addressed to you, it will not show up.
+- **Relevance comes from your identity.** It queries the repository as your `gh` login (or a configured App identity) and keeps only events where you are the author, the reviewer, the assignee, or are mentioned. Failed checks on someone else's PR, and unrelated repositories, never enter the queue.
+- **It reads repositories, not the notification inbox.** GitHub's notification inbox pushes per account and cannot tell one session or repository from another; querying repository state directly keeps two repositories on the same account apart.
+- **Polling follows turns.** Once when a session starts, every ten minutes while a turn runs, once when it ends. An idle session makes no request.
+- **It is injected into the context and does not interrupt the tool loop.** A notice arrives at the next safe injection point, is marked `delivered`, and unhandled events come back once after six hours.
 
 ## What you will see
 
-A notice looks like this, at the top of your next turn:
+At the top of a turn:
 
 > External inbox (background poll, not a question from the user) · read as: c3115644151:
 > - [PR/reviewer] #23 review requested: fix: retry on flaky upload https://github.com/…
@@ -21,19 +19,19 @@ A notice looks like this, at the top of your next turn:
 >
 > Act only where it affects the current work; when done, run `node "...\dsh-inbox-bridge\scripts\inbox-bridge.mjs" ack --done -- <key>`.
 
-The bracket says **how it relates to you**: `reviewer` means it is waiting for your review, `author` means you opened it, `assignee` means it is assigned to you, `mention` means someone wrote @you. When you are done, acknowledge the line; anything you leave alone comes back once after six hours — it reminds you, it does not nag forever.
+The bracket states the relation to that identity: `reviewer` means it waits for your review, `author` means you opened it, `assignee` means it is assigned to you, `mention` means a comment mentions you. Run the `ack` command when you are done; an unacknowledged event is repeated after six hours rather than piling up.
 
-You also do not have to speak to find out what changed: the status row under the composer gains a chip that says how many things are waiting, and hovering it floats the list — what, which repository, and when it last synced. It is read-only: it takes no room in the conversation, never sends a message for you, and stays a single row however narrow the window gets.
+## The panel
 
-## Quiet by default
+The status row under the composer carries a chip with the number of unhandled events for the current session. Hovering it opens a panel with:
 
-- **Only what concerns you.** A PR speaks up when a check fails or when your review is requested; green PRs, other people's review requests and unrelated repositories never make it in.
-- **No message from you, no request to GitHub.** Polling follows your conversation: once when you start talking, every ten minutes while a long turn runs, once when the turn ends; an idle session costs nothing.
-- **It does not start a turn for you.** Notices wait in the queue and arrive the next time you speak. If you want it to reach you while you are away, you have to switch on waking and name the roles that may wake it.
-- **It marks what it read as read.** The notices it handled do not pile up in your unread list; set `clear: all` to quiet the whole account. GitHub only exposes "mark read" — there is no "done" API.
-- **It can archive them too, if you ask.** With `sweep` configured, a turn that actually found something also moves those threads into Done (one browser run, 3–5 seconds; quiet turns pay nothing). Sign in once first: `node scripts/clear-inbox.mjs --login`.
+- the events: role, repository, title (link), time;
+- the identity, the subscribed repositories, the last poll;
+- three controls: delivery (queue only / may wake), cleaning (`off` / this repository / whole account, plus whether to archive to Done), and which repositories to watch.
 
-## Install once
+Changes apply immediately and are stored in `<cwd>/.work/inbox-bridge/prefs.json`; they do not rewrite the DSH plugin configuration, and a reset returns to the configured values. The panel is per session: switching sessions shows that session's repository, and says so plainly when that repository is not watched.
+
+## Install
 
 You need DSH and a `gh` that is already logged in on this machine (`gh auth status` should pass).
 
@@ -42,28 +40,31 @@ git clone https://github.com/c3115644151/dsh-inbox-bridge
 dsh plugin add ./dsh-inbox-bridge
 ```
 
-Then give the plugin a working directory (`cwd`) in the DSH plugin config — the repository directory you want it to watch. Repository name and your identity are read from there; nothing else to fill in.
+Then give it a working directory (`cwd`) in the plugin configuration. The repository and the identity are read from that directory's `git remote` and from `gh`; nothing else needs filling in.
 
-## The three things you will probably change
+## Configuration
 
-| If you want to | Set | Notes |
+| Key | Default | Effect |
 | --- | --- | --- |
-| Watch a different repository | `cwd` (or `repo` / `repos`) | Inferred from the working directory's `origin`; list `repos` to watch several at once |
-| Be woken while you are silent | `delivery: wakeup` + `wakeOn` | Default is `quiet`: queue only. Once on, it only wakes for the roles you name, after 15 minutes of silence, at most twice an hour |
-| Change how a notice is acknowledged | `ackHint` | The command written into the notice; defaults to the bundled CLI |
+| `cwd` | DSH process directory | where state lives; where the repository is inferred from |
+| `repo` / `repos` | inferred from `origin` | one or several `owner/name` repositories to watch; non-empty `repos` wins |
+| `delivery` | `quiet` | `quiet` queues only; `wakeup` may start a turn while the session is idle |
+| `wakeOn` | empty | roles allowed to wake under `wakeup`; empty never wakes |
+| `clear` | `repo` | mark read after a poll: `off` / `repo` / `all` |
+| `sweep` | off | archive the inbox into Done on turns that found something; needs a one-time browser sign-in |
 
-Everything else has a sensible default; the full list is in [configuration](docs/configuration.md).
+Full configuration, CLI and state files: [configuration](docs/configuration.md).
 
-## What it does not do
+## Boundaries
 
-- **Not a GitHub client**: it never merges, comments or changes anything. Read-only.
-- **Not a decision-maker**: it surfaces facts that concern you; what to do with them is still your call.
-- **No cross-machine sync**: the state lives in `.work/` inside the working directory, so another machine starts with an empty inbox.
-- **No work without a source**: if `gh` is not logged in or the directory is not a repository, it tells you once and then goes quiet.
+- **Read-only.** It does not merge, comment, or change anything.
+- **No turn by default.** Only `delivery: wakeup` with a matching `wakeOn` role may start one.
+- **Done archiving needs one browser sign-in.** GitHub has no archive API; `scripts/clear-inbox.mjs` drives the local browser and needs a single `--login`.
+- **State is local.** It lives under `.work/` in the working directory and is not synced across machines.
 
-## Going deeper
+## Further reading
 
-- How polling, relevance and state actually work: [how it works](docs/how-it-works.md)
-- Every option, the command line, identities and roles: [configuration](docs/configuration.md)
-- What changed in each release: [CHANGELOG.md](CHANGELOG.md)
-- What is planned next: [ROADMAP.md](ROADMAP.md)
+- Polling, relevance, state machine and known limits: [how it works](docs/how-it-works.md)
+- All configuration, CLI, identity and roles: [configuration](docs/configuration.md)
+- Version history: [CHANGELOG.md](CHANGELOG.md)
+- What comes next: [ROADMAP.md](ROADMAP.md)
