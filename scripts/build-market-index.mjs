@@ -88,11 +88,30 @@ const text = `${JSON.stringify(index, null, 2)}\n`;
 
 if (isCheck) {
   const current = fs.existsSync(OUT) ? fs.readFileSync(OUT, "utf8") : "";
-  if (current !== text) {
-    console.error("docs/index.json is stale: run `npm run market` and commit the result");
+  if (current.trim() === "") {
+    console.error("docs/index.json is missing: run `npm run market` and commit the result");
     process.exit(1);
   }
-  const pinned = index.plugins[0].versions[0].source.commit;
+  let committed;
+  try {
+    committed = JSON.parse(current);
+  } catch (error) {
+    console.error(`docs/index.json is not valid JSON: ${String(error)}`);
+    process.exit(1);
+  }
+  const entry = committed?.plugins?.[0];
+  const pinned = entry?.versions?.[0]?.source?.commit;
+  if (typeof pinned !== "string" || !/^[0-9a-f]{40}$/u.test(pinned)) {
+    console.error("docs/index.json does not pin a 40-hex commit");
+    process.exit(1);
+  }
+  const meta = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+  if (entry.versions[0].version !== meta.version) {
+    console.error(
+      `docs/index.json lists ${entry.versions[0].version} but package.json is ${meta.version}: run \`npm run market\``,
+    );
+    process.exit(1);
+  }
   try {
     git(["cat-file", "-e", `${pinned}^{commit}`]);
     git(["merge-base", "--is-ancestor", pinned, "HEAD"]);
@@ -101,15 +120,20 @@ if (isCheck) {
     process.exit(1);
   }
   const pinnedVersion = JSON.parse(git(["show", `${pinned}:package.json`])).version;
-  if (pinnedVersion !== index.plugins[0].versions[0].version) {
+  if (pinnedVersion !== entry.versions[0].version) {
+    console.error(`docs/index.json says ${entry.versions[0].version} but commit ${pinned.slice(0, 7)} says ${pinnedVersion}`);
+    process.exit(1);
+  }
+  const changed = git(["diff", "--name-only", `${pinned}..HEAD`, "--", "index.js", "scripts", "cordis.patch.yml", "locale", "package.json"])
+    .split("\n")
+    .filter((file) => file !== "" && file !== "scripts/build-market-index.mjs");
+  if (changed.length > 0) {
     console.error(
-      `docs/index.json says ${index.plugins[0].versions[0].version} but commit ${pinned.slice(0, 7)} says ${pinnedVersion}`,
+      `the pinned commit ${pinned.slice(0, 7)} is older than the shipped plugin code (${changed.join(", ")}): run \`npm run market\` and commit`,
     );
     process.exit(1);
   }
-  console.log(
-    `market index is current (${index.plugins[0].versions[0].version} @ ${index.plugins[0].versions[0].source.commit.slice(0, 7)})`,
-  );
+  console.log(`market index is current (${entry.versions[0].version} @ ${pinned.slice(0, 7)})`);
 } else {
   fs.mkdirSync(path.dirname(OUT), { recursive: true });
   fs.writeFileSync(OUT, text, "utf8");
