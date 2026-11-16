@@ -224,6 +224,17 @@ async function main(argv) {
             break;
           }
         }
+        // The window sat there for twenty minutes without a sign-in: say so
+        // instead of walking on to a login page and reporting an empty inbox.
+        const after = await read(`(() => ({ signIn: /\\/login|\\/session/.test(location.pathname) }))()`);
+        if (after?.signIn) {
+          if (options.json) console.log(JSON.stringify({ ok: false, reason: "sign-in-required" }));
+          else
+            console.error(
+              "still not signed in: open the window with `node scripts/clear-inbox.mjs --login`, sign in, and it finishes the sweep",
+            );
+          return 2;
+        }
       }
 
       if (options.dryRun) {

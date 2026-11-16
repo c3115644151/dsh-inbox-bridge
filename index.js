@@ -277,7 +277,14 @@ export function apply(ctx, config) {
       const line = String(stdout ?? "").trim().split(/\r?\n/u).pop() ?? "";
       log(`swept the notification inbox: ${line || "done"} (${Date.now() - began}ms)`);
     } catch (error) {
-      log(`sweep failed: ${describe(error)}`);
+      if (error?.exitCode === 2) {
+        const script = (options.sweep.args ?? []).find((arg) => String(arg).endsWith(".mjs"));
+        log(
+          `sweep needs a one-time sign-in: node "${script ?? "scripts/clear-inbox.mjs"}" --login`,
+        );
+      } else {
+        log(`sweep failed: ${describe(error)}`);
+      }
     }
   };
 
@@ -853,7 +860,12 @@ function runCommand(spec, options, extraEnv = {}) {
       (error, stdout, stderr) => {
         if (error) {
           const detail = (stderr || stdout || "").trim().slice(0, 200);
-          reject(new Error(`${error.message}${detail ? `: ${detail}` : ""}`));
+          const failure = new Error(`${error.message}${detail ? `: ${detail}` : ""}`);
+          // Exit codes are part of the command contract: 2 means "this command
+          // needs a person once" (the sweep needs a browser sign-in), which is
+          // not the same problem as a crashed command.
+          if (typeof error.code === "number") failure.exitCode = error.code;
+          reject(failure);
           return;
         }
         resolve(stdout);

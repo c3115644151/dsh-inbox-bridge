@@ -521,6 +521,48 @@ test("a turn with findings sweeps the inbox and says what it archived", async ()
   }
 });
 
+test("a sweep that needs a person says so, instead of looking like a crash", async () => {
+  const root = mkdtempSync(join(tmpdir(), "inbox-sweep-login-"));
+  const logPath = join(root, ".work", "inbox-bridge", "plugin.log");
+  try {
+    const ctx = fakeContext([fakeAgent(root)]);
+    const { apply } = await import("./index.js");
+    apply(ctx, mergeConfig({
+      cwd: root,
+      repo: "owner/name",
+      poll: {
+        command: process.execPath,
+        args: [
+          "-e",
+          `console.log(JSON.stringify({ events: [{ key: "run:1", kind: "ci", title: "ci failed", role: "ci", repo: "owner/name" }] }))`,
+        ],
+      },
+      ack: { command: process.execPath, args: ["-e", "console.log('{}')"] },
+      sweep: {
+        command: process.execPath,
+        args: ["-e", "console.error('not signed in');process.exit(2)"],
+      },
+    }));
+    ctx.emit("agent/status", { agent: { session: { id: "session-1" } }, status: "running" });
+    const fs = await import("node:fs");
+    const deadline = Date.now() + 6_000;
+    const logged = () =>
+      fs.existsSync(logPath) &&
+      fs.readFileSync(logPath, "utf8").includes("sweep needs a one-time sign-in");
+    while (Date.now() < deadline && !logged()) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(logged(), true, "exit code 2 was not explained");
+    assert.equal(
+      fs.readFileSync(logPath, "utf8").includes("sweep failed"),
+      false,
+      "a sign-in prompt was reported as a failure",
+    );
+  } finally {
+    removeTree(root);
+  }
+});
+
 test("the page sees what is still open, newest first, and nothing already closed", () => {
   const payload = buildUiPayload({
     options: {

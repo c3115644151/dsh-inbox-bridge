@@ -2,6 +2,9 @@
 
 Format: keep a short entry per released version. Dates are UTC.
 
+## 2.8.4
+
+- 清理命令需要登录时会明确说出来：clear-inbox --login 等满二十分钟仍在登录页时以退出码 2 结束，不再假装「收件箱已空」；插件看到退出码 2 会记一行「需要一次性登录」，而不是当成崩溃。
 ## 2.8.3
 
 - 卡片头行右侧多一个「打开收件箱」，直接跳到 GitHub 的通知收件箱；行悬停有底色，每条事件右侧显示相对时间。
