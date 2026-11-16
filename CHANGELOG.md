@@ -2,6 +2,10 @@
 
 Format: keep a short entry per released version. Dates are UTC.
 
+## 2.6.1
+
+- `runtime.json` 与启动日志里写明 `clear` 的范围：清理是默认行为，看不见就等于不存在。
+
 ## 2.6.0
 
 - 轮询读过的通知线程会被标为已读，未读角标不再只增不减。`clear` 控制范围：`repo`（默认，只清盯着的仓库）、`all`（整个账号）、`off`（不碰）。
