@@ -28,8 +28,8 @@
         "zh": "GitHub 收件箱"
       },
       "description": {
-        "en": "Reads GitHub CI runs, pull requests and issues every 45 seconds, queues one notice for the next turn, and can wake one idle session in wakeup mode. Items move through pending / delivered / done so the same event is not repeated forever.",
-        "zh": "每 45 秒读一次 GitHub 的 CI、PR 检查和 issue，把需要处理的变化排进下一次对话开头；默认只排队，wakeup 模式会唤醒一个空闲会话。条目分 pending / delivered / done 三态，同一事件不会无限重复。"
+        "en": "Turns GitHub CI runs, pull requests and issues into one notice queued at the start of the next turn: it queues by default and does not open a turn, and wakeup mode wakes one idle session. Items move through pending / delivered / done so the same event is not repeated forever.",
+        "zh": "把 GitHub 的 CI、PR 和 issue 变成下一次对话开头的一条通知：默认只排队，不替你开轮；wakeup 模式会唤醒一个空闲会话。条目分 pending / delivered / done 三态，同一事件不会无限重复。"
       },
       "icon": "icon.svg",
       "author": "c3115644151",
@@ -50,12 +50,12 @@
       },
       "versions": [
         {
-          "version": "2.0.3",
-          "publishTimestamp": 1794840318,
+          "version": "2.0.4",
+          "publishTimestamp": 1794840570,
           "source": {
             "type": "git",
             "url": "https://github.com/c3115644151/dsh-inbox-bridge",
-            "commit": "31301c1f81635cabdc850f96604fc48bebfbadbb"
+            "commit": "e21708e5fb85118848a802413cd10951dd7bad39"
           },
           "engines": {
             "dsh": ">=0.1.0"
