@@ -50,12 +50,12 @@
       },
       "versions": [
         {
-          "version": "2.4.0",
-          "publishTimestamp": 1794856580,
+          "version": "2.4.1",
+          "publishTimestamp": 1794856855,
           "source": {
             "type": "git",
             "url": "https://github.com/c3115644151/dsh-inbox-bridge",
-            "commit": "da8c87dbc3308e69e5c284d6e8bc0b53c532888f"
+            "commit": "8a0bab802b9706299d4a21edcbad54e18a7a4afc"
           },
           "engines": {
             "dsh": ">=0.1.0"
