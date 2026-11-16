@@ -30,6 +30,34 @@ export function setRepo(repo) {
 export function watchedRepo() {
   return activeRepo;
 }
+
+/**
+ * Who this inbox speaks for: `{ kind, login, token }`. Null means "do not
+ * filter", which is only honest when the caller really is the only identity.
+ */
+let activeIdentity = null;
+
+export function setIdentity(identity) {
+  if (!identity || typeof identity !== "object") {
+    activeIdentity = null;
+    return;
+  }
+  const login =
+    typeof identity.login === "string" && identity.login.length > 0 ? identity.login : null;
+  const token =
+    typeof identity.token === "string" && identity.token.length > 0 ? identity.token : null;
+  activeIdentity = { kind: identity.kind === "app" ? "app" : "user", login, token };
+}
+
+export function watchedIdentity() {
+  return activeIdentity;
+}
+
+/** Login the events are filtered against; null means "no filter". */
+export function meLogin() {
+  return activeIdentity?.login ?? null;
+}
+
 export const MAX_SEEN = 500;
 export const GH_TIMEOUT_MS = 20_000;
 
@@ -44,8 +72,21 @@ const FAILED_CHECK_STATES = new Set([
 ]);
 const RUN_FIELDS =
   "databaseId,name,displayTitle,conclusion,headSha,headBranch,workflowName,createdAt,url";
-const PR_FIELDS = "number,title,headRefName,url,statusCheckRollup,reviewDecision,updatedAt";
+const PR_FIELDS =
+  "number,title,headRefName,url,statusCheckRollup,reviewDecision,updatedAt,author,reviewRequests,assignees,isDraft";
 const KIND_ORDER = { recovered: 0, ci: 1, pr: 2, comment: 3, issue: 4 };
+/** How a GitHub notification reason maps onto the role vocabulary. */
+const NOTIFICATION_ROLES = {
+  review_requested: "reviewer",
+  assign: "assignee",
+  author: "author",
+  state_change: "author",
+  mention: "mention",
+  team_mention: "mention",
+  comment: "mention",
+  subscribed: "mention",
+  ci_activity: "ci",
+};
 
 const USAGE = `github-inbox — GitHub event inbox for local development
 
@@ -235,22 +276,68 @@ export function extractRunEvents(runs = [], state = {}) {
   return events;
 }
 
-export function extractPrEvents(prs = []) {
+/**
+ * How `me` is involved in one pull request: `author`, `reviewer`, `assignee`,
+ * or null (not involved). `me === null` means "no filter" and returns `any`.
+ * Review requests arrive as `reviewRequests` from `gh pr list` and as
+ * `requested_reviewers` from the REST API; both shapes are accepted.
+ */
+export function prRole(pr, me) {
+  if (!me) return "any";
+  const login = (entry) => entry?.login ?? null;
+  if (login(pr?.author) === me) return "author";
+  const reviewers = Array.isArray(pr?.reviewRequests)
+    ? pr.reviewRequests
+    : Array.isArray(pr?.requested_reviewers)
+      ? pr.requested_reviewers
+      : [];
+  if (reviewers.some((entry) => login(entry) === me)) return "reviewer";
+  if ((Array.isArray(pr?.assignees) ? pr.assignees : []).some((entry) => login(entry) === me))
+    return "assignee";
+  return null;
+}
+
+/**
+ * Whether `text` mentions `login`. GitHub renders App mentions without the
+ * `[bot]` suffix, so `noema-agent[bot]` is matched as `noema-agent`.
+ */
+export function mentionsLogin(text, login) {
+  if (!login) return false;
+  const handle = login.replace(/\[bot\]$/u, "");
+  if (handle.length === 0) return false;
+  const escaped = handle.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  return new RegExp(`(^|[^\\w./-])@${escaped}(?![\\w-])`, "iu").test(String(text ?? ""));
+}
+
+export function extractPrEvents(prs = [], { me = null } = {}) {
   const events = [];
   for (const pr of Array.isArray(prs) ? prs : []) {
     const number = pr?.number;
     if (!number) continue;
-    const digest = prStatusDigest(pr);
-    const reasons = [];
-    const failing = failingCheckNames(pr);
-    if (failing.length) reasons.push(`checks failed: ${failing.slice(0, 4).join(", ")}`);
+    const role = prRole(pr, me);
+    // An event belongs to an identity, not to a repository: the reviewer asked
+    // for me is my task, the author waiting for someone else is not.
+    if (role === null) continue;
     const review = String(pr?.reviewDecision ?? "").toUpperCase();
-    if (review === "CHANGES_REQUESTED") reasons.push("changes requested");
-    else if (review === "REVIEW_REQUIRED") reasons.push("review requested");
-    if (!reasons.length) continue;
+    const failing = failingCheckNames(pr);
+    const reasons = [];
+    if (role === "reviewer") {
+      // Already reviewed: the ball is back with the author.
+      if (review === "CHANGES_REQUESTED") continue;
+      reasons.push("review requested from you");
+    } else {
+      if (failing.length) reasons.push(`checks failed: ${failing.slice(0, 4).join(", ")}`);
+      if (review === "CHANGES_REQUESTED") reasons.push("changes requested");
+    }
+    if (reasons.length === 0) continue;
+    // A reviewer's key must not move when checks change: it is the same review
+    // task until they actually review.
+    const digest = role === "reviewer" ? "review-requested" : prStatusDigest(pr);
     events.push({
-      key: `pr:${number}:${digest}`,
+      key: `pr:${number}:${role}:${digest}`,
       kind: "pr",
+      role,
+      repo: activeRepo,
       label: "PR",
       number,
       title: singleLine(pr?.title ?? ""),
@@ -280,10 +367,13 @@ export function extractNotificationEvents(notifications = [], { repo = REPO } = 
     const subjectKind = subject.type === "PullRequest" ? "PR" : "issue";
     const title = singleLine(subject.title ?? `#${number}`);
     const at = notification.updated_at ?? null;
+    const role = NOTIFICATION_ROLES[notification.reason] ?? "mention";
     if (commentId) {
       events.push({
-        key: `comment:${commentId}`,
+        key: `comment:${commentId}:${role}`,
         kind: "comment",
+        role,
+        repo: repoFullName,
         label: "Comment",
         ref: `${subjectKind} #${number}`,
         title,
@@ -292,8 +382,10 @@ export function extractNotificationEvents(notifications = [], { repo = REPO } = 
       });
     } else if (subject.type === "Issue") {
       events.push({
-        key: `issue:${number}:${at ?? ""}`,
+        key: `issue:${number}:${role}:${at ?? ""}`,
         kind: "issue",
+        role,
+        repo: repoFullName,
         label: "Issue",
         ref: `#${number}`,
         title,
@@ -308,15 +400,20 @@ export function extractNotificationEvents(notifications = [], { repo = REPO } = 
   return events;
 }
 
-export function extractCommentEvents(comments = []) {
+export function extractCommentEvents(comments = [], { me = null } = {}) {
   const events = [];
   for (const comment of Array.isArray(comments) ? comments : []) {
     const id = comment?.id;
     if (id == null) continue;
+    // Without an identity every comment in the repository is "news"; with one,
+    // only a comment that names me is a task for me.
+    if (me && (comment?.user?.login === me || !mentionsLogin(comment?.body, me))) continue;
     const number = issueNumberFromApiUrl(comment.issue_url);
     events.push({
-      key: `comment:${id}`,
+      key: `comment:${id}:mention`,
       kind: "comment",
+      role: "mention",
+      repo: activeRepo,
       label: "Comment",
       ref: number ? `#${number}` : "comment",
       title: excerptOf(comment.body) || `comment by ${comment.user?.login ?? "unknown"}`,
@@ -327,7 +424,7 @@ export function extractCommentEvents(comments = []) {
   return events;
 }
 
-export function extractIssueEvents(issues = [], state = {}) {
+export function extractIssueEvents(issues = [], state = {}, { me = null } = {}) {
   const since =
     typeof state?.lastPollAt === "string" && Number.isFinite(Date.parse(state.lastPollAt))
       ? Date.parse(state.lastPollAt)
@@ -335,11 +432,27 @@ export function extractIssueEvents(issues = [], state = {}) {
   const events = [];
   for (const issue of Array.isArray(issues) ? issues : []) {
     if (!issue || issue.pull_request || issue.number == null) continue;
+    const role = me
+      ? issue?.user?.login === me
+        ? "author"
+        : (Array.isArray(issue?.assignees) ? issue.assignees : []).some(
+              (entry) => entry?.login === me,
+            )
+          ? "assignee"
+          : mentionsLogin(issue?.body, me)
+            ? "mention"
+            : null
+      : "any";
+    if (role === null) continue;
+    // Only issues that started after the previous poll are news; an old issue
+    // that mentions me is caught by the comment feed when someone replies.
     const createdAt = Date.parse(issue.created_at ?? issue.createdAt ?? "");
     if (since != null && Number.isFinite(createdAt) && createdAt <= since) continue;
     events.push({
-      key: `issue:${issue.number}:${issue.updated_at ?? issue.updatedAt ?? ""}`,
+      key: `issue:${issue.number}:${role}:${issue.updated_at ?? issue.updatedAt ?? ""}`,
       kind: "issue",
+      role,
+      repo: activeRepo,
       label: "Issue",
       ref: `#${issue.number}`,
       title: singleLine(issue.title ?? ""),
@@ -353,14 +466,22 @@ export function extractIssueEvents(issues = [], state = {}) {
 export function extractEvents(
   { runs = [], prs = [], notifications = [], comments = [], issues = [] } = {},
   state = {},
+  { me = null } = {},
 ) {
-  return [
+  const events = [
     ...extractRunEvents(runs, state),
-    ...extractPrEvents(prs),
+    ...extractPrEvents(prs, { me }),
     ...extractNotificationEvents(notifications),
-    ...extractCommentEvents(comments),
-    ...extractIssueEvents(issues, state),
+    ...extractCommentEvents(comments, { me }),
+    ...extractIssueEvents(issues, state, { me }),
   ];
+  // Every event names the repository it came from and how this identity is
+  // involved, so delivery never has to guess either from the session's cwd.
+  return events.map((event) => ({
+    repo: activeRepo,
+    role: event.kind === "ci" || event.kind === "recovered" ? "ci" : "any",
+    ...event,
+  }));
 }
 
 export function sortEvents(events = []) {
@@ -419,6 +540,7 @@ export function pollOnce({
   state,
   repeat = false,
   now = new Date(),
+  me = null,
   fetchRuns,
   fetchPrs,
   fetchFeed = () => ({ ok: true, source: "none", notifications: [], comments: [], issues: [] }),
@@ -457,7 +579,7 @@ export function pollOnce({
     comments: Array.isArray(feed.comments) ? feed.comments : [],
     issues,
   };
-  const events = extractEvents(payload, state);
+  const events = extractEvents(payload, state, { me });
   const fresh = sortEvents(repeat ? events : diffEvents(events, state));
   const nextState = updateState(state, { ...payload, events, now });
   return {
@@ -478,6 +600,7 @@ export function formatEvent(event) {
   const title = singleLine(event.title ?? "").slice(0, 140);
   const sha = event.sha ? `(${event.sha})` : "";
   const url = singleLine(event.url ?? "");
+  const role = event.role && event.role !== "any" && event.role !== "ci" ? `/${event.role}` : "";
   switch (event.kind) {
     case "ci": {
       const conclusion = event.conclusion === "failure" ? "failed" : (event.conclusion ?? "failed");
@@ -486,13 +609,18 @@ export function formatEvent(event) {
     case "recovered":
       return compact([`[CI] recovered: run ${event.runId} succeeded:`, title, sha, url]);
     case "pr":
-      return compact([`[PR] #${event.number}`, `${(event.reasons ?? []).join("; ")}:`, title, url]);
+      return compact([
+        `[PR${role}] #${event.number}`,
+        `${(event.reasons ?? []).join("; ")}:`,
+        title,
+        url,
+      ]);
     case "comment":
-      return compact([`[Comment] ${event.ref ?? ""}:`, title, url]);
+      return compact([`[Comment${role}] ${event.ref ?? ""}:`, title, url]);
     case "issue":
-      return compact([`[Issue] ${event.ref ?? ""}:`, title, url]);
+      return compact([`[Issue${role}] ${event.ref ?? ""}:`, title, url]);
     default:
-      return compact([`[${event.label ?? event.kind ?? "event"}]`, title, url]);
+      return compact([`[${event.label ?? event.kind ?? "event"}${role}]`, title, url]);
   }
 }
 
@@ -643,6 +771,7 @@ function ghJson(args, { cwd, timeout = GH_TIMEOUT_MS } = {}) {
   } catch (error) {
     return { ok: false, reason: describeGhError(error) };
   }
+  const token = activeIdentity?.token ?? null;
   try {
     const stdout = execFileSync(executable, args, {
       cwd,
@@ -651,11 +780,32 @@ function ghJson(args, { cwd, timeout = GH_TIMEOUT_MS } = {}) {
       windowsHide: true,
       maxBuffer: 32 * 1024 * 1024,
       stdio: ["ignore", "pipe", "pipe"],
+      // An App installation token only exists for this call: `gh` reads
+      // GH_TOKEN, so the ambient login is never used for a configured identity.
+      ...(token ? { env: { ...process.env, GH_TOKEN: token, GITHUB_TOKEN: token } } : {}),
     });
     return { ok: true, value: JSON.parse(stdout) };
   } catch (error) {
     return { ok: false, reason: describeGhError(error) };
   }
+}
+
+let cachedLogin;
+
+/**
+ * The login the events are filtered against. An explicit `identity.login` wins;
+ * otherwise the ambient `gh` login is asked once per process. A failed lookup
+ * returns null (no filter) rather than inventing an identity.
+ */
+export function resolveLogin(cwd) {
+  const explicit = meLogin();
+  if (explicit) return explicit;
+  if (cachedLogin !== undefined) return cachedLogin;
+  const result = ghJson(["api", "user"], { cwd });
+  const login = result.ok ? (result.value?.login ?? null) : null;
+  cachedLogin = login;
+  if (login && activeIdentity) activeIdentity = { ...activeIdentity, login };
+  return login;
 }
 
 export function fetchRuns(cwd) {
@@ -713,6 +863,10 @@ export function notificationsSince(state, cwd) {
 }
 
 export function fetchFeed(state, cwd) {
+  // A GitHub App has no user notification stream: the endpoint answers
+  // `403 Resource not accessible by integration`. Reading the repository feeds
+  // directly is the same information without a guaranteed failure per poll.
+  if (activeIdentity?.kind === "app") return notificationsSince(state, cwd);
   const notifications = ghJson(["api", `repos/${activeRepo}/notifications`], { cwd });
   if (notifications.ok) {
     return {
@@ -827,11 +981,21 @@ function printSkipped(options, reason) {
   return 0;
 }
 
-function runPoll({ repoRoot, stateFile, pendingFile, state, options, now }) {
+/** Identity passed by the plugin: `INBOX_IDENTITY_{KIND,LOGIN,TOKEN}`. */
+function identityFromEnv(env = process.env) {
+  const login = env.INBOX_IDENTITY_LOGIN || null;
+  const token = env.INBOX_IDENTITY_TOKEN || null;
+  const kind = env.INBOX_IDENTITY_KIND === "app" ? "app" : "user";
+  if (!login && !token) return null;
+  return { kind, login, token };
+}
+
+function runPoll({ repoRoot, stateFile, pendingFile, state, options, now, me }) {
   const result = pollOnce({
     state,
     repeat: options.repeat === true,
     now,
+    me,
     fetchRuns: () => fetchRuns(repoRoot),
     fetchPrs: () => fetchOpenPullRequests(repoRoot),
     fetchIssues: () => fetchOpenIssues(repoRoot),
@@ -875,7 +1039,7 @@ function runPoll({ repoRoot, stateFile, pendingFile, state, options, now }) {
   return 0;
 }
 
-function runAll({ repoRoot, stateFile, pendingFile, state, options, now }) {
+function runAll({ repoRoot, stateFile, pendingFile, state, options, now, me }) {
   const runsResult = fetchRuns(repoRoot);
   if (!runsResult.ok) return printSkipped(options, runsResult.reason);
   const prsResult = fetchOpenPullRequests(repoRoot);
@@ -904,12 +1068,12 @@ function runAll({ repoRoot, stateFile, pendingFile, state, options, now }) {
   }
 
   console.log(
-    `github-inbox: all | repo ${activeRepo} | polled ${toIso(now)} | seen ${Object.keys(state.seen).length}/${MAX_SEEN}`,
+    `github-inbox: all | repo ${activeRepo} | as ${me ?? "(unfiltered)"} | polled ${toIso(now)} | seen ${Object.keys(state.seen).length}/${MAX_SEEN}`,
   );
   console.log(`github-inbox: main runs (newest first) — ${runs.length}`);
   for (const run of runs) console.log(formatRunLine(run));
   console.log(`github-inbox: open PRs — ${prs.length}`);
-  for (const pr of prs) console.log(formatPrLine(pr));
+  for (const pr of prs) console.log(formatPrLine(pr, me));
   console.log(
     `github-inbox: lastPollAt=${state.lastPollAt ?? "(none)"} lastRun=${
       state.lastRun ? `${state.lastRun.id} ${state.lastRun.conclusion}` : "(none)"
@@ -923,20 +1087,23 @@ function runCli(argv) {
   const options = parseArgs(argv);
   options.repo = options.repo ?? repoFromGit(process.cwd());
   setRepo(options.repo);
+  setIdentity(identityFromEnv());
   if (options.help) {
     console.log(USAGE);
     return 0;
   }
   const repoRoot = process.cwd();
+  // Resolved once per poll: it decides which events belong to this identity.
+  const me = resolveLogin(repoRoot);
   const workDir = path.join(repoRoot, ".work", "github-inbox");
   const stateFile = path.join(workDir, "state.json");
   const pendingFile = path.join(workDir, "pending.md");
   const now = new Date();
   const state = readStateFile(stateFile);
   if (options.mode === "all") {
-    return runAll({ repoRoot, stateFile, pendingFile, state, options, now });
+    return runAll({ repoRoot, stateFile, pendingFile, state, options, now, me });
   }
-  return runPoll({ repoRoot, stateFile, pendingFile, state, options, now });
+  return runPoll({ repoRoot, stateFile, pendingFile, state, options, now, me });
 }
 
 const isDirectInvocation = (() => {

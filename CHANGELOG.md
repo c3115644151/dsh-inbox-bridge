@@ -2,6 +2,17 @@
 
 Format: keep a short entry per released version. Dates are UTC.
 
+## 2.1.0
+
+- 新增 `identity`：poller 以某个身份读 GitHub（本机 `gh` 登录，或 App 安装令牌），并从身份推导每条事件的角色。
+- 新增 `roles`：本机只接受哪些角色（`author` / `reviewer` / `assignee` / `mention` / `ci`）；空数组表示全部接受。
+- 事件按角色过滤：别人欠的评审、别人作者的 PR 失败不再变成我的通知；`REVIEW_REQUIRED` 单独不再成事件，只有**我被请求评审**才提醒。
+- 事件 key 带角色段（`pr:131:author:…`、`comment:6885266487:mention`、`issue:150:assignee:…`）；`repo` 与 `role` 写进每条事件，投递侧不再从会话 cwd 猜。
+- 修复：只 ack 真正投出去的 key，之前没投出去的事件会被误标 `delivered`，因此永远不再重投。
+- 修复：`delivery: wakeup` 的通知文案不再承诺「长时间没人发言才开一轮」——当前没有空闲门槛，文案改为如实描述。
+- App 身份跳过 `/notifications`（App 没有用户收件箱，该接口返回 403），只读仓库状态。
+- 新增 `ROADMAP.md`；README 明确定位：运输层通用、来源层当前只有 GitHub。
+
 ## 2.0.4
 
 - 描述以「队列 + 回合边界投递」为主语，轮询只作为采集实现写进「工作原理」：2.0.0 之后的产品语义是事件收件箱，不是“轮询一个外部来源”。

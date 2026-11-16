@@ -2,12 +2,14 @@
 
 # dsh-inbox-bridge
 
-Turns GitHub CI, pull requests and issues into one notice at the start of the next conversation turn.
+Turns the repository events that concern you into one notice at the start of the next conversation turn.
 
-A DeepSeek Harness plugin: it keeps GitHub CI runs, pull request checks and issues in `pending` / `delivered` / `done` state and delivers them at a turn boundary. It queues by default and does not open a turn; `wakeup` mode wakes one idle session. Collection happens by polling in the background (see "How it works"). It was extracted from the [Noema](https://github.com/Noema-Harness/noema-agent) workspace; nothing in it is Noema-specific.
+A DeepSeek Harness plugin: it reads one repository as **one identity** (the local `gh` login or a GitHub App installation token) and keeps the events that identity is **related to** — a PR I authored failing a check, a review requested of me, an issue assigned to me, a comment that mentions me, CI on the default branch — in `pending` / `delivered` / `done` state, delivering them at a turn boundary. It queues by default and does not open a turn; `wakeup` mode wakes one idle session.
+
+**GitHub only, for now.** The transport layer (three-state queue, turn-boundary delivery, dedupe, recovery) is source-agnostic, but GitHub is the only source implemented; mail, GitLab and RSS are not. See [ROADMAP.md](ROADMAP.md).
 
 - Repository: <https://github.com/c3115644151/dsh-inbox-bridge>
-- Version: 2.0.3, MIT
+- Version: 2.1.0, MIT
 - Environment: Node.js >= 20; the plugin starts with the DSH process
 
 ## What it solves
@@ -89,12 +91,18 @@ Configuration goes under the `inbox-bridge` row of `cordis.patch.yml`, for examp
 | `injectWhileRunning` | `false` | inject mid-turn (interrupts tool loops) |
 | `delivery` | `quiet` | `quiet` only queues the notice for a session's next turn; `wakeup` also starts a turn with followup |
 | `maxConsecutiveWakes` | `3` | with `wakeup`, how many turns one session may have opened before the user speaks again; beyond it the notice is queued |
+| `identity` | `{ kind: "user" }` | whose eyes read GitHub: `kind: "user"` uses the local `gh` login; `kind: "app"` needs `token` or `tokenEnv` (an App installation token) |
+| `roles` | `[]` | event roles this host accepts (`author` / `reviewer` / `assignee` / `mention` / `ci`); an empty list accepts all |
 | `ackHint` | `ack --done -- <key>` | how the notice tells the agent to mark an event done |
 | `poll` / `ack` | the bundled CLI | `{ command, args }` for any custom source |
 
 `wake` was replaced by `delivery` in 2.0.0; the old key makes the plugin refuse to start with an explanation instead of silently changing behaviour.
 
-**Repository association** — a notice only reaches sessions whose workspace `origin` equals the watched `owner/name`. Sessions in another repository stay silent even when idle: that is someone else's CI, not yours. A session whose workspace names no repository gets no event notices (only the "no repository to watch" infrastructure reminder).
+**Identity (`identity`)** — the poller calls `gh` as this identity. `kind: "user"` reuses the local `gh` login; `kind: "app"` uses an installation token, given inline as `token` or through `tokenEnv` (preferred: the token never lands in a config file). A GitHub App has no user notification stream (`/notifications` answers `403 Resource not accessible by integration`), so that endpoint is skipped and only repository state is read.
+
+**Role (`roles`)** — decides which events in the same repository count as mine. An event carries a `role`: `author` (my PR failed or is asked to change), `reviewer` (a review was requested of me), `assignee` (an issue assigned to me), `mention` (a comment mentions me), `ci` (default-branch CI, not tied to a person). `REVIEW_REQUIRED` alone is repository state, not a task: only a review requested of *me* notifies me; reviews somebody else owes do not.
+
+**Repository association** — a notice only reaches sessions whose workspace `origin` equals the event's repository and whose host accepts the event's role. Sessions in another repository stay silent even when idle: that is someone else's CI, not yours. A session whose workspace names no repository gets no event notices (only the "no repository to watch" infrastructure reminder). Only keys that were actually delivered are marked `delivered`; an undelivered event stays pending for the next poll.
 
 
 The `poll` command only has to print one JSON line to stdout: `{ "events": [...], "skipped": null }`. The `ack` command receives event keys through the `INBOX_BRIDGE_KEYS` environment variable and accepts a `--done` flag. Implement those two commands and any source works.
@@ -125,23 +133,35 @@ State lives in `.work/inbox-bridge/state.json`; the append-only log is `.work/in
 ## How it works
 
 1. Every `intervalMs`, the plugin runs the `poll` command and takes the events that still deserve attention.
-2. Only idle agents are targeted, and only those whose workspace `origin` matches the watched repository: idle ones receive the notice immediately, running ones are held until `agent/status` becomes `idle`.
-3. `delivery` picks the method: `quiet` (the default) always `inject`s, so the notice waits for that session's next turn and never opens one; `wakeup` also uses `followup` on the first session that has not exceeded `maxConsecutiveWakes`, a budget reset whenever the user speaks.
-4. A successful delivery acks `delivered`; `kind: infra` events are also acked `done`.
-5. On later polls, `delivered` events older than `resurfaceMs` return to `pending` and are reminded again; `done` never returns.
-6. When a newer run succeeds, older failures of the same workflow and branch are closed by the `recovered` event.
+2. The poller resolves the identity (`identity.login`, or `gh api user` once) and keeps only events that concern it: a check failing on a PR I authored, a review requested of me, an issue assigned to me, a comment mentioning me, CI failing on the default branch. Somebody else's failing PR is not my notice.
+3. Only idle agents are targeted, and only those whose workspace `origin` matches the event's repository and whose host accepts the event's role: idle ones receive the notice immediately, running ones are held until `agent/status` becomes `idle`.
+4. `delivery` picks the method: `quiet` (the default) always `inject`s, so the notice waits for that session's next turn and never opens one; `wakeup` also uses `followup` on the first session that has not exceeded `maxConsecutiveWakes`, a budget reset whenever the user speaks.
+5. A successful delivery acks `delivered` — only the keys actually handed out; `kind: infra` events are also acked `done`.
+6. On later polls, `delivered` events older than `resurfaceMs` return to `pending` and are reminded again; `done` never returns.
+7. When a newer run succeeds, older failures of the same workflow and branch are closed by the `recovered` event.
 
 A notice is a `source.kind = inbox-bridge` message carrying the event keys and the ack command. It means "there is new external input", not "the user asked something".
 
 ## Known limitations
 
 - **GitHub read state is not synced** — the plugin only changes local state. It does not mark GitHub notifications as read, and reading them on GitHub does not mark them `done`.
+- **An App has no user inbox** — with `kind: "app"` the `/notifications` endpoint is unreadable (403) and events come only from querying repository state; something handed to you that did not land on a PR, issue or comment will not show up.
+- **Roles depend on `identity.login`** — when the login cannot be resolved, roles degrade to `any` (no identity filtering): over-reporting beats missing a real failure, and the log carries the clue.
 - **`quiet` is not real-time** — with no turn starting, a notice can stay queued indefinitely. For real-time reminders set `delivery: wakeup` and accept that it opens turns for you (bounded by `maxConsecutiveWakes`).
 - **One repository per workspace** — `repo` / `INBOX_REPO` / the git remote pick a single repository, and state is stored per workspace under `.work/`. For several repositories, use several workspaces or a custom `poll`.
 - **GitHub API rate limits** — each poll calls at least 3 `gh` endpoints; when rate-limited, that poll is skipped and logged. A larger `intervalMs` lowers the rate.
 - **Polling only runs while DSH runs** — nothing is pushed while DSH is stopped; after a restart, the next poll picks up whatever the source still keeps.
 - **The notice body is Chinese** — `label` changes the title, but the built-in guidance text is fixed Chinese.
-- **The built-in source is GitHub only** — CI, pull request and issue events come from `gh`. `poll` / `ack` can point at a custom script, but this package ships no mail or local-command source.
+- **The built-in source is GitHub only** — CI, pull request, issue and comment events come from `gh`. `poll` / `ack` can point at a custom script, but this package ships no mail, GitLab or RSS source yet; see [ROADMAP.md](ROADMAP.md).
+
+### Upgrade note (2.0.x to 2.1.0)
+
+2.1.0 changes *which events count as mine*:
+
+- New `identity`: the poller reads GitHub as one identity and derives roles from it. Older versions did not distinguish identities, so any failing PR in the repository notified you.
+- Event keys now carry a role segment (`pr:131:author:failed[verify]|review:NONE`, `comment:6885266487:mention`, `issue:150:assignee:…`). Old keys no longer match, so the first poll after upgrading reports whatever currently deserves attention once; `ack --all-delivered --done` clears it.
+- `REVIEW_REQUIRED` no longer produces an event on its own: only a review requested of *me* notifies me.
+- Delivery acks only the events actually handed out; the earlier bug that marked undelivered events `delivered` is gone.
 
 ### Upgrade note (1.5.x to 2.0.0)
 
@@ -163,7 +183,7 @@ npm test
 node --test index.test.mjs scripts/github-inbox.test.mjs scripts/inbox-bridge.test.mjs
 ```
 
-The 47 tests cover the pure logic: state transitions (never backwards, a repeated delivery moves the timestamp forward), event classification, the resurface window, recovery/auto-close, the delivery guard, repository association, the wake budget and notice formatting.
+The 57 tests cover the pure logic: state transitions (never backwards, a repeated delivery moves the timestamp forward), event classification, the resurface window, recovery/auto-close, the delivery guard, repository association, identity and role routing, the wake budget and notice formatting.
 
 | File | Responsibility |
 | --- | --- |

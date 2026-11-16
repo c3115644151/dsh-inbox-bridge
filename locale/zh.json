@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "GitHub 收件箱",
-    "description": "把 GitHub 的 CI、PR 和 issue 变成下一次对话开头的一条通知：默认只排队，不替你开轮；wakeup 模式会唤醒一个空闲会话。条目分 pending / delivered / done 三态，同一事件不会无限重复。",
+    "description": "只读一个 GitHub 仓库，按身份判断哪些事件与你有关：我作者的 PR 失败、我被请求评审、分配给我的 issue、@我的评论、默认分支 CI。条目分 pending / delivered / done 三态，默认只排队（quiet），不替你开轮。目前仅支持 GitHub。",
     "detail": "docs/DETAIL.zh.md"
   }
 }

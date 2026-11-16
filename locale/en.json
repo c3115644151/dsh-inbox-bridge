@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "GitHub inbox",
-    "description": "Turns GitHub CI runs, pull requests and issues into one notice queued at the start of the next turn: it queues by default and does not open a turn, and wakeup mode wakes one idle session. Items move through pending / delivered / done so the same event is not repeated forever.",
+    "description": "Reads one GitHub repository as one identity and keeps only the events that concern it: my failing PR, reviews requested of me, issues assigned to me, comments that mention me, default-branch CI. Items move through pending / delivered / done and queue by default (quiet) instead of opening a turn. GitHub only, for now.",
     "detail": "docs/DETAIL.md"
   }
 }

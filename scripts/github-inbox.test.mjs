@@ -14,6 +14,8 @@ import {
   extractPrEvents,
   extractRunEvents,
   formatEvent,
+  mentionsLogin,
+  prRole,
   setRepo,
   watchedRepo,
   normalizeState,
@@ -52,12 +54,17 @@ function checkRun(overrides = {}) {
   };
 }
 
+const ME = "noema-agent[bot]";
+
 function pullRequest(overrides = {}) {
   return {
     number: 131,
     title: "refactor: migrate first 57 main-process modules to TypeScript (D-019)",
     headRefName: "ts-migration-phase-0-1",
     url: "https://github.com/Noema-Harness/noema-agent/pull/131",
+    author: { login: ME },
+    reviewRequests: [],
+    assignees: [],
     reviewDecision: "",
     updatedAt: "2026-11-15T04:02:18Z",
     statusCheckRollup: [checkRun()],
@@ -235,7 +242,7 @@ test("PR status transition notifies only when the new digest is unseen", () => {
   });
   assert.equal(failed.fresh.length, 1);
   assert.equal(failed.fresh[0].number, 131);
-  assert.equal(failed.fresh[0].key, `pr:131:${prStatusDigest(pullRequest())}`);
+  assert.equal(failed.fresh[0].key, `pr:131:any:${prStatusDigest(pullRequest())}`);
 
   const repeated = pollOnce({
     state: failed.nextState,
@@ -245,39 +252,54 @@ test("PR status transition notifies only when the new digest is unseen", () => {
   assert.deepEqual(repeated.fresh, []);
 });
 
-test("checks still running keep one PR key until one fails", () => {
+test("checks moving around one failure keep one PR key", () => {
   const base = {
     number: 157,
     title: "fix: only block commits on the decisions a change references",
     url: "https://github.com/Noema-Harness/noema-agent/pull/157",
+    author: { login: ME },
+    reviewRequests: [],
+    assignees: [],
     reviewDecision: "REVIEW_REQUIRED",
   };
-  const running = extractPrEvents([
-    { ...base, statusCheckRollup: [
-      { name: "verify", status: "QUEUED" },
-      { name: "platform", status: "IN_PROGRESS" },
-      { name: "collaboration", conclusion: "SUCCESS" },
-    ] },
-  ]);
-  const later = extractPrEvents([
-    { ...base, statusCheckRollup: [
-      { name: "verify", conclusion: "SUCCESS" },
-      { name: "platform", conclusion: "SUCCESS" },
-      { name: "collaboration", conclusion: "SUCCESS" },
-    ] },
-  ]);
-  assert.equal(running.length, 1);
-  assert.equal(later.length, 1);
-  assert.equal(running[0].key, later[0].key);
-  const failed = extractPrEvents([
-    { ...base, statusCheckRollup: [
-      { name: "verify", conclusion: "FAILURE" },
-      { name: "platform", conclusion: "SUCCESS" },
-      { name: "collaboration", conclusion: "SUCCESS" },
-    ] },
-  ]);
-  assert.notEqual(failed[0].key, running[0].key);
-  assert.match(failed[0].reasons.join(" "), /checks failed: verify/u);
+  // Nothing has failed yet: a PR whose checks are still queued is not news.
+  const running = extractPrEvents(
+    [
+      { ...base, statusCheckRollup: [
+        { name: "verify", status: "QUEUED" },
+        { name: "platform", status: "IN_PROGRESS" },
+        { name: "collaboration", conclusion: "SUCCESS" },
+      ] },
+    ],
+    { me: ME },
+  );
+  assert.deepEqual(running, []);
+
+  const failing = extractPrEvents(
+    [
+      { ...base, statusCheckRollup: [
+        { name: "verify", conclusion: "FAILURE" },
+        { name: "platform", status: "IN_PROGRESS" },
+        { name: "collaboration", conclusion: "SUCCESS" },
+      ] },
+    ],
+    { me: ME },
+  );
+  const settled = extractPrEvents(
+    [
+      { ...base, statusCheckRollup: [
+        { name: "verify", conclusion: "FAILURE" },
+        { name: "platform", conclusion: "SUCCESS" },
+        { name: "collaboration", conclusion: "SUCCESS" },
+      ] },
+    ],
+    { me: ME },
+  );
+  assert.equal(failing.length, 1);
+  assert.equal(settled.length, 1);
+  // Another check finishing must not mint a new key for the same failure.
+  assert.equal(failing[0].key, settled[0].key);
+  assert.match(failing[0].reasons.join(" "), /checks failed: verify/u);
 });
 
 test("a moved completion timestamp is not a new PR state", () => {
@@ -299,19 +321,45 @@ test("a moved completion timestamp is not a new PR state", () => {
   assert.notEqual(reviewed, before);
 });
 
-test("PR asking for a review notifies; green PR stays silent", () => {
+test("PR asking for a review notifies the reviewer; green PR stays silent", () => {
+  const requesting = pullRequest({
+    reviewDecision: "REVIEW_REQUIRED",
+    author: { login: "c3115644151" },
+    reviewRequests: [{ login: ME }],
+    statusCheckRollup: [],
+  });
+  const events = extractPrEvents([requesting], { me: ME });
+  assert.equal(events.length, 1);
+  assert.equal(events[0].role, "reviewer");
+  assert.equal(events[0].key, "pr:131:reviewer:review-requested");
+  assert.match(formatEvent(events[0]), /^\[PR\/reviewer\] #131 review requested from you:/u);
+
+  // `REVIEW_REQUIRED` alone is repository state, not a task: the author must not
+  // be told about a review somebody else owes them.
   assert.equal(
-    extractPrEvents([pullRequest({ reviewDecision: "REVIEW_REQUIRED", statusCheckRollup: [] })])
-      .length,
-    1,
+    extractPrEvents(
+      [
+        pullRequest({
+          reviewDecision: "REVIEW_REQUIRED",
+          reviewRequests: [{ login: "someone" }],
+          statusCheckRollup: [],
+        }),
+      ],
+      { me: ME },
+    ).length,
+    0,
   );
+
   assert.equal(
-    extractPrEvents([
-      pullRequest({
-        reviewDecision: "APPROVED",
-        statusCheckRollup: [checkRun({ conclusion: "SUCCESS" })],
-      }),
-    ]).length,
+    extractPrEvents(
+      [
+        pullRequest({
+          reviewDecision: "APPROVED",
+          statusCheckRollup: [checkRun({ conclusion: "SUCCESS" })],
+        }),
+      ],
+      { me: ME },
+    ).length,
     0,
   );
 });
@@ -355,7 +403,7 @@ test("issue and PR comment notifications map to comment:<id>; CI CheckSuite noti
   ]);
   assert.deepEqual(
     events.map((event) => event.key),
-    ["comment:6885266487", "issue:143:2026-11-15T04:10:00Z"],
+    ["comment:6885266487:mention", "issue:143:mention:2026-11-15T04:10:00Z"],
   );
   assert.equal(events[0].kind, "comment");
   assert.equal(events[0].ref, "PR #131");
@@ -373,7 +421,7 @@ test("comment fallback extracts comments; only issues created since the last pol
       created_at: "2026-11-15T04:05:00Z",
     },
   ]);
-  assert.equal(comments[0].key, "comment:6885266487");
+  assert.equal(comments[0].key, "comment:6885266487:mention");
   assert.equal(comments[0].ref, "#143");
   assert.equal(comments[0].title, "安装器");
 
@@ -398,7 +446,7 @@ test("comment fallback extracts comments; only issues created since the last pol
     extractIssueEvents(issues, normalizeState({ lastPollAt: "2026-11-15T04:30:00Z" })).map(
       (event) => event.key,
     ),
-    ["issue:150:t150"],
+    ["issue:150:any:t150"],
   );
 });
 
@@ -561,4 +609,102 @@ test("parseArgs accepts --repo and --repeat", () => {
   const options = parseArgs(["--poll", "--repeat", "--repo", "someone/other"]);
   assert.equal(options.repeat, true);
   assert.equal(options.repo, "someone/other");
+});
+
+// ---------------------------------------------------------------------------
+// Identity: which relationship makes an event mine
+// ---------------------------------------------------------------------------
+
+test("prRole names the relation, and a stranger's PR has none", () => {
+  assert.equal(prRole(pullRequest({ author: { login: ME } }), ME), "author");
+  assert.equal(
+    prRole(pullRequest({ reviewRequests: [{ login: ME }], author: { login: "c3115644151" } }), ME),
+    "reviewer",
+  );
+  assert.equal(
+    prRole(pullRequest({ assignees: [{ login: ME }], author: { login: "c3115644151" } }), ME),
+    "assignee",
+  );
+  assert.equal(prRole(pullRequest({ author: { login: "c3115644151" } }), ME), null);
+  // Without an identity there is nothing to compare against: accept everything.
+  assert.equal(prRole(pullRequest({ author: { login: "c3115644151" } }), null), "any");
+});
+
+test("a stranger's failing PR is not my task", () => {
+  const theirs = extractPrEvents([pullRequest({ author: { login: "c3115644151" } })], { me: ME });
+  assert.deepEqual(theirs, []);
+  const mine = extractPrEvents([pullRequest({ author: { login: ME } })], { me: ME });
+  assert.equal(mine.length, 1);
+  assert.equal(mine[0].role, "author");
+});
+
+test("a review request addressed to someone else is not mine", () => {
+  const events = extractPrEvents(
+    [pullRequest({ author: { login: "c3115644151" }, reviewRequests: [{ login: "ichika0130" }] })],
+    { me: ME },
+  );
+  assert.deepEqual(events, []);
+});
+
+test("mentions match the App handle without its [bot] suffix", () => {
+  assert.equal(mentionsLogin("@noema-agent 看一下", ME), true);
+  // Someone typing the full account name still means the App.
+  assert.equal(mentionsLogin("cc @noema-agent[bot]", ME), true);
+  assert.equal(mentionsLogin("noema-agent without an at", ME), false);
+  assert.equal(mentionsLogin("@noema-agents 团队", ME), false);
+  assert.equal(mentionsLogin(undefined, ME), false);
+});
+
+test("with an identity, only comments that mention me are news", () => {
+  const comment = (id, login, body) => ({
+    id,
+    issue_url: "https://api.github.com/repos/Noema-Harness/noema-agent/issues/143",
+    html_url: `https://github.com/Noema-Harness/noema-agent/issues/143#issuecomment-${id}`,
+    body,
+    created_at: "2026-11-15T04:05:00Z",
+    user: { login },
+  });
+  const mine = extractCommentEvents([comment(1, "c3115644151", "@noema-agent 请看这个")], { me: ME });
+  assert.equal(mine.length, 1);
+  assert.equal(mine[0].role, "mention");
+  assert.equal(mine[0].repo, watchedRepo());
+  assert.deepEqual(
+    extractCommentEvents([comment(2, "c3115644151", "自己记一笔")], { me: ME }),
+    [],
+  );
+  // My own comment never notifies me.
+  assert.deepEqual(extractCommentEvents([comment(3, ME, "@noema-agent 记一下")], { me: ME }), []);
+});
+
+test("issues are mine as author, assignee or mention — and only when new", () => {
+  const issue = (overrides = {}) => ({
+    number: 150,
+    title: "platform-core-boundary",
+    html_url: "https://github.com/Noema-Harness/noema-agent/issues/150",
+    created_at: "2026-11-15T05:00:00Z",
+    updated_at: "t150",
+    user: { login: "c3115644151" },
+    assignees: [],
+    ...overrides,
+  });
+  const state = normalizeState({ lastPollAt: "2026-11-15T04:30:00Z" });
+  assert.deepEqual(extractIssueEvents([issue()], state, { me: ME }), []);
+  const assigned = extractIssueEvents([issue({ assignees: [{ login: ME }] })], state, { me: ME });
+  assert.equal(assigned.length, 1);
+  assert.equal(assigned[0].role, "assignee");
+  assert.match(assigned[0].key, /^issue:150:assignee:/u);
+  const mentioned = extractIssueEvents([issue({ body: "@noema-agent 负责这个" })], state, { me: ME });
+  assert.equal(mentioned[0].role, "mention");
+});
+
+test("every event names its repository and role for the delivery filter", () => {
+  const events = extractEvents(
+    { runs: [run()], prs: [pullRequest({ author: { login: ME } })] },
+    normalizeState({}),
+    { me: ME },
+  );
+  assert.equal(events.length, 2);
+  for (const event of events) assert.equal(event.repo, watchedRepo());
+  assert.equal(events.find((event) => event.kind === "ci").role, "ci");
+  assert.equal(events.find((event) => event.kind === "pr").role, "author");
 });

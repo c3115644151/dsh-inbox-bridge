@@ -1,8 +1,8 @@
 {
   "name": "dsh-inbox-bridge",
-  "version": "2.0.4",
+  "version": "2.1.0",
   "displayName": "GitHub inbox",
-  "description": "GitHub inbox for DeepSeek Harness: turns CI runs, pull requests and issues into one notice queued at the start of the next turn, and can wake one idle session in wakeup mode.",
+  "description": "GitHub inbox for DeepSeek Harness: reads one repository as one identity and turns the events that concern it (my failing PR, reviews requested of me, my issues, mentions, default-branch CI) into one notice queued at the start of the next turn.",
   "type": "module",
   "license": "MIT",
   "author": "c3115644151",
@@ -35,6 +35,7 @@
     "docs",
     "README.md",
     "README.en.md",
+    "ROADMAP.md",
     "CHANGELOG.md",
     "icon.svg",
     "LICENSE"

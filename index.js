@@ -57,6 +57,14 @@ const DEFAULTS = Object.freeze({
   delivery: "quiet",
   /** wakeups one agent may take before its next human message, then it only queues */
   maxConsecutiveWakes: 3,
+  /**
+   * Which GitHub identity the poller reads as. `kind: "user"` uses the ambient
+   * `gh` login; `kind: "app"` needs a token (`token` or `tokenEnv`) and has no
+   * notification stream — the poller then reads repository feeds only.
+   */
+  identity: { kind: "user", login: null, token: null, tokenEnv: null },
+  /** Event roles this host accepts (`author`/`reviewer`/`assignee`/`mention`/`ci`); empty = all */
+  roles: [],
   poll: { command: process.execPath, args: [CLI, "poll"] },
   ack: { command: process.execPath, args: [CLI, "ack"] },
 });
@@ -125,12 +133,15 @@ export function apply(ctx, config) {
       if (suppressed > 0) log(`suppressed ${suppressed} event(s) already delivered; waiting for ack`);
       if (events.length === 0) return;
       const { ready, deferred } = deliveryTargets(agents, options);
-      // A session is only told about the source its own workspace points at.
-      // Agents in another repository (or in none) must not see this repository's
-      // failures just because they happen to be idle in the same host.
-      const targets = ready.filter((agent) => matchesRepo(agent, options, repoNames));
-      const unassociated = ready.length - targets.length;
-      if (targets.length === 0) {
+      // Each session gets only the events its own repository and role match: one
+      // repository's failures must never reach a session working elsewhere.
+      const batches = new Map();
+      for (const agent of ready) {
+        const mine = events.filter((event) => matchesWatch(agent, event, options, repoNames));
+        if (mine.length > 0) batches.set(agent, mine);
+      }
+      const unassociated = ready.length - batches.size;
+      if (batches.size === 0) {
         // A running tool loop must not be interrupted: keep the events pending
         // (no ack) and deliver them when the run goes idle.
         log(
@@ -139,32 +150,36 @@ export function apply(ctx, config) {
         );
         return;
       }
-      const text = formatEvents(events, options);
-      const waking = new Set(wakeTargets(targets, options, wakeStreak));
+      const waking = new Set(wakeTargets([...batches.keys()], options, wakeStreak));
+      const deliveredKeys = new Set();
       let delivered = 0;
-      for (const agent of targets) {
+      for (const [agent, mine] of batches) {
         try {
-          const message = buildMessage(events.length, text, options.label);
+          const message = buildMessage(mine.length, formatEvents(mine, options), options.label);
           deliver(agent, message, waking);
+          for (const event of mine) deliveredKeys.add(event.key);
           delivered += 1;
         } catch (error) {
           log(`inject failed: ${describe(error)}`);
         }
       }
+      const deliveredEvents = events.filter((event) => deliveredKeys.has(event.key));
       if (delivered > 0) {
-        for (const event of events) recentlyDelivered.set(event.key, now);
+        for (const key of deliveredKeys) recentlyDelivered.set(key, now);
         // Only a wake that actually happened spends the budget; a queued notice
         // never does, because it does not open a turn.
         for (const agent of waking) wakeStreak.set(agent, (wakeStreak.get(agent) ?? 0) + 1);
         log(
-          `injected ${events.length} event(s) into ${delivered} agent(s) [${options.delivery}]` +
+          `injected ${deliveredEvents.length} event(s) into ${delivered} agent(s) [${options.delivery}]` +
             (waking.size > 0 ? `; woke ${waking.size} agent(s)` : "") +
             (deferred.length > 0 ? `; ${deferred.length} running agent(s) skipped` : "") +
             (unassociated > 0 ? `; ${unassociated} not on ${sourceLabel(options)}` : ""),
         );
-        await ackEvents(options, events, "delivered");
+        // Only what was actually handed to a session is marked delivered; leaving
+        // the rest pending is what lets the next poll deliver them.
+        await ackEvents(options, deliveredEvents, "delivered");
         // Infrastructure failures cannot be fixed by a code change: report once.
-        const infra = events.filter((event) => event.kind === "infra");
+        const infra = deliveredEvents.filter((event) => event.kind === "infra");
         if (infra.length > 0) await ackEvents(options, infra, "done");
       }
     } catch (error) {
@@ -271,15 +286,23 @@ export function repoOf(agent, options, cache = new Map(), now = Date.now()) {
 }
 
 /**
- * Whether an agent's session belongs to the polled source. Without a configured
- * source there is nothing to associate, so every agent matches; with one, an
- * agent that cannot name a repository is *not* a match — silence is better than
- * telling the wrong session about someone else's CI.
+ * Whether one event belongs in one session. Two facts decide it independently:
+ * the session's workspace points at the repository the event came from, and the
+ * host accepts the event's role. `role: "any"` always passes the role check —
+ * the source could not attribute it to an identity relationship.
  */
-export function matchesRepo(agent, options, cache) {
-  const repo = options?.repo ?? null;
-  if (!repo) return true;
-  return repoOf(agent, options, cache) === repo;
+export function matchesWatch(agent, event, options, cache) {
+  const eventRepo = event?.repo ?? options?.repo ?? null;
+  if (eventRepo) {
+    const sessionRepo = repoOf(agent, options, cache);
+    // Silence is better than telling the wrong session about someone else's
+    // repository: a session that cannot name one does not match.
+    if (!sessionRepo || sessionRepo.toLowerCase() !== eventRepo.toLowerCase()) return false;
+  }
+  const roles = options?.roles ?? DEFAULTS.roles;
+  const role = event?.role ?? "any";
+  if (roles.length > 0 && role !== "any" && !roles.includes(role)) return false;
+  return true;
 }
 
 function sourceLabel(options) {
@@ -306,12 +329,31 @@ export function mergeConfig(config) {
     );
   }
   const repo = given.repo ?? detectRepo(given.cwd ?? DEFAULTS.cwd);
+  const identity = { ...DEFAULTS.identity, ...(given.identity ?? {}) };
+  if (identity.kind !== "user" && identity.kind !== "app") {
+    throw new Error(
+      `inbox-bridge: \`identity.kind\` must be "user" or "app", got ${JSON.stringify(identity.kind)}`,
+    );
+  }
+  if (identity.kind === "app" && !identity.token && !identity.tokenEnv) {
+    throw new Error(
+      'inbox-bridge: `identity.kind: "app"` needs a token — set `identity.token` or `identity.tokenEnv`',
+    );
+  }
+  const roles = given.roles ?? DEFAULTS.roles;
+  if (!Array.isArray(roles) || roles.some((role) => typeof role !== "string")) {
+    throw new Error(
+      `inbox-bridge: \`roles\` must be an array of role names, got ${JSON.stringify(roles)}`,
+    );
+  }
   return {
     ...DEFAULTS,
     ...given,
     repo,
     delivery,
     maxConsecutiveWakes,
+    identity,
+    roles,
     poll: { ...DEFAULTS.poll, ...(given.poll ?? {}) },
     ack: { ...DEFAULTS.ack, ...(given.ack ?? {}) },
   };
@@ -359,6 +401,16 @@ async function ackEvents(options, events, status) {
   }
 }
 
+function identityEnv(identity) {
+  if (!identity) return {};
+  const token = identity.token ?? (identity.tokenEnv ? process.env[identity.tokenEnv] : null);
+  return {
+    INBOX_IDENTITY_KIND: identity.kind ?? "user",
+    ...(identity.login ? { INBOX_IDENTITY_LOGIN: identity.login } : {}),
+    ...(token ? { INBOX_IDENTITY_TOKEN: token } : {}),
+  };
+}
+
 function runCommand(spec, options, extraEnv = {}) {
   const command = spec.command ?? "node";
   const args = Array.isArray(spec.args) ? spec.args : [];
@@ -377,6 +429,7 @@ function runCommand(spec, options, extraEnv = {}) {
           ...process.env,
           ...(useNode ? { ELECTRON_RUN_AS_NODE: "1" } : {}),
           ...(options.repo ? { NOEMA_INBOX_REPO: options.repo } : {}),
+          ...identityEnv(options.identity),
           ...extraEnv,
         },
         timeout: options.timeoutMs,
@@ -428,15 +481,18 @@ export function formatEvents(events, options = DEFAULTS) {
   const lines = events.slice(0, maxEvents).map((event) => `- ${describeEvent(event)}`);
   if (events.length > maxEvents)
     lines.push(`- 其余 ${events.length - maxEvents} 条见 \`npm run inbox\``);
+  const identity = options.identity ?? DEFAULTS.identity;
+  const who =
+    identity.kind === "app" ? `App ${identity.login ?? ""}`.trim() : (identity.login ?? "本机 gh");
   return [
-    `${options.label ?? "外部收件箱"}（后台轮询，不是用户提问）：`,
+    `${options.label ?? "外部收件箱"}（后台轮询，不是用户提问）· 以 ${who} 的身份读取：`,
     ...lines,
     "",
     `只在它影响当前工作时处理；处理完运行 \`${ackHint}\` 标记完成。`,
     ...(ackHint.startsWith("npm ") ? ["（`--done` 放在 `--` 之后，否则被 npm 吞掉，只标 delivered）"] : []),
     "只标 delivered 的事件会在 6 小时后再次提醒；`kind: infra` 的基础设施失败只提醒一次。",
     delivery === "wakeup"
-      ? "这条通知随下一轮开始进入上下文；长时间没人发言时，插件也会为它开一轮。"
+      ? `插件可能替你开一轮（\`delivery: wakeup\`，每轮最多一条，受 \`maxConsecutiveWakes\` 限制）。`
       : "这条通知只在你发消息时随该轮进入上下文，不会替你另开一轮。",
     ...(options.repo ? [`只播报 ${options.repo} 的事件，其它仓库的会话不会收到它。`] : []),
   ].join("\n");
@@ -454,9 +510,10 @@ export function buildMessage(count, text, label = "外部收件箱") {
 
 function describeEvent(event) {
   const kind = event.kind ?? "event";
+  const role = event.role && event.role !== "any" && event.role !== "ci" ? `/${event.role}` : "";
   const ref = event.ref ? `${event.ref} ` : "";
   const url = event.url ? ` ${event.url}` : "";
-  return `[${kind}] ${ref}${event.title ?? ""}${url} · key: ${event.key}`;
+  return `[${kind}${role}] ${ref}${event.title ?? ""}${url} · key: ${event.key}`;
 }
 
 function describe(error) {

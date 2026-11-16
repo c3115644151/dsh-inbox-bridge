@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { buildMessage, deliver, deliveryTargets, detectRepo, filterUndelivered, formatEvents, matchesRepo, mergeConfig, repoOf, wakeTargets } from "./index.js";
+import { buildMessage, deliver, deliveryTargets, detectRepo, filterUndelivered, formatEvents, matchesWatch, mergeConfig, repoOf, wakeTargets } from "./index.js";
 
 const idle = { status: "idle" };
 const running = { status: "running" };
@@ -67,17 +67,47 @@ test("a session only hears about the repository its own workspace points at", ()
   withRepos(({ repo, plain }) => {
     const mine = { status: "idle", session: { header: { cwd: repo } } };
     const theirs = { status: "idle", session: { header: { cwd: plain } } };
-    const options = { repo: "example-org/example-repo", cwd: plain };
+    const options = mergeConfig({ cwd: plain });
+    const event = { key: "k", kind: "pr", role: "author", repo: "example-org/example-repo" };
 
     assert.equal(repoOf(mine, options), "example-org/example-repo");
     assert.equal(repoOf(theirs, options), null);
-    assert.equal(matchesRepo(mine, options), true);
-    assert.equal(matchesRepo(theirs, options), false);
+    assert.equal(matchesWatch(mine, event, options), true);
+    assert.equal(matchesWatch(theirs, event, options), false);
   });
 });
 
 test("without a configured source every session matches", () => {
-  assert.equal(matchesRepo({}, { repo: null }), true);
+  // No repository and no role: nothing to associate, so nothing is filtered.
+  assert.equal(matchesWatch({}, { key: "k", role: "any", repo: null }, { repo: null, roles: [] }), true);
+});
+
+test("one event reaches only the sessions whose repository and role it names", () => {
+  withRepos(({ repo, plain }) => {
+    const mine = { status: "idle", session: { header: { cwd: repo } } };
+    const elsewhere = { status: "idle", session: { header: { cwd: plain } } };
+    const options = mergeConfig({ cwd: repo, roles: ["author", "reviewer"] });
+    const event = { key: "pr:1:author:x", kind: "pr", role: "author", repo: "example-org/example-repo" };
+
+    assert.equal(matchesWatch(mine, event, options), true);
+    assert.equal(matchesWatch(elsewhere, event, options), false);
+    // A review request on the same repository is still not the author's task.
+    assert.equal(matchesWatch(mine, { ...event, role: "reviewer" }, options), true);
+    assert.equal(matchesWatch(mine, { ...event, role: "assignee" }, options), false);
+    // Unattributed events pass the role check; the repository check still holds.
+    assert.equal(matchesWatch(mine, { ...event, role: "any" }, options), true);
+    assert.equal(matchesWatch(mine, { ...event, role: "any", repo: "other/repo" }, options), false);
+  });
+});
+
+test("an empty roles list accepts every role", () => {
+  withRepos(({ repo }) => {
+    const mine = { status: "idle", session: { header: { cwd: repo } } };
+    const options = mergeConfig({ cwd: repo });
+    for (const role of ["author", "reviewer", "assignee", "mention", "ci", "any"]) {
+      assert.equal(matchesWatch(mine, { key: "k", role, repo: "example-org/example-repo" }, options), true);
+    }
+  });
 });
 
 test("an agent without a status field is treated as idle", () => {
@@ -114,6 +144,24 @@ test("the notice says when it was queued and how to stop the reminder", () => {
   assert.match(text, /npm run inbox:ack -- --done -- <key>/u);
   assert.match(text, /--done` 放在 `--` 之后/u);
   assert.doesNotMatch(text, /inbox:ack --done/u);
+});
+
+test("the notice names the identity it reads as and the role of each event", () => {
+  const text = formatEvents(
+    [
+      { key: "pr:1:reviewer:x", kind: "pr", role: "reviewer", ref: "PR #1", title: "t" },
+      { key: "run:2", kind: "ci", role: "ci", title: "ci failed" },
+    ],
+    {
+      label: "外部收件箱",
+      identity: { kind: "app", login: "noema-agent[bot]" },
+      repo: "example-org/example-repo",
+    },
+  );
+  assert.match(text, /以 App noema-agent\[bot\] 的身份读取/u);
+  assert.match(text, /\[pr\/reviewer\] PR #1/u);
+  // The role is redundant on CI lines: every CI event is the same relationship.
+  assert.match(text, /\[ci\] ci failed/u);
 });
 
 test("a delivered key is suppressed inside the resurface window and released after it", () => {
