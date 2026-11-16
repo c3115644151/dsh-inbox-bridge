@@ -2,6 +2,11 @@
 
 Format: keep a short entry per released version. Dates are UTC.
 
+## 2.0.1
+
+- Fix: a PR key carried every check's state, so each transition (queued → in progress → done) minted a new key and one PR reported itself over and over — seven notices for a single pull request here. The key now names the review decision and the failing checks only; progress stays silent and only a change worth acting on speaks up again.
+- The PR digest in the state file keeps tracking every check state; only the event key got narrower.
+
 ## 2.0.0
 
 - Breaking: `wake` became `delivery` (`quiet` by default). A notice now only queues for the session's next turn; `wakeup` opts into opening a turn, bounded by `maxConsecutiveWakes` and reset by any human-authored message. The old `wake` key fails loudly instead of changing behaviour silently.

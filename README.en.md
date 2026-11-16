@@ -148,7 +148,11 @@ A notice is a `source.kind = inbox-bridge` message carrying the event keys and t
 
 - `wake` became `delivery` (default `quiet`). The old key makes the plugin fail to start with an explanation instead of silently changing behaviour; replace `wake: first` with `delivery: quiet`.
 - Notices only reach sessions whose workspace repository matches the watched one, so another repository's CI stops showing up in front of you.
-- PR event keys are built from each check's state and the review decision only — no completion timestamps — so re-polling an unchanged PR no longer reports it again.
+- PR event keys are built from the review decision and the failing checks only — no completion timestamps, no queued or in-progress states — so re-polling an unchanged PR no longer reports it again.
+
+### Upgrade note (2.0.0 to 2.0.1)
+
+In 2.0.0 a PR key still carried each check's state, so every transition (`QUEUED` → `IN_PROGRESS` → `SUCCESS`) minted a new key: one PR waiting on review produced seven notices, each resurfacing six hours later. 2.0.1 narrows the key to the review decision plus the failing checks. Progress no longer mints a key; only a change you have to act on speaks up again.
 
 ### Upgrade note (1.5.0 to 1.5.1)
 

@@ -235,7 +235,7 @@ test("PR status transition notifies only when the new digest is unseen", () => {
   });
   assert.equal(failed.fresh.length, 1);
   assert.equal(failed.fresh[0].number, 131);
-  assert.equal(failed.fresh[0].key, `pr:131:${prStatusDigest(pullRequest())}`);
+  assert.equal(failed.fresh[0].key, "pr:131:review:NONE|check:verify");
 
   const repeated = pollOnce({
     state: failed.nextState,
@@ -262,6 +262,30 @@ test("a moved completion timestamp is not a new PR state", () => {
   assert.notEqual(passing, before);
   const reviewed = prStatusDigest(pullRequest({ reviewDecision: "REVIEW_REQUIRED" }));
   assert.notEqual(reviewed, before);
+});
+
+test("a check walking through transient states keeps one PR key", () => {
+  const running = pullRequest({
+    reviewDecision: "REVIEW_REQUIRED",
+    statusCheckRollup: [
+      checkRun({ name: "verify", status: "QUEUED", conclusion: "" }),
+      checkRun({ name: "platform", status: "IN_PROGRESS", conclusion: "" }),
+    ],
+  });
+  const finished = pullRequest({
+    reviewDecision: "REVIEW_REQUIRED",
+    statusCheckRollup: [
+      checkRun({ name: "verify", conclusion: "SUCCESS" }),
+      checkRun({ name: "platform", conclusion: "SUCCESS" }),
+    ],
+  });
+  const keys = [running, finished].map((pr) => extractPrEvents([pr])[0]?.key);
+  assert.deepEqual(keys, ["pr:131:review:REVIEW_REQUIRED", "pr:131:review:REVIEW_REQUIRED"]);
+
+  // A different piece of trouble still gets its own key, so the notice can
+  // report the new failure instead of staying silent.
+  const broken = pullRequest({ statusCheckRollup: [checkRun({ name: "verify", conclusion: "FAILURE" })] });
+  assert.equal(extractPrEvents([broken])[0].key, "pr:131:review:NONE|check:verify");
 });
 
 test("PR asking for a review notifies; green PR stays silent", () => {

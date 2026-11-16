@@ -246,7 +246,6 @@ export function extractPrEvents(prs = []) {
   for (const pr of Array.isArray(prs) ? prs : []) {
     const number = pr?.number;
     if (!number) continue;
-    const digest = prStatusDigest(pr);
     const reasons = [];
     const failing = failingCheckNames(pr);
     if (failing.length) reasons.push(`checks failed: ${failing.slice(0, 4).join(", ")}`);
@@ -254,8 +253,16 @@ export function extractPrEvents(prs = []) {
     if (review === "CHANGES_REQUESTED") reasons.push("changes requested");
     else if (review === "REVIEW_REQUIRED") reasons.push("review requested");
     if (!reasons.length) continue;
+    // The key names only what the reader has to act on: the review decision and
+    // the failing checks. A running PR walks through QUEUED and IN_PROGRESS on
+    // its way to a verdict, and keying on those states minted a fresh event per
+    // transition -- one PR that never failed produced seven notices here.
+    const signature = [
+      `review:${review || "NONE"}`,
+      ...[...new Set(failing)].sort().map((name) => `check:${name}`),
+    ].join("|");
     events.push({
-      key: `pr:${number}:${digest}`,
+      key: `pr:${number}:${signature}`,
       kind: "pr",
       label: "PR",
       number,
