@@ -328,7 +328,7 @@ export function apply(ctx, config) {
     register(payload.agent);
   });
   log(
-    `started: ${agents.size} agent(s), poll ${Math.round(options.intervalMs / 60_000)} min ` +
+    `started: ${agents.size} agent(s), poll every ${pollLabel(options.intervalMs)} ` +
       `while a turn runs, delivery ${options.delivery}${options.repos?.length ? `, repos ${options.repos.join(", ")}` : ""}`,
   );
 
@@ -711,13 +711,22 @@ export function filterUndelivered(events, seen, now, resurfaceMs) {
   return { events: kept, suppressed: events.length - kept.length };
 }
 
+export function pollLabel(ms) {
+  const value = Number.isFinite(ms) ? ms : DEFAULTS.intervalMs;
+  const minutes = Math.round(value / 60_000);
+  if (minutes >= 1) return `${minutes} 分钟`;
+  // A sub-minute interval is legitimate in tests and while debugging; "0 分钟"
+  // would read as "never".
+  return `${Math.max(1, Math.round(value / 1_000))} 秒`;
+}
+
 export function formatEvents(events, options = DEFAULTS) {
   const ackHint = options.ackHint ?? DEFAULT_ACK_HINT;
   const maxEvents = options.maxEvents ?? 6;
   const delivery = options.delivery ?? DEFAULTS.delivery;
   const resurfaceMs = options.resurfaceMs ?? DEFAULTS.resurfaceMs;
   const resurfaceHours = Math.max(1, Math.round(resurfaceMs / (60 * 60 * 1000)));
-  const intervalMinutes = Math.max(1, Math.round((options.intervalMs ?? DEFAULTS.intervalMs) / 60_000));
+  const intervalLabel = pollLabel(options.intervalMs ?? DEFAULTS.intervalMs);
   const lines = events.slice(0, maxEvents).map((event) => `- ${describeEvent(event)}`);
   if (events.length > maxEvents)
     lines.push(`- 其余 ${events.length - maxEvents} 条见 \`node "${CLI}" list\``);
@@ -732,7 +741,7 @@ export function formatEvents(events, options = DEFAULTS) {
     ...(ackHint.startsWith("npm ") ? ["（`--done` 放在 `--` 之后，否则被 npm 吞掉，只标 delivered）"] : []),
     `只标 delivered 的事件会在 ${resurfaceHours} 小时后再次提醒；\`kind: infra\` 的基础设施失败只提醒一次。`,
     wakeNotice(options, delivery),
-    `只在回合边界轮询：回合开始一次、进行中每 ${intervalMinutes} 分钟一次、结束一次；空闲时不访问来源。`,
+    `只在回合边界轮询：回合开始一次、进行中每 ${intervalLabel}一次、结束一次；空闲时不访问来源。`,
     ...(options.repos?.length
       ? [`只播报 ${options.repos.join(", ")} 的事件，其它仓库的会话不会收到它。`]
       : []),
