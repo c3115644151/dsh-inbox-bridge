@@ -234,7 +234,7 @@ npm test
 node --test index.test.mjs scripts/github-inbox.test.mjs scripts/inbox-bridge.test.mjs
 ```
 
-62 cases cover the pure logic: three-state transitions (no regressions, repeated delivery moves the timestamp), classification, the resurface window, recovery, delivery guards, repository detection, identity and role routing, the four wake gates, notice text and status output.
+63 cases cover the pure logic: three-state transitions (no regressions, repeated delivery moves the timestamp), classification, the resurface window, recovery, delivery guards, repository detection, identity and role routing, the four wake gates, notice text and status output.
 
 | File | Responsibility |
 | --- | --- |

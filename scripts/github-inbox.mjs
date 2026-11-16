@@ -225,11 +225,19 @@ export function failingCheckNames(pr) {
 
 export function extractRunEvents(runs = [], state = {}) {
   const list = Array.isArray(runs) ? runs.filter(Boolean) : [];
+  const previous = normalizeState(state);
+  // A first poll has nothing to compare against: the window may hold failures
+  // that people already know about (a red run from two days ago). Report only
+  // the newest completed run — the current state of the branch — and let the
+  // next poll start from that baseline.
+  const bootstrap = !previous.lastPollAt;
+  const newestCompleted = list.find((run) => run.conclusion);
   const events = [];
   const seenGroups = new Set();
   for (const run of list) {
     const id = run.databaseId ?? run.id;
     if (id == null || !FAILED_CONCLUSIONS.has(run.conclusion)) continue;
+    if (bootstrap && run !== newestCompleted) continue;
     // A startup failure almost always means the runner could not start the
     // job (billing, permissions): no code change fixes it, so it is grouped
     // and reported once instead of once per retried run.

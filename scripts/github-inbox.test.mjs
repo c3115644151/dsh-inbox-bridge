@@ -128,6 +128,24 @@ test("failed main-branch run becomes one CI event with url and title", () => {
   assert.equal(line.includes("\n"), false);
 });
 
+test("a first poll reports the branch as it stands, not every old red run", () => {
+  const old = run({ databaseId: 1, conclusion: "failure", headBranch: "main" });
+  const older = run({ databaseId: 2, conclusion: "failure", headBranch: "dev" });
+  const green = run({ databaseId: 3, conclusion: "success", headBranch: "main" });
+
+  // No state yet: only the newest completed run decides what the branch looks like.
+  assert.deepEqual(extractRunEvents([green, old, older], normalizeState({})), []);
+  const firstRed = extractRunEvents([old, older], normalizeState({}));
+  assert.deepEqual(firstRed.map((event) => event.runId), [1]);
+
+  // Once a poll happened, every new failure is worth one event per group.
+  const afterwards = extractRunEvents(
+    [old, older],
+    normalizeState({ lastPollAt: "2026-11-16T00:00:00.000Z" }),
+  );
+  assert.deepEqual(afterwards.map((event) => event.runId), [1, 2]);
+});
+
 test("successful runs alone do not notify; the first poll after a failure does not invent a recovery", () => {
   const success = run({ databaseId: 2, conclusion: "success" });
   assert.deepEqual(
@@ -526,7 +544,7 @@ test("extractEvents sorts recovered before ci before pr before comment before is
         prs: [pullRequest()],
         notifications: [notification()],
       },
-      { lastRun: { id: 7, conclusion: "failure" } },
+      { lastRun: { id: 7, conclusion: "failure" }, lastPollAt: "2026-11-16T00:00:00.000Z" },
     ),
   );
   assert.deepEqual(

@@ -234,7 +234,7 @@ npm test
 node --test index.test.mjs scripts/github-inbox.test.mjs scripts/inbox-bridge.test.mjs
 ```
 
-62 个用例覆盖纯逻辑：三态迁移（不倒退、重复投递推进时间戳）、分类、resurface 窗口、恢复收口、投递守卫、仓库识别、身份与角色路由、唤醒四道门、通知文案、状态输出。
+63 个用例覆盖纯逻辑：三态迁移（不倒退、重复投递推进时间戳）、分类、resurface 窗口、恢复收口、投递守卫、仓库识别、身份与角色路由、唤醒四道门、通知文案、状态输出。
 
 | 文件 | 职责 |
 | --- | --- |

@@ -10,6 +10,7 @@ Format: keep a short entry per released version. Dates are UTC.
 - 新增 `status` 子命令：仓库、身份、角色、投递方式、队列计数、上次轮询（身份 / 耗时 / 事件数），只读本地文件。
 - `.work/inbox-bridge/runtime.json` 记录插件本轮生效的配置，`status` 因此能看到插件真实生效值而不是默认值。
 - 仓库状态里记下 `lastPoll`：谁读的、多久、几个事件。
+- 首次轮询只按分支当前状态报一次：新工作区的第一次 poll 不再把窗口里几天前的红运行逐个翻出来。
 - 删掉 Windows 通知弹窗与 `--no-toast`：通知只走 DSH 会话。
 - 环境变量统一为 `INBOX_REPO` / `INBOX_GH` / `INBOX_IDENTITY_*`。
 - 文档重写为按定位叙述（运输层通用、来源当前只有 GitHub），不再讲项目来历。
