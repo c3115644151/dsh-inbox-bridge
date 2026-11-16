@@ -539,14 +539,23 @@ export function apply(ctx, config) {
           kind: "exact",
           path: CLIENT_LOG_ROUTE,
           resource: async (request) => {
-            let message = "no body";
+            // Routes answer GET/HEAD only, so the page reports through the query
+            // string; a JSON body is still accepted when a caller sends one.
+            let message = null;
             try {
-              const body = await request.json();
-              message = String(body?.message ?? message).slice(0, 400);
+              message = new URL(request.url).searchParams.get("m");
             } catch {
-              // A malformed report is still a report; log what we have.
+              message = null;
             }
-            log(`client: ${message}`);
+            if (message === null) {
+              try {
+                const body = await request.json();
+                message = body?.message ?? null;
+              } catch {
+                message = null;
+              }
+            }
+            log(`client: ${String(message ?? "no message").slice(0, 400)}`);
             return new Response(null, { status: 204 });
           },
         }),

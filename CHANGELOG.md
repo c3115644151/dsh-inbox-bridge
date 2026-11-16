@@ -2,6 +2,10 @@
 
 Format: keep a short entry per released version. Dates are UTC.
 
+## 2.10.6
+
+- 客户端半边在 `apply` 前声明 `inject: ["slots"]`。服务是显式申请的：少了这一句，`ctx.slots` 在注册时就抛错，整行从未注册，页面里什么都没有——宿主也不会为此报错。
+- 页面诊断改走 `GET /inbox-bridge/client-log?m=…`。宿主的路由只应答 GET/HEAD，之前用 POST 上报一律 405，所以「模块没跑」与「跑了没画出来」在日志里无法区分。
 ## 2.10.5
 
 - `exports` 里补回 `"./package.json"`。宿主按 Node 的解析规则读插件的 manifest 才能发现 `dsh.client`；`exports` 一旦存在却没列 manifest，解析会直接抛错，客户端入口于是被安静地跳过——页面里既没有胶囊，也没有任何一条错误。所有内建客户端包都导出了这份 manifest。

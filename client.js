@@ -31,11 +31,10 @@ window.__ModuleLoader__.load({
      */
     function report(message) {
       try {
-        void fetch("/inbox-bridge/client-log", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ message: String(message).slice(0, 380) }),
-        }).catch(() => {});
+        const url = `/inbox-bridge/client-log?m=${encodeURIComponent(String(message).slice(0, 380))}`;
+        // Routes answer GET/HEAD only; a POST would come back 405 and the report
+        // would vanish, which is exactly the evidence we need to keep.
+        void fetch(url, { cache: "no-store" }).catch(() => {});
       } catch {
         // ignore
       }
@@ -661,14 +660,30 @@ window.__ModuleLoader__.load({
     }
 
     function apply(ctx) {
-      ctx.slots.inject("conversation.composer.dock", () =>
-        ctx.slots.register(
-          { name: "conversation.composer.dock", id: "inbox-bridge-status", order: 30 },
-          () => h(Guard, null, h(InboxBar)),
-        ),
-      );
+      // Where the row can actually live is host knowledge; ask instead of
+      // guessing, and log the answer so a wrong slot name is visible.
+      try {
+        const api = ctx.slots;
+        const proto = api ? Object.getOwnPropertyNames(Object.getPrototypeOf(api)) : [];
+        report(`slots api: keys=${JSON.stringify(Object.keys(api ?? {}))} proto=${JSON.stringify(proto)}`);
+      } catch (error) {
+        report(`slots api failed: ${error && error.message ? error.message : String(error)}`);
+      }
+      try {
+        ctx.slots.inject("conversation.composer.dock", () =>
+          ctx.slots.register(
+            { name: "conversation.composer.dock", id: "inbox-bridge-status", order: 30 },
+            () => h(Guard, null, h(InboxBar)),
+          ),
+        );
+        report("registered inbox-bridge-status in conversation.composer.dock");
+      } catch (error) {
+        report(`register failed: ${error && error.message ? error.message : String(error)}`);
+      }
     }
 
-    return { apply };
+    // Services are opt-in: without this, `ctx.slots` throws at apply time and the
+    // row never registers. The slot service is the only one this half needs.
+    return { inject: ["slots"], apply };
   },
 });
