@@ -406,6 +406,32 @@ test("a broken notifications feed degrades to run/pr events and reports feedSkip
   assert.equal(result.feedSkipped, "gh api notifications failed (HTTP 403)");
 });
 
+test("open issues are polled even when GitHub notifications are empty", () => {
+  const result = pollOnce({
+    state: normalizeState({}),
+    now: new Date("2026-11-16T12:00:00Z"),
+    fetchRuns: () => ({ ok: true, value: [] }),
+    fetchPrs: () => ({ ok: true, value: [] }),
+    fetchFeed: () => ({ ok: true, source: "notifications", notifications: [], comments: [] }),
+    fetchIssues: () => ({
+      ok: true,
+      value: [
+        {
+          number: 156,
+          title: "[协作] 本机钩子挡住协作者提交",
+          html_url: "https://github.com/Noema-Harness/noema-agent/issues/156",
+          created_at: "2026-11-16T14:10:48Z",
+          updated_at: "2026-11-16T14:10:48Z",
+        },
+      ],
+    }),
+  });
+  assert.deepEqual(
+    result.fresh.map((event) => [event.kind, event.ref]),
+    [["issue", "#156"]],
+  );
+});
+
 test("extractEvents sorts recovered before ci before pr before comment before issue", () => {
   const events = sortEvents(
     extractEvents(

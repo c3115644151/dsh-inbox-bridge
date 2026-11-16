@@ -428,6 +428,7 @@ export function pollOnce({
   fetchRuns,
   fetchPrs,
   fetchFeed = () => ({ ok: true, source: "none", notifications: [], comments: [], issues: [] }),
+  fetchIssues,
 } = {}) {
   const runsResult =
     typeof fetchRuns === "function" ? fetchRuns() : { ok: false, reason: "no run source" };
@@ -440,12 +441,27 @@ export function pollOnce({
   }
   const feedResult = typeof fetchFeed === "function" ? fetchFeed(state) : { ok: true };
   const feed = feedResult && feedResult.ok === true ? feedResult : {};
+  // 独立拉取 open issues：GitHub 的 notifications 只包含“你订阅的线程”，
+  // 公开仓库里别人新开的 issue 不会出现在那里，收件箱会因此静默漏掉协作请求。
+  const issuesResult =
+    typeof fetchIssues === "function" ? fetchIssues() : { ok: true, value: [] };
+  const issues = [];
+  const issueNumbers = new Set();
+  for (const issue of [
+    ...(Array.isArray(issuesResult.value) ? issuesResult.value : []),
+    ...(Array.isArray(feed.issues) ? feed.issues : []),
+  ]) {
+    const number = issue?.number;
+    if (number != null && issueNumbers.has(number)) continue;
+    if (number != null) issueNumbers.add(number);
+    issues.push(issue);
+  }
   const payload = {
     runs: Array.isArray(runsResult.value) ? runsResult.value : [],
     prs: Array.isArray(prsResult.value) ? prsResult.value : [],
     notifications: Array.isArray(feed.notifications) ? feed.notifications : [],
     comments: Array.isArray(feed.comments) ? feed.comments : [],
-    issues: Array.isArray(feed.issues) ? feed.issues : [],
+    issues,
   };
   const events = extractEvents(payload, state);
   const fresh = sortEvents(repeat ? events : diffEvents(events, state));
@@ -654,6 +670,13 @@ export function fetchRuns(cwd) {
   });
 }
 
+export function fetchOpenIssues(cwd) {
+  return ghJson(
+    ["api", `repos/${activeRepo}/issues?state=open&sort=updated&direction=desc&per_page=30`],
+    { cwd },
+  );
+}
+
 export function fetchOpenPullRequests(cwd) {
   return ghJson(["pr", "list", "--state", "open", "--json", PR_FIELDS], { cwd });
 }
@@ -817,6 +840,7 @@ function runPoll({ repoRoot, stateFile, pendingFile, state, options, now }) {
     now,
     fetchRuns: () => fetchRuns(repoRoot),
     fetchPrs: () => fetchOpenPullRequests(repoRoot),
+    fetchIssues: () => fetchOpenIssues(repoRoot),
     fetchFeed: (currentState) => fetchFeed(currentState, repoRoot),
   });
   if (result.skipped) return printSkipped(options, result.skipped);
