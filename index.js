@@ -52,8 +52,21 @@ const STATE_REL = join(".work", "inbox-bridge", "state.json");
 const SOURCE_STATE_REL = join(".work", "github-inbox", "state.json");
 /** The path the client view reads; same origin as the page, so no CORS and no second port. */
 const UI_ROUTE = "/inbox-bridge/status.json";
-/** How many event details to keep in memory for the view. */
+/** Where the page reports what it sees (clipping, missing layers) into the log. */
+const CLIENT_LOG_ROUTE = "/inbox-bridge/client-log";
+/** Event details (title, url, role) kept beside the queue, so reloads keep them. */
+const LABELS_REL = join(".work", "inbox-bridge", "labels.json");
+/** How many event details to keep for the view. */
 const RECENT_LIMIT = 60;
+
+/** Reads a JSON file, or `null` when it is missing or unreadable. */
+function readJsonSync(file) {
+  try {
+    return JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+}
 
 const DEFAULTS = Object.freeze({
   label: "外部收件箱",
@@ -169,9 +182,13 @@ export function apply(ctx, config) {
   };
 
   // The queue file records only status and time, so the view would show bare
-  // keys. Keep the last details this process saw and merge them in on read: the
-  // poll is the only place that knows a title, a url, and a role.
+  // keys. Keep the details this process saw next to the queue, so a reload of
+  // the Host does not turn every row back into `run:43951300067`.
+  const labelsFile = join(options.cwd, LABELS_REL);
   const recent = new Map();
+  for (const [key, label] of Object.entries(readJsonSync(labelsFile) ?? {})) {
+    if (label && typeof label === "object") recent.set(key, label);
+  }
   const rememberEvents = (events) => {
     for (const event of events) {
       recent.delete(event.key);
@@ -183,15 +200,15 @@ export function apply(ctx, config) {
       });
     }
     while (recent.size > RECENT_LIMIT) recent.delete(recent.keys().next().value);
-  };
-
-  const readJson = (file) => {
     try {
-      return JSON.parse(readFileSync(file, "utf8"));
+      mkdirSync(dirname(labelsFile), { recursive: true });
+      writeFileSync(labelsFile, `${JSON.stringify(Object.fromEntries(recent), null, 0)}\n`);
     } catch {
-      return null;
+      // The view is a convenience; never let it break a poll.
     }
   };
+
+  const readJson = (file) => readJsonSync(file);
 
   /**
    * Everything the page needs in one read: what this instance watches, as whom,
@@ -512,6 +529,25 @@ export function apply(ctx, config) {
                 "cache-control": "no-store",
               },
             });
+          },
+        }),
+      );
+      // The page cannot write to the log itself, and where it can paint matters
+      // when the shell clips or transforms its panels: let it report facts.
+      ctx.effect(() =>
+        server.register({
+          kind: "exact",
+          path: CLIENT_LOG_ROUTE,
+          resource: async (request) => {
+            let message = "no body";
+            try {
+              const body = await request.json();
+              message = String(body?.message ?? message).slice(0, 400);
+            } catch {
+              // A malformed report is still a report; log what we have.
+            }
+            log(`client: ${message}`);
+            return new Response(null, { status: 204 });
           },
         }),
       );

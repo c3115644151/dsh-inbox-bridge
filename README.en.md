@@ -23,7 +23,7 @@ A notice looks like this, at the top of your next turn:
 
 The bracket says **how it relates to you**: `reviewer` means it is waiting for your review, `author` means you opened it, `assignee` means it is assigned to you, `mention` means someone wrote @you. When you are done, acknowledge the line; anything you leave alone comes back once after six hours — it reminds you, it does not nag forever.
 
-You also do not have to speak to find out what changed: a small line above the composer says how many things are waiting, and opening it shows the list — what, which repository, and when it last synced. It is read-only: it takes no room in the conversation and never sends a message for you.
+You also do not have to speak to find out what changed: the status row under the composer gains a chip that says how many things are waiting, and hovering it floats the list — what, which repository, and when it last synced. It is read-only: it takes no room in the conversation, never sends a message for you, and stays a single row however narrow the window gets.
 
 ## Quiet by default
 
