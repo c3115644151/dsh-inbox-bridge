@@ -2,6 +2,9 @@
 
 Format: keep a short entry per released version. Dates are UTC.
 
+## 2.10.2
+
+- 胶囊外面加了一层兜底：渲染出错时它退化成只有图标和名字的胶囊，并把原因写进 plugin.log，而不是整行凭空消失。
 ## 2.10.1
 
 - 挂载时的那次诊断上报改成不会抛错的写法，并且先记一行 client: mounted。它原本写在挂载 effect 里：一旦读取容器信息出错，React 会把整行连同胶囊一起卸载——这正是「刷新后状态行里什么都没有」的一种可能。

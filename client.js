@@ -622,9 +622,38 @@ window.__ModuleLoader__.load({
       );
     }
 
+    // A row that throws would vanish without a trace; this keeps a small chip instead.
+    class Guard extends React.Component {
+      constructor(props) {
+        super(props);
+        this.state = { error: null };
+      }
+
+      static getDerivedStateFromError(error) {
+        return { error };
+      }
+
+      componentDidCatch(error) {
+        report(`render failed: ${error && error.message ? error.message : String(error)}`);
+      }
+
+      render() {
+        if (!this.state.error) return this.props.children;
+        return h(
+          "span",
+          { style: styles.pill, title: String(this.state.error && this.state.error.message) },
+          h(TrayIcon),
+          h("span", { style: styles.label }, "GitHub 收件箱"),
+        );
+      }
+    }
+
     function apply(ctx) {
       ctx.slots.inject("conversation.composer.dock", () =>
-        ctx.slots.register({ name: "conversation.composer.dock", id: "inbox-bridge-status", order: 30 }, InboxBar),
+        ctx.slots.register(
+          { name: "conversation.composer.dock", id: "inbox-bridge-status", order: 30 },
+          () => h(Guard, null, h(InboxBar)),
+        ),
       );
     }
 
