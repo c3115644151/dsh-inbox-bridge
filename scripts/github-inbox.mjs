@@ -91,13 +91,12 @@ const NOTIFICATION_ROLES = {
 const USAGE = `github-inbox — GitHub event inbox for local development
 
 Usage:
-  node scripts/github-inbox.mjs [--poll] [--all] [--json] [--quiet] [--no-toast]
+  node scripts/github-inbox.mjs [--poll] [--all] [--json] [--quiet]
 
   --poll      (default) fetch events, dedupe against state, print only new ones
   --all       print the latest 20 main-branch runs and open PR check status
   --json      machine-readable output
   --quiet     suppress the "no new events" status line (new events still print)
-  --no-toast  skip the Windows toast (also NOEMA_GITHUB_INBOX_NO_TOAST=1)
   --repeat    list current events without the local seen filter (the bridge owns delivery state)
   --repo <owner/name>  watch another repository (default: INBOX_REPO or this git remote)
 
@@ -184,9 +183,20 @@ export function normalizeState(state) {
     source.lastRun && typeof source.lastRun === "object" && source.lastRun.id != null
       ? { id: source.lastRun.id, conclusion: source.lastRun.conclusion ?? null }
       : null;
+  const lastPoll =
+    source.lastPoll && typeof source.lastPoll === "object"
+      ? {
+          at: typeof source.lastPoll.at === "string" ? source.lastPoll.at : null,
+          as: typeof source.lastPoll.as === "string" ? source.lastPoll.as : null,
+          repo: typeof source.lastPoll.repo === "string" ? source.lastPoll.repo : null,
+          durationMs: Number.isFinite(source.lastPoll.durationMs) ? source.lastPoll.durationMs : null,
+          events: Number.isFinite(source.lastPoll.events) ? source.lastPoll.events : null,
+        }
+      : null;
   return {
     version: 1,
     lastPollAt: typeof source.lastPollAt === "string" ? source.lastPollAt : null,
+    lastPoll,
     seen,
     lastRun,
     lastPrStatus,
@@ -503,7 +513,10 @@ export function diffEvents(events = [], state = {}) {
   return fresh;
 }
 
-export function updateState(state, { runs = [], prs = [], events = [], now = new Date() } = {}) {
+export function updateState(
+  state,
+  { runs = [], prs = [], events = [], now = new Date(), meta = null } = {},
+) {
   const previous = normalizeState(state);
   const seen = { ...previous.seen };
   const stamp = toIso(now);
@@ -527,6 +540,15 @@ export function updateState(state, { runs = [], prs = [], events = [], now = new
   return {
     version: 1,
     lastPollAt: stamp,
+    // What the last poll actually did: which identity read the repository and how
+    // long it took. `status` reports this instead of guessing.
+    lastPoll: {
+      at: stamp,
+      as: meta?.as ?? previous.lastPoll?.as ?? null,
+      repo: meta?.repo ?? previous.lastPoll?.repo ?? null,
+      durationMs: meta?.durationMs ?? previous.lastPoll?.durationMs ?? null,
+      events: Array.isArray(events) ? events.length : 0,
+    },
     seen: Object.fromEntries(Object.entries(seen).slice(-MAX_SEEN)),
     lastRun,
     lastPrStatus,
@@ -718,7 +740,7 @@ let cachedGhExecutable;
 
 function resolveGhExecutable({ env = process.env, platform = process.platform } = {}) {
   if (cachedGhExecutable !== undefined) return cachedGhExecutable;
-  const override = env.NOEMA_GH;
+  const override = env.INBOX_GH;
   if (override) {
     cachedGhExecutable = override;
     return cachedGhExecutable;
@@ -884,50 +906,16 @@ export function fetchFeed(state, cwd) {
 }
 
 // ---------------------------------------------------------------------------
-// Windows toast (best effort, never an error)
-// ---------------------------------------------------------------------------
-
-function notifyWindows(events) {
-  if (process.platform !== "win32" || !Array.isArray(events) || events.length === 0) return;
-  const title = "Noema GitHub inbox";
-  const body =
-    events.length === 1
-      ? formatEvent(events[0])
-      : `${events.length} new events: ${events.map((event) => event.label ?? event.kind ?? "event").join(", ")}`;
-  const powerShellLiteral = (value) => String(value).replace(/'/gu, "''");
-  const script = [
-    "$ErrorActionPreference = 'Stop'",
-    "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null",
-    "$template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)",
-    "$texts = $template.GetElementsByTagName('text')",
-    `$texts.Item(0).AppendChild($template.CreateTextNode('${powerShellLiteral(title)}')) | Out-Null`,
-    `$texts.Item(1).AppendChild($template.CreateTextNode('${powerShellLiteral(singleLine(body).slice(0, 200))}')) | Out-Null`,
-    "$toast = New-Object Windows.UI.Notifications.ToastNotification $template",
-    "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe').Show($toast)",
-  ].join("\n");
-  try {
-    execFileSync(
-      "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script],
-      { timeout: 10_000, windowsHide: true, stdio: "ignore" },
-    );
-  } catch {
-    // A toast that cannot be shown is not an inbox failure.
-  }
-}
-
-// ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
 
 export function parseArgs(argv = []) {
   const options = {
-    repo: process.env.INBOX_REPO ?? process.env.NOEMA_INBOX_REPO ?? null,
+    repo: process.env.INBOX_REPO ?? null,
     repeat: false,
     mode: "poll",
     json: false,
     quiet: false,
-    toast: process.env.NOEMA_GITHUB_INBOX_NO_TOAST !== "1",
     help: false,
   };
   for (const argument of argv) {
@@ -948,7 +936,6 @@ export function parseArgs(argv = []) {
     else if (argument === "--all") options.mode = "all";
     else if (argument === "--json") options.json = true;
     else if (argument === "--quiet") options.quiet = true;
-    else if (argument === "--no-toast") options.toast = false;
     else if (argument === "--help" || argument === "-h") options.help = true;
     else throw new Error(`unknown option: ${argument}`);
   }
@@ -991,6 +978,7 @@ function identityFromEnv(env = process.env) {
 }
 
 function runPoll({ repoRoot, stateFile, pendingFile, state, options, now, me }) {
+  const startedAt = Date.now();
   const result = pollOnce({
     state,
     repeat: options.repeat === true,
@@ -1002,7 +990,17 @@ function runPoll({ repoRoot, stateFile, pendingFile, state, options, now, me }) 
     fetchFeed: (currentState) => fetchFeed(currentState, repoRoot),
   });
   if (result.skipped) return printSkipped(options, result.skipped);
-  writeStateFile(stateFile, result.nextState);
+  const withMeta = {
+    ...result.nextState,
+    lastPoll: {
+      at: result.nextState.lastPollAt,
+      as: me ?? null,
+      repo: activeRepo,
+      durationMs: Date.now() - startedAt,
+      events: result.events.length,
+    },
+  };
+  writeStateFile(stateFile, withMeta);
   if (result.fresh.length > 0) appendPendingEvents(pendingFile, result.fresh, now);
 
   if (options.json) {
@@ -1017,7 +1015,7 @@ function runPoll({ repoRoot, stateFile, pendingFile, state, options, now, me }) 
           fresh: result.fresh,
           stateFile,
           pendingFile,
-          state: result.nextState,
+          state: withMeta,
         },
         null,
         2,
@@ -1035,7 +1033,6 @@ function runPoll({ repoRoot, stateFile, pendingFile, state, options, now, me }) 
     }
   }
 
-  if (options.toast && result.fresh.length > 0) notifyWindows(result.fresh);
   return 0;
 }
 

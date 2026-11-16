@@ -540,12 +540,11 @@ test("extractEvents sorts recovered before ci before pr before comment before is
 // CLI argument parsing
 // ---------------------------------------------------------------------------
 
-test("parseArgs understands poll/all/json/quiet/toast flags", () => {
+test("parseArgs understands poll/all/json/quiet flags", () => {
   assert.deepEqual(parseArgs([]).mode, "poll");
   assert.equal(parseArgs(["--all"]).mode, "all");
   assert.equal(parseArgs(["--poll", "--json", "--quiet"]).json, true);
   assert.equal(parseArgs(["--poll", "--json", "--quiet"]).quiet, true);
-  assert.equal(parseArgs(["--no-toast"]).toast, false);
   assert.throws(() => parseArgs(["--nope"]), /unknown option: --nope/u);
 });
 

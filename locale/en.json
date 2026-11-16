@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "GitHub inbox",
-    "description": "Reads one GitHub repository as one identity and keeps only the events that concern it: my failing PR, reviews requested of me, issues assigned to me, comments that mention me, default-branch CI. Items move through pending / delivered / done and queue by default (quiet) instead of opening a turn. GitHub only, for now.",
+    "description": "Reads one GitHub repository as one identity and keeps only the events that concern it: my failing PR, reviews requested of me, issues assigned to me, comments that mention me, default-branch CI. Items move through pending / delivered / done and queue by default (quiet) instead of opening a turn. Polls only at turn boundaries — nothing runs while the session is idle. GitHub only, for now.",
     "detail": "docs/DETAIL.md"
   }
 }

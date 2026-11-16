@@ -19,7 +19,7 @@
  */
 import { execFile, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -39,7 +39,12 @@ const DEFAULTS = Object.freeze({
   label: "外部收件箱",
   cwd: process.cwd(),
   repo: null,
-  intervalMs: 45_000,
+  /**
+   * How often to poll *while a turn is running*. There is no idle polling: a
+   * turn start polls once, a long turn re-polls on this interval, and the turn
+   * end polls once (see `apply`). Idle sessions cost nothing.
+   */
+  intervalMs: 10 * 60 * 1000,
   timeoutMs: 45_000,
   maxEvents: 6,
   /** command the notice tells the agent to run; set it to your project's wrapper */
@@ -52,9 +57,21 @@ const DEFAULTS = Object.freeze({
   injectWhileRunning: false,
   /**
    * `quiet` only queues the notice for an agent's next turn; `wakeup` also opens
-   * one turn per poll with `followup`. Mirrors tool-jobs' `completionDelivery`.
+   * one turn, but only for the roles in `wakeOn` and only after an idle gap (see
+   * `wakeAfterIdleMs`). Mirrors tool-jobs' `completionDelivery`.
    */
   delivery: "quiet",
+  /**
+   * Roles allowed to open a turn on an idle session. Empty by default: a notice
+   * may queue silently for hours, but it never spends the user's attention
+   * unasked. `["reviewer"]` is the usual first choice — a review asked of you is
+   * the one thing that genuinely blocks someone else.
+   */
+  wakeOn: [],
+  /** How long a session must have been quiet before a wakeup is allowed. */
+  wakeAfterIdleMs: 15 * 60 * 1000,
+  /** Wakeups allowed in a rolling hour, across every session. 0 disables wakeups. */
+  wakesPerHour: 2,
   /** wakeups one agent may take before its next human message, then it only queues */
   maxConsecutiveWakes: 3,
   /**
@@ -71,9 +88,11 @@ const DEFAULTS = Object.freeze({
 
 export function apply(ctx, config) {
   const options = mergeConfig(config);
-  const logPath = join(options.cwd, ".work", "inbox-bridge", "plugin.log");
+  const stateDir = join(options.cwd, ".work", "inbox-bridge");
+  const logPath = join(stateDir, "plugin.log");
   const agents = new Set();
-  let timer;
+  /** One re-poll timer per session that is currently running a turn. */
+  const turnTimers = new Map();
   let polling = false;
   // Keys injected in this process; used when the ack command fails so a broken
   // ack cannot turn into an every-interval notification loop.
@@ -82,6 +101,10 @@ export function apply(ctx, config) {
   const repoNames = new Map();
   /** Wakeups taken since each agent's last human message, for `maxConsecutiveWakes`. */
   const wakeStreak = new Map();
+  /** When each session last did anything; a wakeup needs `wakeAfterIdleMs` of quiet. */
+  const lastActive = new Map();
+  /** Wakeup timestamps inside the last hour, for `wakesPerHour`. */
+  const wakes = [];
   let lastOfflineNoticeAt = 0;
 
   const log = (line) => {
@@ -90,6 +113,42 @@ export function apply(ctx, config) {
       appendFileSync(logPath, `${new Date().toISOString()} ${line}\n`);
     } catch {
       // Logging must never break polling.
+    }
+  };
+
+  // What the plugin believes it is doing, for `dsh-inbox-bridge status`: the
+  // effective config without secrets, plus where the state lives.
+  const writeRuntime = () => {
+    try {
+      mkdirSync(stateDir, { recursive: true });
+      writeFileSync(
+        join(stateDir, "runtime.json"),
+        `${JSON.stringify(
+          {
+            at: new Date().toISOString(),
+            cwd: options.cwd,
+            repo: options.repo,
+            intervalMs: options.intervalMs,
+            delivery: options.delivery,
+            wakeOn: options.wakeOn,
+            wakeAfterIdleMs: options.wakeAfterIdleMs,
+            wakesPerHour: options.wakesPerHour,
+            maxConsecutiveWakes: options.maxConsecutiveWakes,
+            maxEvents: options.maxEvents,
+            resurfaceMs: options.resurfaceMs,
+            roles: options.roles,
+            identity: {
+              kind: options.identity.kind,
+              login: options.identity.login,
+              token: options.identity.token || options.identity.tokenEnv ? "configured" : null,
+            },
+          },
+          null,
+          2,
+        )}\n`,
+      );
+    } catch {
+      // Diagnostics must never break polling.
     }
   };
 
@@ -113,8 +172,14 @@ export function apply(ctx, config) {
     log(`injected offline reminder: ${reason}`);
   };
 
+  let startedAt = 0;
+
   const poll = async () => {
     if (polling || agents.size === 0) return;
+    // Turn start fires both a status change and a session event; one poll is
+    // enough for both, and a duplicate would only spend a second `gh` call.
+    if (Date.now() - startedAt < 3_000) return;
+    startedAt = Date.now();
     polling = true;
     try {
       const payload = await pollEvents(options);
@@ -150,7 +215,9 @@ export function apply(ctx, config) {
         );
         return;
       }
-      const waking = new Set(wakeTargets([...batches.keys()], options, wakeStreak));
+      const wake = wakePlan(batches, options, { streak: wakeStreak, lastActive, wakes, now });
+      if (!wake.agent && wake.considered > 0) log(`no wakeup: ${wake.why}`);
+      const waking = wake.agent ? new Set([wake.agent]) : new Set();
       const deliveredKeys = new Set();
       let delivered = 0;
       for (const [agent, mine] of batches) {
@@ -168,10 +235,16 @@ export function apply(ctx, config) {
         for (const key of deliveredKeys) recentlyDelivered.set(key, now);
         // Only a wake that actually happened spends the budget; a queued notice
         // never does, because it does not open a turn.
-        for (const agent of waking) wakeStreak.set(agent, (wakeStreak.get(agent) ?? 0) + 1);
+        if (wake.agent && deliveredKeys.has(wake.event.key)) {
+          wakeStreak.set(wake.agent, (wakeStreak.get(wake.agent) ?? 0) + 1);
+          wakes.push(now);
+          log(`woke ${sessionLabel(wake.agent)} because ${wake.event.role}:${wake.event.key}`);
+        }
         log(
           `injected ${deliveredEvents.length} event(s) into ${delivered} agent(s) [${options.delivery}]` +
-            (waking.size > 0 ? `; woke ${waking.size} agent(s)` : "") +
+            (deliveredEvents.length !== events.length
+              ? `; ${events.length - deliveredEvents.length} held for another session`
+              : "") +
             (deferred.length > 0 ? `; ${deferred.length} running agent(s) skipped` : "") +
             (unassociated > 0 ? `; ${unassociated} not on ${sourceLabel(options)}` : ""),
         );
@@ -189,43 +262,69 @@ export function apply(ctx, config) {
     }
   };
 
+  const stopTurn = (agent) => {
+    const timer = turnTimers.get(agent);
+    if (timer) clearInterval(timer);
+    turnTimers.delete(agent);
+  };
+
+  const startTurn = (agent) => {
+    if (turnTimers.has(agent)) return;
+    const timer = setInterval(() => {
+      void poll();
+    }, options.intervalMs);
+    timer.unref?.();
+    turnTimers.set(agent, timer);
+  };
+
   const register = (agent) => {
     if (!agent || agents.has(agent)) return;
     agents.add(agent);
+    lastActive.set(agent, Date.now());
     agent.ctx.effect(() => () => {
+      stopTurn(agent);
       agents.delete(agent);
+      lastActive.delete(agent);
+      wakeStreak.delete(agent);
     });
-    if (!timer) {
-      timer = setInterval(() => {
-        void poll();
-      }, options.intervalMs);
-      timer.unref?.();
-      void poll();
-    }
   };
 
+  writeRuntime();
   for (const agent of ctx.agents.list()) register(agent);
   ctx.on("agent/created", ({ agent }) => register(agent));
-  ctx.on("agent/status", ({ status }) => {
-    // A run just finished: deliver whatever was held while it was busy, so the
-    // notice is queued for the next turn start instead of mid-run.
-    if (status === "idle") void poll();
+
+  // A turn is the only thing that makes the inbox worth reading: poll when one
+  // starts, re-poll while a long one runs, poll once more when it ends. An idle
+  // session costs no subprocess and no network — that is the point of owning the
+  // schedule here instead of running a fixed timer.
+  ctx.on("agent/status", ({ agent, status } = {}) => {
+    if (!agent || !agents.has(agent)) return;
+    lastActive.set(agent, Date.now());
+    if (status === "running") {
+      startTurn(agent);
+      void poll();
+    } else if (status === "idle") {
+      stopTurn(agent);
+      void poll();
+    }
   });
-  // A human-authored message proves the agent is responsive again, so its wake
-  // budget restarts from zero (the rule tool-jobs' maxConsecutiveWakes uses).
+
+  // A human message is a turn boundary we can see without watching status, and
+  // it restarts the wake budget (the rule tool-jobs' maxConsecutiveWakes uses).
   ctx.on("session/event", (session, event) => {
     if (event?.type !== "user/message") return;
     if (event.data?.source?.kind !== "user") return;
     for (const agent of agents) {
-      if (agent.session === session) wakeStreak.delete(agent);
+      if (agent.session !== session) continue;
+      wakeStreak.delete(agent);
+      lastActive.set(agent, Date.now());
+      startTurn(agent);
+      void poll();
     }
   });
 
   ctx.effect(() => () => {
-    if (timer) {
-      clearInterval(timer);
-      timer = undefined;
-    }
+    for (const agent of turnTimers.keys()) stopTurn(agent);
     agents.clear();
   });
 }
@@ -259,20 +358,64 @@ export function deliver(agent, message, waking) {
 }
 
 /**
- * Which ready agents get the notice as a `followup` (starts a turn) instead of an
- * `inject` (waits for the next step). `quiet` (the default) never wakes anyone;
- * `wakeup` wakes one agent per poll, until that agent has taken
- * `maxConsecutiveWakes` wakeups since its last human message — a woken turn can
- * produce the very event that wakes it again, so the budget has to exist.
+ * Decide whether this poll may open a turn, and for which event.
+ *
+ * A wakeup is the only way this plugin spends the user's attention without being
+ * asked, so four independent gates must all pass: the mode must allow it
+ * (`delivery: wakeup`), the event's role must be one the user listed (`wakeOn`,
+ * empty by default), the session must have been quiet for `wakeAfterIdleMs`, and
+ * both the per-session streak and the rolling `wakesPerHour` budget must have
+ * room. Anything refused is reported in `why` so the log can answer "凭什么".
  */
-export function wakeTargets(ready, options, streak) {
-  if ((options?.delivery ?? DEFAULTS.delivery) !== "wakeup") return [];
+export function wakePlan(batches, options, state = {}) {
+  const none = (why, considered = 0) => ({ agent: null, event: null, why, considered });
+  if ((options?.delivery ?? DEFAULTS.delivery) !== "wakeup") return none("not-requested");
+  const wakeOn = options?.wakeOn ?? DEFAULTS.wakeOn;
+  if (!Array.isArray(wakeOn) || wakeOn.length === 0) return none("no-role");
+
+  const now = state.now ?? Date.now();
+  const streak = state.streak ?? new Map();
+  const lastActive = state.lastActive ?? new Map();
+  const wakes = state.wakes ?? [];
+  const perHour = options?.wakesPerHour ?? DEFAULTS.wakesPerHour;
   const cap = options?.maxConsecutiveWakes ?? DEFAULTS.maxConsecutiveWakes;
-  for (const agent of ready) {
-    if ((streak?.get(agent) ?? 0) >= cap) continue;
-    return [agent];
+  const idleMs = options?.wakeAfterIdleMs ?? DEFAULTS.wakeAfterIdleMs;
+
+  const recentWakes = wakes.filter((at) => now - at < 60 * 60 * 1000).length;
+  let considered = 0;
+  let why = "no-match";
+  for (const [agent, events] of batches ?? []) {
+    for (const event of events) {
+      const role = event.role ?? "any";
+      if (!wakeOn.includes(role)) continue;
+      considered += 1;
+      if (recentWakes >= perHour) {
+        why = "hourly-budget";
+        continue;
+      }
+      if ((streak.get(agent) ?? 0) >= cap) {
+        why = "streak";
+        continue;
+      }
+      if (now - (lastActive.get(agent) ?? 0) < idleMs) {
+        why = "not-idle";
+        continue;
+      }
+      return { agent, event, why: "ok", considered };
+    }
   }
-  return [];
+  return none(why, considered);
+}
+
+/** A stable, human-readable name for a session in the log. */
+export function sessionLabel(agent) {
+  const header = agent?.session?.header ?? {};
+  const cwd = header.cwd ?? header.title ?? null;
+  if (typeof cwd === "string" && cwd.length > 0) {
+    const parts = cwd.replace(/[\\/]+$/u, "").split(/[\\/]/u);
+    return parts[parts.length - 1] || cwd;
+  }
+  return agent?.session?.id ?? "session";
 }
 
 /** `owner/name` a session workspace points at, cached for a short while. */
@@ -346,14 +489,47 @@ export function mergeConfig(config) {
       `inbox-bridge: \`roles\` must be an array of role names, got ${JSON.stringify(roles)}`,
     );
   }
+  const wakeOn = given.wakeOn ?? DEFAULTS.wakeOn;
+  if (!Array.isArray(wakeOn) || wakeOn.some((role) => typeof role !== "string")) {
+    throw new Error(
+      `inbox-bridge: \`wakeOn\` must be an array of role names, got ${JSON.stringify(wakeOn)}`,
+    );
+  }
+  if (Array.isArray(wakeOn) && wakeOn.length > 0 && delivery !== "wakeup") {
+    throw new Error(
+      'inbox-bridge: `wakeOn` only matters with `delivery: "wakeup"` — set it, or drop `wakeOn`',
+    );
+  }
+  const intervalMs = given.intervalMs ?? DEFAULTS.intervalMs;
+  if (!Number.isInteger(intervalMs) || intervalMs < 5_000) {
+    throw new Error(
+      `inbox-bridge: \`intervalMs\` is the in-turn poll interval and must be an integer >= 5000, got ${JSON.stringify(intervalMs)}`,
+    );
+  }
+  const wakeAfterIdleMs = given.wakeAfterIdleMs ?? DEFAULTS.wakeAfterIdleMs;
+  if (!Number.isInteger(wakeAfterIdleMs) || wakeAfterIdleMs < 0) {
+    throw new Error(
+      `inbox-bridge: \`wakeAfterIdleMs\` must be a non-negative integer, got ${JSON.stringify(wakeAfterIdleMs)}`,
+    );
+  }
+  const wakesPerHour = given.wakesPerHour ?? DEFAULTS.wakesPerHour;
+  if (!Number.isInteger(wakesPerHour) || wakesPerHour < 0) {
+    throw new Error(
+      `inbox-bridge: \`wakesPerHour\` must be a non-negative integer, got ${JSON.stringify(wakesPerHour)}`,
+    );
+  }
   return {
     ...DEFAULTS,
     ...given,
     repo,
     delivery,
-    maxConsecutiveWakes,
     identity,
     roles,
+    wakeOn,
+    intervalMs,
+    wakeAfterIdleMs,
+    wakesPerHour,
+    maxConsecutiveWakes,
     poll: { ...DEFAULTS.poll, ...(given.poll ?? {}) },
     ack: { ...DEFAULTS.ack, ...(given.ack ?? {}) },
   };
@@ -428,7 +604,7 @@ function runCommand(spec, options, extraEnv = {}) {
         env: {
           ...process.env,
           ...(useNode ? { ELECTRON_RUN_AS_NODE: "1" } : {}),
-          ...(options.repo ? { NOEMA_INBOX_REPO: options.repo } : {}),
+          ...(options.repo ? { INBOX_REPO: options.repo } : {}),
           ...identityEnv(options.identity),
           ...extraEnv,
         },
@@ -478,6 +654,9 @@ export function formatEvents(events, options = DEFAULTS) {
   const ackHint = options.ackHint ?? DEFAULT_ACK_HINT;
   const maxEvents = options.maxEvents ?? 6;
   const delivery = options.delivery ?? DEFAULTS.delivery;
+  const resurfaceMs = options.resurfaceMs ?? DEFAULTS.resurfaceMs;
+  const resurfaceHours = Math.max(1, Math.round(resurfaceMs / (60 * 60 * 1000)));
+  const intervalMinutes = Math.max(1, Math.round((options.intervalMs ?? DEFAULTS.intervalMs) / 60_000));
   const lines = events.slice(0, maxEvents).map((event) => `- ${describeEvent(event)}`);
   if (events.length > maxEvents)
     lines.push(`- 其余 ${events.length - maxEvents} 条见 \`npm run inbox\``);
@@ -490,12 +669,28 @@ export function formatEvents(events, options = DEFAULTS) {
     "",
     `只在它影响当前工作时处理；处理完运行 \`${ackHint}\` 标记完成。`,
     ...(ackHint.startsWith("npm ") ? ["（`--done` 放在 `--` 之后，否则被 npm 吞掉，只标 delivered）"] : []),
-    "只标 delivered 的事件会在 6 小时后再次提醒；`kind: infra` 的基础设施失败只提醒一次。",
-    delivery === "wakeup"
-      ? `插件可能替你开一轮（\`delivery: wakeup\`，每轮最多一条，受 \`maxConsecutiveWakes\` 限制）。`
-      : "这条通知只在你发消息时随该轮进入上下文，不会替你另开一轮。",
+    `只标 delivered 的事件会在 ${resurfaceHours} 小时后再次提醒；\`kind: infra\` 的基础设施失败只提醒一次。`,
+    wakeNotice(options, delivery),
+    `只在回合边界轮询：回合开始一次、进行中每 ${intervalMinutes} 分钟一次、结束一次；空闲时不访问来源。`,
     ...(options.repo ? [`只播报 ${options.repo} 的事件，其它仓库的会话不会收到它。`] : []),
   ].join("\n");
+}
+
+/** One honest sentence about whether this notice can open a turn, and why. */
+function wakeNotice(options, delivery) {
+  if (delivery !== "wakeup") {
+    return "这条通知只在你发消息时随该轮进入上下文，不会替你另开一轮。";
+  }
+  const wakeOn = options.wakeOn ?? DEFAULTS.wakeOn;
+  if (!Array.isArray(wakeOn) || wakeOn.length === 0) {
+    return "`delivery: wakeup` 已开启但 `wakeOn` 为空：仍是只排队，不替你开轮。";
+  }
+  const idleMinutes = Math.max(1, Math.round((options.wakeAfterIdleMs ?? DEFAULTS.wakeAfterIdleMs) / 60_000));
+  const perHour = options.wakesPerHour ?? DEFAULTS.wakesPerHour;
+  return (
+    `插件可能替你开一轮：仅限 ${wakeOn.join("/")} 角色，会话空闲满 ${idleMinutes} 分钟后，` +
+    `每小时最多 ${perHour} 次（另有每个会话 ${options.maxConsecutiveWakes ?? DEFAULTS.maxConsecutiveWakes} 次的连续上限）。`
+  );
 }
 
 export function buildMessage(count, text, label = "外部收件箱") {

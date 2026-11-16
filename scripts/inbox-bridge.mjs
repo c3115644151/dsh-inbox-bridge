@@ -1,4 +1,4 @@
-﻿// Inbox bridge: the repo side of any external-event source.
+// Inbox bridge: the repo side of any external-event source.
 //
 // Owns: turning one poller's stdout into pending events, and keeping the
 // delivered/handled state the agent loop needs. An event is injected once; if
@@ -15,8 +15,10 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const STATE_REL = join(".work", "inbox-bridge", "state.json");
+const RUNTIME_REL = join(".work", "inbox-bridge", "runtime.json");
 // The poller ships next to this file, so the same command works from any cwd.
 const POLLER_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "github-inbox.mjs");
+const SOURCE_STATE_REL = join(".work", "github-inbox", "state.json");
 
 export const STATUSES = ["pending", "delivered", "done"];
 /** Delivered-but-unhandled events resurface after this long. */
@@ -143,7 +145,7 @@ export function pollEvents(root, options = {}) {
   const poller = POLLER_PATH;
   if (!existsSync(poller)) throw new Error(`missing poller: ${poller}`);
   const exec = options.execFile ?? execFileSync;
-  const args = [poller, "--poll", "--repeat", "--json", "--quiet", "--no-toast"];
+  const args = [poller, "--poll", "--repeat", "--json", "--quiet"];
   if (typeof options.repo === "string" && options.repo.length > 0)
     args.push("--repo", options.repo);
   const stdout = exec(process.execPath, args, {
@@ -200,13 +202,122 @@ export function pollOnce(root, options = {}) {
   return { ...groups, skipped: null, state: closed.state };
 }
 
+/**
+ * What this workspace's bridge is actually doing, assembled from three local
+ * files and one `git` call — no network, so it is always safe to run.
+ */
+export function describeStatus(root, options = {}) {
+  const git = options.readGitRepo ?? detectRepo;
+  const readJson = options.readJson ?? readJsonFile;
+  const queue = readState(stateFileOf(root)).events ?? {};
+  const counts = { pending: 0, delivered: 0, done: 0 };
+  for (const entry of Object.values(queue)) {
+    const status = entry?.status;
+    if (status in counts) counts[status] += 1;
+  }
+  const runtime = readJson(resolve(root, RUNTIME_REL));
+  const source = readJson(resolve(root, SOURCE_STATE_REL));
+  return {
+    cwd: root,
+    repo: runtime?.repo ?? (typeof options.repo === "string" ? options.repo : null) ?? git(root),
+    identity: runtime?.identity ?? null,
+    roles: Array.isArray(runtime?.roles) ? runtime.roles : null,
+    delivery: runtime?.delivery ?? null,
+    intervalMs: runtime?.intervalMs ?? null,
+    wakeOn: Array.isArray(runtime?.wakeOn) ? runtime.wakeOn : null,
+    wakeAfterIdleMs: runtime?.wakeAfterIdleMs ?? null,
+    wakesPerHour: runtime?.wakesPerHour ?? null,
+    queue: counts,
+    lastPoll: source?.lastPoll ?? null,
+    stateFile: stateFileOf(root),
+    runtimeFile: resolve(root, RUNTIME_REL),
+    pluginSeen: runtime !== null,
+  };
+}
+
+export function formatStatus(status) {
+  const count = status.queue;
+  const lines = [
+    `repo      ${status.repo ?? "（未识别：工作区没有 GitHub origin）"}`,
+    `identity  ${identityLine(status.identity)}`,
+    `roles     ${
+      status.roles === null || status.roles.length === 0
+        ? "全部（未配置 roles）"
+        : status.roles.join(" / ")
+    }`,
+    `delivery  ${deliveryLine(status)}`,
+    `queue     pending ${count.pending} · delivered ${count.delivered} · done ${count.done}`,
+    `last poll ${pollLine(status.lastPoll)}`,
+  ];
+  if (!status.pluginSeen) {
+    lines.push(
+      "",
+      "插件还没在这个工作区运行过（没有 runtime.json）：以上仓库与队列来自本地状态，",
+      "身份、角色与投递方式只有插件启动后才知道。在 DSH 里启用 inbox-bridge 即可。",
+    );
+  }
+  return lines.join("\n");
+}
+
+function identityLine(identity) {
+  if (!identity) return "未知（插件未运行）";
+  const login = identity.login ?? (identity.kind === "app" ? null : "本机 gh");
+  const token = identity.token === "configured" ? "，令牌已配置" : "";
+  return `${identity.kind === "app" ? "GitHub App" : "用户"} ${login ?? "（未登录名）"}${token}`;
+}
+
+function deliveryLine(status) {
+  if (!status.delivery) return "未知（插件未运行）";
+  if (status.delivery !== "wakeup") return "quiet（只排队，不替你开轮）";
+  if (!status.wakeOn || status.wakeOn.length === 0)
+    return "wakeup，但 wakeOn 为空（仍是只排队）";
+  const idleMinutes = Math.round((status.wakeAfterIdleMs ?? 0) / 60_000);
+  return `wakeup，仅 ${status.wakeOn.join("/")}，空闲 ${idleMinutes} 分钟后，每小时最多 ${status.wakesPerHour} 次`;
+}
+
+function pollLine(lastPoll) {
+  if (!lastPoll) return "还没有记录（下一次回合开始时轮询）";
+  const parts = [];
+  if (lastPoll.at) parts.push(lastPoll.at.replace(/\.\d{3}Z$/u, "Z"));
+  if (lastPoll.as) parts.push(`as ${lastPoll.as}`);
+  if (Number.isFinite(lastPoll.durationMs)) parts.push(`${(lastPoll.durationMs / 1000).toFixed(1)}s`);
+  if (Number.isFinite(lastPoll.events)) parts.push(`${lastPoll.events} event(s)`);
+  return parts.join(" · ");
+}
+
+function readJsonFile(file) {
+  try {
+    return JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/** `owner/name` from `git remote get-url origin`, or null when not connected. */
+export function detectRepo(cwd) {
+  try {
+    const url = String(
+      execFileSync("git", ["-C", cwd, "remote", "get-url", "origin"], {
+        encoding: "utf8",
+        timeout: 10_000,
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "ignore"],
+      }),
+    ).trim();
+    const match = /github\.com[:/]([\w.-]+)\/([\w.-]+?)(?:\.git)?$/u.exec(url);
+    return match ? `${match[1]}/${match[2]}` : null;
+  } catch {
+    return null;
+  }
+}
+
 function main(argv) {
   const root = process.cwd();
   const stateFile = stateFileOf(root);
   const command = argv[0] ?? "list";
   const flags = argv.slice(1);
   const json = flags.includes("--json");
-  const repo = process.env.NOEMA_INBOX_REPO ?? null;
+  const repo = process.env.INBOX_REPO ?? null;
   const at = new Date().toISOString();
 
   if (command === "poll") {
@@ -240,6 +351,12 @@ function main(argv) {
         "note: 只标了 delivered（6 小时后会再提醒）；要停止提醒用 `npm run inbox:ack -- --done -- <key>`\n",
       );
     }
+    return 0;
+  }
+
+  if (command === "status") {
+    const status = describeStatus(root, { repo });
+    process.stdout.write(`${json ? JSON.stringify(status, null, 2) : formatStatus(status)}\n`);
     return 0;
   }
 
@@ -282,7 +399,7 @@ function main(argv) {
   }
 
   process.stderr.write(
-    "usage: node scripts/inbox-bridge.mjs [poll|list|ack] [--json] [--done] [--all-delivered]\n" +
+    "usage: node scripts/inbox-bridge.mjs [poll|list|status|ack] [--json] [--done] [--all-delivered]\n" +
       "       npm 会吞掉 `--` 之前的 `--done`，经 npm 调用时写成 `npm run inbox:ack -- --done -- <key>`\n",
   );
   return 2;

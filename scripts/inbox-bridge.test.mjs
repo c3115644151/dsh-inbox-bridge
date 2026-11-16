@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 
 import {
@@ -6,6 +9,8 @@ import {
   autoDone,
   classify,
   describeEvent,
+  describeStatus,
+  formatStatus,
   readState,
   transition,
 } from "./inbox-bridge.mjs";
@@ -137,4 +142,89 @@ test("an event line keeps kind, ref, title, url and key", () => {
     }),
     "[ci] run 1 verify failed https://example.test/1 · key: run:1",
   );
+});
+
+function withWorkspace(run) {
+  const root = mkdtempSync(join(tmpdir(), "inbox-status-"));
+  mkdirSync(join(root, ".work", "inbox-bridge"), { recursive: true });
+  mkdirSync(join(root, ".work", "github-inbox"), { recursive: true });
+  try {
+    run(root);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test("status reports the queue, the poll result and what the plugin will do", () => {
+  withWorkspace((root) => {
+    writeFileSync(
+      join(root, ".work", "inbox-bridge", "state.json"),
+      JSON.stringify({
+        events: {
+          "run:1": { status: "pending", at: AT },
+          "pr:2": { status: "delivered", at: AT },
+          "pr:3": { status: "done", at: AT },
+        },
+      }),
+    );
+    writeFileSync(
+      join(root, ".work", "inbox-bridge", "runtime.json"),
+      JSON.stringify({
+        repo: "example-org/example-repo",
+        delivery: "quiet",
+        intervalMs: 600000,
+        roles: [],
+        identity: { kind: "user", login: null, token: null },
+      }),
+    );
+    writeFileSync(
+      join(root, ".work", "github-inbox", "state.json"),
+      JSON.stringify({
+        lastPoll: { at: AT, as: "c3115644151", durationMs: 1900, events: 4 },
+      }),
+    );
+
+    const status = describeStatus(root, { readGitRepo: () => null });
+    assert.equal(status.repo, "example-org/example-repo");
+    assert.deepEqual(status.queue, { pending: 1, delivered: 1, done: 1 });
+    assert.equal(status.pluginSeen, true);
+
+    const text = formatStatus(status);
+    assert.match(text, /queue\s+pending 1 · delivered 1 · done 1/u);
+    assert.match(text, /quiet（只排队，不替你开轮）/u);
+    assert.match(text, /as c3115644151 · 1\.9s · 4 event\(s\)/u);
+  });
+});
+
+test("status falls back to git and says when the plugin has not run here", () => {
+  withWorkspace((root) => {
+    const status = describeStatus(root, { readGitRepo: () => "owner/from-git" });
+    assert.equal(status.repo, "owner/from-git");
+    assert.equal(status.pluginSeen, false);
+    assert.deepEqual(status.queue, { pending: 0, delivered: 0, done: 0 });
+
+    const text = formatStatus(status);
+    assert.match(text, /owner\/from-git/u);
+    assert.match(text, /插件还没在这个工作区运行过/u);
+    assert.match(text, /还没有记录（下一次回合开始时轮询）/u);
+  });
+});
+
+test("status explains a wakeup that cannot wake anyone", () => {
+  withWorkspace((root) => {
+    writeFileSync(
+      join(root, ".work", "inbox-bridge", "runtime.json"),
+      JSON.stringify({
+        repo: "owner/repo",
+        delivery: "wakeup",
+        wakeOn: [],
+        wakeAfterIdleMs: 900000,
+        wakesPerHour: 2,
+        identity: { kind: "app", login: "app[bot]", token: "configured" },
+      }),
+    );
+    const text = formatStatus(describeStatus(root, { readGitRepo: () => null }));
+    assert.match(text, /GitHub App app\[bot\]，令牌已配置/u);
+    assert.match(text, /wakeup，但 wakeOn 为空（仍是只排队）/u);
+  });
 });

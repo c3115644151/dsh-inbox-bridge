@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "GitHub 收件箱",
-    "description": "只读一个 GitHub 仓库，按身份判断哪些事件与你有关：我作者的 PR 失败、我被请求评审、分配给我的 issue、@我的评论、默认分支 CI。条目分 pending / delivered / done 三态，默认只排队（quiet），不替你开轮。目前仅支持 GitHub。",
+    "description": "只读一个 GitHub 仓库，按身份判断哪些事件与你有关：我作者的 PR 失败、我被请求评审、分配给我的 issue、@我的评论、默认分支 CI。条目分 pending / delivered / done 三态，默认只排队（quiet），不替你开轮；只在回合边界轮询，空闲时不访问 GitHub。目前仅支持 GitHub。",
     "detail": "docs/DETAIL.zh.md"
   }
 }

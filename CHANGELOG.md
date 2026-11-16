@@ -2,6 +2,18 @@
 
 Format: keep a short entry per released version. Dates are UTC.
 
+## 2.2.0
+
+- 轮询改成跟回合走：回合开始一次、进行中每 `intervalMs` 一次、结束一次；空闲时不轮询、不留下定时器。`intervalMs` 因此从「固定轮询间隔」变成「回合内间隔」，默认 45 秒 → 10 分钟。
+- `wakeup` 重做为可审计的四道门：`wakeOn` 角色白名单（默认空 = 永不唤醒）、`wakeAfterIdleMs`（默认 15 分钟）、`wakesPerHour`（默认 2）、每会话 `maxConsecutiveWakes`。每次唤醒写 `woke <session> because <role>:<key>`，被拒时写 `no wakeup: <why>`。
+- 删掉唤醒文案里那句不存在的空闲承诺：现在文案复述的是同一个判断所用的规则。
+- 新增 `status` 子命令：仓库、身份、角色、投递方式、队列计数、上次轮询（身份 / 耗时 / 事件数），只读本地文件。
+- `.work/inbox-bridge/runtime.json` 记录插件本轮生效的配置，`status` 因此能看到插件真实生效值而不是默认值。
+- 仓库状态里记下 `lastPoll`：谁读的、多久、几个事件。
+- 删掉 Windows 通知弹窗与 `--no-toast`：通知只走 DSH 会话。
+- 环境变量统一为 `INBOX_REPO` / `INBOX_GH` / `INBOX_IDENTITY_*`。
+- 文档重写为按定位叙述（运输层通用、来源当前只有 GitHub），不再讲项目来历。
+
 ## 2.1.0
 
 - 新增 `identity`：poller 以某个身份读 GitHub（本机 `gh` 登录，或 App 安装令牌），并从身份推导每条事件的角色。
@@ -47,5 +59,5 @@ Format: keep a short entry per released version. Dates are UTC.
 
 ## 1.4.0
 
-- Standalone project: plugin, CLI and GitHub collector moved out of the Noema repository.
+- Standalone project: plugin, CLI and GitHub collector ship as one package.
 - Three-state bookkeeping (pending / delivered / done), resurfacing after six hours, and automatic closing of resolved failures.

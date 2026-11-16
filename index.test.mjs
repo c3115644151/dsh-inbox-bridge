@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { buildMessage, deliver, deliveryTargets, detectRepo, filterUndelivered, formatEvents, matchesWatch, mergeConfig, repoOf, wakeTargets } from "./index.js";
+import { buildMessage, deliver, deliveryTargets, detectRepo, filterUndelivered, formatEvents, matchesWatch, mergeConfig, repoOf, wakePlan } from "./index.js";
 
 const idle = { status: "idle" };
 const running = { status: "running" };
@@ -46,21 +46,54 @@ test("the interrupt switch delivers to running agents too", () => {
 });
 
 test("quiet delivery never opens a turn on its own", () => {
-  assert.deepEqual(wakeTargets([idle, unknown], {}), []);
-  assert.deepEqual(wakeTargets([idle, unknown], { delivery: "quiet" }), []);
+  const batches = new Map([[idle, [{ key: "k", role: "reviewer" }]]]);
+  const plan = wakePlan(batches, { delivery: "quiet" }, { lastActive: new Map() });
+  assert.equal(plan.agent, null);
+  assert.equal(plan.why, "not-requested");
 });
 
-test("wakeup opens one turn and spends that agent's wake budget", () => {
-  const streak = new Map();
-  const strict = { delivery: "wakeup", maxConsecutiveWakes: 2 };
+test("wakeup needs a listed role, an idle gap, and room in both budgets", () => {
+  const batches = new Map([[idle, [{ key: "k", role: "reviewer" }]]]);
+  const now = 1_000_000;
+  const base = {
+    delivery: "wakeup",
+    wakeOn: ["reviewer"],
+    wakeAfterIdleMs: 60_000,
+    wakesPerHour: 2,
+    maxConsecutiveWakes: 2,
+  };
+  const quietSince = new Map([[idle, now - 120_000]]);
 
-  assert.deepEqual(wakeTargets([idle, unknown], strict, streak), [idle]);
-
-  streak.set(idle, 2);
-  assert.deepEqual(wakeTargets([idle, unknown], strict, streak), [unknown]);
-
-  streak.set(unknown, 2);
-  assert.deepEqual(wakeTargets([idle, unknown], strict, streak), []);
+  // A role nobody asked to be woken for is only queued.
+  assert.equal(
+    wakePlan(batches, { ...base, wakeOn: ["assignee"] }, { now, lastActive: quietSince }).why,
+    "no-match",
+  );
+  // `wakeup` with an empty wakeOn is "queue only", not "wake for anything".
+  assert.equal(
+    wakePlan(batches, { ...base, wakeOn: [] }, { now, lastActive: quietSince }).why,
+    "no-role",
+  );
+  // A session that was active a moment ago is not woken.
+  assert.equal(
+    wakePlan(batches, base, { now, lastActive: new Map([[idle, now - 1_000]]) }).why,
+    "not-idle",
+  );
+  // The per-session streak caps repeated wakes for the same session.
+  assert.equal(
+    wakePlan(batches, base, { now, lastActive: quietSince, streak: new Map([[idle, 2]]) }).why,
+    "streak",
+  );
+  // The hourly budget caps wakes across every session.
+  assert.equal(
+    wakePlan(batches, base, { now, lastActive: quietSince, wakes: [now - 1_000, now - 2_000] }).why,
+    "hourly-budget",
+  );
+  // All four gates open: one agent, one event, and the reason is recorded.
+  const ok = wakePlan(batches, base, { now, lastActive: quietSince });
+  assert.equal(ok.agent, idle);
+  assert.equal(ok.event.key, "k");
+  assert.equal(ok.why, "ok");
 });
 
 test("a session only hears about the repository its own workspace points at", () => {
@@ -212,6 +245,45 @@ test("the removed wake key and malformed delivery settings fail loudly", () => {
   assert.throws(() => mergeConfig({ maxConsecutiveWakes: -1 }), /non-negative integer/u);
   assert.throws(() => mergeConfig({ maxConsecutiveWakes: 1.5 }), /non-negative integer/u);
   assert.equal(mergeConfig({ delivery: "wakeup", maxConsecutiveWakes: 0 }).delivery, "wakeup");
+});
+
+test("wake settings are validated and only mean something in wakeup mode", () => {
+  assert.throws(() => mergeConfig({ wakeOn: ["reviewer"] }), /only matters with `delivery/u);
+  assert.throws(() => mergeConfig({ wakeOn: "reviewer" }), /must be an array of role names/u);
+  assert.throws(() => mergeConfig({ intervalMs: 1_000 }), />= 5000/u);
+  assert.throws(() => mergeConfig({ wakeAfterIdleMs: -1 }), /non-negative integer/u);
+  assert.throws(() => mergeConfig({ wakesPerHour: 1.5 }), /non-negative integer/u);
+
+  const waking = mergeConfig({ delivery: "wakeup", wakeOn: ["reviewer", "assignee"] });
+  assert.deepEqual(waking.wakeOn, ["reviewer", "assignee"]);
+  assert.equal(waking.wakeAfterIdleMs, 15 * 60 * 1000);
+  assert.equal(waking.wakesPerHour, 2);
+  // Idle polling is gone: the interval is the in-turn cadence, ten minutes.
+  assert.equal(mergeConfig({}).intervalMs, 10 * 60 * 1000);
+  assert.deepEqual(mergeConfig({}).wakeOn, []);
+});
+
+test("the notice states the wake rules it actually enforces", () => {
+  const event = { key: "k", kind: "pr", role: "reviewer", title: "t", url: "u" };
+  const quiet = formatEvents([event], mergeConfig({}));
+  assert.match(quiet, /只会?在你发消息时随该轮进入上下文|不会替你另开一轮/u);
+  assert.match(quiet, /只在回合边界轮询：回合开始一次、进行中每 10 分钟一次、结束一次/u);
+
+  const empty = formatEvents([event], mergeConfig({ delivery: "wakeup" }));
+  assert.match(empty, /`wakeOn` 为空：仍是只排队/u);
+
+  const waking = formatEvents(
+    [event],
+    mergeConfig({
+      delivery: "wakeup",
+      wakeOn: ["reviewer"],
+      wakeAfterIdleMs: 20 * 60 * 1000,
+      wakesPerHour: 1,
+    }),
+  );
+  assert.match(waking, /仅限 reviewer 角色/u);
+  assert.match(waking, /空闲满 20 分钟后/u);
+  assert.match(waking, /每小时最多 1 次/u);
 });
 
 test("both delivery paths hand over the whole message, role and id included", () => {
