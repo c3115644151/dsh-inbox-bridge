@@ -407,7 +407,7 @@ function main(argv) {
     if (lines.length === 0) lines.push("没有待处理事件。");
     lines.push(
       "",
-      "处理完用 `npm run inbox:ack -- --done -- <key>` 标记完成；只标 delivered 的会在 6 小时后再次提醒。",
+      "处理完用 `ack --done -- <key>` 收口；只标 delivered 的会在 6 小时后再次提醒。",
       "基础设施类事件（kind: infra）只提醒一次，不重复。",
     );
     process.stdout.write(`${lines.join("\n")}\n`);
@@ -416,7 +416,7 @@ function main(argv) {
 
   process.stderr.write(
     "usage: node scripts/inbox-bridge.mjs [poll|list|status|ack] [--json] [--done] [--all-delivered]\n" +
-      "       npm 会吞掉 `--` 之前的 `--done`，经 npm 调用时写成 `npm run inbox:ack -- --done -- <key>`\n",
+      "       ack 收口：`ack --done -- <key>`；只写 `--done` 之前的写法会被包装脚本吞掉\n",
   );
   return 2;
 }

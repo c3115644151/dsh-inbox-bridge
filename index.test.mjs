@@ -188,6 +188,11 @@ test("the notice says when it was queued and how to stop the reminder", () => {
   assert.doesNotMatch(text, /inbox:ack --done/u);
 });
 
+test("the default ack hint is a command that actually exists on a fresh install", () => {
+  const text = formatEvents([{ key: "ci:1", kind: "ci", ref: "run 1", title: "verify failed" }], {});
+  assert.match(text, /node ".*scripts[\\/]inbox-bridge\.mjs" ack --done -- <key>/u);
+});
+
 test("the notice names the identity it reads as and the role of each event", () => {
   const text = formatEvents(
     [

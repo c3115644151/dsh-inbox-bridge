@@ -29,8 +29,13 @@ export const inject = ["agents"];
 /** The bridge CLI that ships with this plugin; commands run it, not a project copy. */
 const CLI = fileURLToPath(new URL("./scripts/inbox-bridge.mjs", import.meta.url));
 
-/** What the notice tells the agent to run once an event is handled. */
-export const DEFAULT_ACK_HINT = "ack --done -- <key>";
+/**
+ * What the notice tells the agent to run once an event is handled.
+ *
+ * It names this plugin's own CLI with its absolute path, because a bare `ack`
+ * resolves to nothing on a fresh install — the notice must be runnable as-is.
+ */
+export const DEFAULT_ACK_HINT = `node "${CLI}" ack --done -- <key>`;
 
 /** How long a session workspace's `owner/name` is trusted before re-reading git. */
 const REPO_TTL_MS = 10 * 60 * 1000;

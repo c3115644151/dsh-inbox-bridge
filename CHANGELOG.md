@@ -2,6 +2,12 @@
 
 Format: keep a short entry per released version. Dates are UTC.
 
+## 2.4.0
+
+- README 改成产品向叙述：讲它替你挡住什么、你会看到什么、默认有多安静；版本变更、配置全表、已知边界不再堆在首页。
+- 新增两份深入文档：[如何工作](docs/how-it-works.md)、[配置与命令](docs/configuration.md)，`README.en.md` 同步改写。
+- 通知里的收口命令默认带上插件自身的绝对路径，新装用户照抄即可执行（以前是个裸命令）。
+- 命令行帮助与 `list` 脚注不再引用宿主项目的 npm 脚本写法。
 ## 2.3.1
 
 - 一次轮询失败会在 `plugin.log` 里留一行 `poll skipped: <reason>`。以前它和「收件箱是空的」长得一模一样。
