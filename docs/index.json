@@ -24,12 +24,12 @@
     {
       "name": "dsh-inbox-bridge",
       "title": {
-        "en": "Inbox bridge",
-        "zh": "外部收件箱桥"
+        "en": "GitHub inbox",
+        "zh": "GitHub 收件箱"
       },
       "description": {
-        "en": "Poll any external source (GitHub CI, issues, pull requests, mail, a local command) and hand new events to the next conversation step. Items have three states: pending, delivered and done, so the same event is not repeated forever. New events can wake one idle session so you do not have to ask again.",
-        "zh": "轮询任意外部来源（GitHub 的 CI、issue、PR，邮件，或一条本地命令），把新事件交给下一次对话步骤。条目有 pending / delivered / done 三个状态，同一条事件不会被无限重复提醒；新事件还可以唤醒一个空闲会话，不用你每次来问。"
+        "en": "Reads GitHub CI runs, pull requests and issues every 45 seconds, queues one notice for the next turn, and can wake one idle session in wakeup mode. Items move through pending / delivered / done so the same event is not repeated forever.",
+        "zh": "每 45 秒读一次 GitHub 的 CI、PR 检查和 issue，把需要处理的变化排进下一次对话开头；默认只排队，wakeup 模式会唤醒一个空闲会话。条目分 pending / delivered / done 三态，同一事件不会无限重复。"
       },
       "icon": "icon.svg",
       "author": "c3115644151",
@@ -50,12 +50,12 @@
       },
       "versions": [
         {
-          "version": "2.0.2",
-          "publishTimestamp": 1794839838,
+          "version": "2.0.3",
+          "publishTimestamp": 1794840318,
           "source": {
             "type": "git",
             "url": "https://github.com/c3115644151/dsh-inbox-bridge",
-            "commit": "8119192a161882b7c132f689437c7ef6798353c0"
+            "commit": "31301c1f81635cabdc850f96604fc48bebfbadbb"
           },
           "engines": {
             "dsh": ">=0.1.0"
