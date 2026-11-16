@@ -690,13 +690,16 @@ window.__ModuleLoader__.load({
         report(`slots api failed: ${error && error.message ? error.message : String(error)}`);
       }
       try {
-        const SLOT = "conversation.input.dock";
+        // The ambient row under the composer, next to the activity and usage
+        // pills. It is a session-scoped list, so the registrar is handed the
+        // session it renders for.
+        const SLOT = "conversation.composer.dock";
         ctx.slots.inject(SLOT, () =>
           ctx.slots.register(
             {
               name: SLOT,
               id: "inbox-bridge-status",
-              order: 40,
+              order: 2,
               // The slot hands over the session it is rendering for; the row
               // must answer for that session, not for the whole instance.
               inject: (sessionId) => ({ sessionId }),

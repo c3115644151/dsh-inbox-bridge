@@ -2,6 +2,9 @@
 
 Format: keep a short entry per released version. Dates are UTC.
 
+## 2.11.1
+
+- 胶囊回到它原来的位置：`conversation.composer.dock`（输入框下方那行状态，和「N 轮 · N tok/s」同一行）。这个槽位声明为 `scope: session`，注册时通过 `inject: (sessionId) => …` 就能拿到会话，所以按会话显示不必换位置。
 ## 2.11.0
 
 - 状态行改成按会话显示：挂到宿主的 `conversation.input.dock`，由槽位把 `sessionId` 交给插件，页面每次取数都带上它。切到别的会话，看到的是那个会话的仓库与角色，不再永远是同一个仓库。
