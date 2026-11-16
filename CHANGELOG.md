@@ -2,6 +2,10 @@
 
 Format: keep a short entry per released version. Dates are UTC.
 
+## 2.7.1
+
+- 启动日志写明是否在归档收件箱（sweep events），和 clear 并列，免得要靠猜。
+
 ## 2.7.0
 
 - 新增 sweep：抓到东西的回合里顺手把通知归档进 Done；空回合不跑，所以安静时零成本。
