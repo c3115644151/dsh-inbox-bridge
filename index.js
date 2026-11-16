@@ -1114,7 +1114,7 @@ export function formatEvents(events, options = DEFAULTS) {
   const who =
     identity.kind === "app" ? `App ${identity.login ?? ""}`.trim() : (identity.login ?? "本机 gh");
   return [
-    `${options.label ?? "外部收件箱"}（后台轮询，不是用户提问）· 读取身份：${who}：`,
+    `${options.label ?? "外部收件箱"}（后台轮询，不是用户提问）· 读取身份：${who}`,
     ...lines,
     "",
     `只在它影响当前工作时处理；处理完运行 \`${ackHint}\` 标记完成。`,

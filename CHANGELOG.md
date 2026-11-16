@@ -2,6 +2,11 @@
 
 Format: keep a short entry per released version. Dates are UTC.
 
+## 2.12.2
+
+- 通知首行的身份段多了一个冒号（`读取身份：本机 gh：`），去掉。
+- README 的示例通知与 `scripts/github-inbox.mjs` 的实际输出对齐（`review requested from you`，不再意译）。
+- README「界面」一节的清理范围改回 `订阅的仓库`，与面板一致。
 ## 2.12.1
 
 - README 与面板文案改成陈述句：先说它是什么、读什么、什么时候注入，不再用比喻解释行为。

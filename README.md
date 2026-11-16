@@ -14,7 +14,7 @@
 出现在回合开头：
 
 > 外部收件箱（后台轮询，不是用户提问）· 读取身份：c3115644151：
-> - [PR/reviewer] #23 有人请你评审：fix: retry on flaky upload https://github.com/…
+> - [PR/reviewer] #23 review requested from you:fix: retry on flaky upload https://github.com/…
 > - [CI] run 43934997486 failed: chore: release 2.3.1 https://github.com/…
 >
 > 只在它影响当前工作时处理；处理完运行 `node "...\dsh-inbox-bridge\scripts\inbox-bridge.mjs" ack --done -- <key>` 标记完成。
@@ -27,7 +27,7 @@
 
 - 事件列表：角色、仓库、标题（可点开）、时间。
 - 身份、订阅的仓库、上次轮询时间。
-- 三组开关：提醒方式（仅注入 / 可唤醒）、清理范围（不清理 / 本仓库 / 整个账号，以及是否归档到 Done）、订阅哪些仓库。
+- 三组开关：提醒方式（仅注入 / 可唤醒）、清理范围（不清理 / 订阅的仓库 / 整个账号，以及是否归档到 Done）、订阅哪些仓库。
 
 改动立即生效，记录在 `<cwd>/.work/inbox-bridge/prefs.json`，不修改 DSH 的插件配置；重置后回到配置里的值。面板按会话取数：切换会话显示该会话所在仓库的事件；仓库未订阅时直接说明。
 
