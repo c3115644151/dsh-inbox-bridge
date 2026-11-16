@@ -2,12 +2,12 @@
 
 # dsh-inbox-bridge
 
-把外部事件变成下一次对话回合开头的一条通知。
+把 GitHub 的 CI、PR 与 issue 变成下一次对话开头的一条通知。
 
-DeepSeek Harness 插件：按固定间隔轮询一个外部来源（默认 GitHub），把新事件注入智能体的下一回合开头，并维护 `pending` / `delivered` / `done` 三态，使同一条事件不会被反复推送。它从 [Noema](https://github.com/Noema-Harness/noema-agent) 工作区抽出，本身不依赖 Noema。
+DeepSeek Harness 插件：每 45 秒读一次 GitHub 的 CI 运行、PR 检查和 issue，把需要处理的变化按 `pending` / `delivered` / `done` 三态管理，投递到对话回合边界；默认只排队，`wakeup` 模式下会唤醒一个空闲会话。它从 [Noema](https://github.com/Noema-Harness/noema-agent) 工作区抽出，本身不依赖 Noema。
 
 - 仓库：<https://github.com/c3115644151/dsh-inbox-bridge>
-- 版本：1.5.1，MIT
+- 版本：2.0.3，MIT
 - 环境：Node.js ≥ 20；插件跟随 DSH 进程启动
 
 ## 解决什么问题
@@ -49,7 +49,7 @@ npm i -g dsh-inbox-bridge
 dsh plugin add dsh-inbox-bridge
 ```
 
-安装后插件条目会出现在 `cordis.patch.yml` 的 `inbox-bridge` 行；改代码或改配置后都需要重启 DSH。
+安装后插件条目会出现在 `cordis.patch.yml` 的 `inbox-bridge` 行。插件代码与配置的改动由 DSH 的 profile 重组接管：在 Plugin Manager 里停用再启用一次该插件即可生效，不需要重启进程。
 
 ## 前置条件
 
@@ -141,6 +141,7 @@ npm 会把 `--` 之前的 `--done` 当成自己的参数，脚本收不到它，
 - **GitHub API 限流**：每次轮询至少调 3 个 `gh` 接口，被限流时该轮 skipped 并写日志；提高 `intervalMs` 可降低频率。
 - **只在 DSH 运行时轮询**：DSH 退出期间不推送，重启后由下一次轮询按来源的保留窗口补上。
 - **通知正文是中文**：`label` 可改标题，内置提示语固定中文。
+- **内置来源只有 GitHub**：CI、PR、issue 三类事件来自 `gh`；`poll` / `ack` 可以换成自定义脚本，但本包不内置邮件、本地命令等来源。
 
 ### 升级注意（1.5.x → 2.0.0）
 
@@ -162,7 +163,7 @@ npm test
 node --test index.test.mjs scripts/github-inbox.test.mjs scripts/inbox-bridge.test.mjs
 ```
 
-45 个用例覆盖纯逻辑：状态迁移（不倒退、重复投递推进时间戳）、事件分类、resurface 窗口、恢复/自动收口、投递守卫、仓库识别、wake 预算与通知格式化。
+47 个用例覆盖纯逻辑：状态迁移（不倒退、重复投递推进时间戳）、事件分类、resurface 窗口、恢复/自动收口、投递守卫、仓库识别、wake 预算与通知格式化。
 
 | 文件 | 职责 |
 | --- | --- |

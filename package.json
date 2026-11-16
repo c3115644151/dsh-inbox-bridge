@@ -1,8 +1,8 @@
 {
   "name": "dsh-inbox-bridge",
-  "version": "2.0.2",
-  "displayName": "Inbox bridge",
-  "description": "Poll any external source (CI, issues, mail, any command) and inject new events into the next DeepSeek Harness agent step, with delivered/handled bookkeeping, resurfacing and auto-close.",
+  "version": "2.0.3",
+  "displayName": "GitHub inbox",
+  "description": "GitHub inbox for DeepSeek Harness: reads CI runs, pull requests and issues on an interval, queues one notice for the next turn, and can wake one idle session.",
   "type": "module",
   "license": "MIT",
   "author": "c3115644151",

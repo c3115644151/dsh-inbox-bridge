@@ -2,6 +2,10 @@
 
 Format: keep a short entry per released version. Dates are UTC.
 
+## 2.0.3
+
+- 统一对外描述：插件只读 GitHub（CI、PR、issue），不再宣称“任意外部来源 / 邮件 / 本地命令”；标题、描述、README 与市场索引使用同一句话，版本与用例数同步。
+
 ## 2.0.2
 
 - PR 事件摘要只看“需要你处理的状态”（失败检查 + 评审决定）：进行中/成功完成的检查不再进入事件 key，同一个 PR 在检查跑完前不会反复触发通知与唤醒。

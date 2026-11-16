@@ -1,7 +1,7 @@
 {
   "meta": {
-    "title": "外部收件箱桥",
-    "description": "轮询任意外部来源（GitHub 的 CI、issue、PR，邮件，或一条本地命令），把新事件交给下一次对话步骤。条目有 pending / delivered / done 三个状态，同一条事件不会被无限重复提醒；新事件还可以唤醒一个空闲会话，不用你每次来问。",
+    "title": "GitHub 收件箱",
+    "description": "每 45 秒读一次 GitHub 的 CI、PR 检查和 issue，把需要处理的变化排进下一次对话开头；默认只排队，wakeup 模式会唤醒一个空闲会话。条目分 pending / delivered / done 三态，同一事件不会无限重复。",
     "detail": "docs/DETAIL.zh.md"
   }
 }

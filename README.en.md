@@ -2,12 +2,12 @@
 
 # dsh-inbox-bridge
 
-Turns external events into one notice at the start of the next conversation turn.
+Turns GitHub CI, pull requests and issues into one notice at the start of the next conversation turn.
 
-A DeepSeek Harness plugin: it polls an external source (GitHub by default) on an interval, injects new events at the start of the agent's next turn, and keeps `pending` / `delivered` / `done` state so the same event is not pushed over and over. It was extracted from the [Noema](https://github.com/Noema-Harness/noema-agent) workspace; nothing in it is Noema-specific.
+A DeepSeek Harness plugin: every 45 seconds it reads GitHub CI runs, pull request checks and issues, keeps each change in `pending` / `delivered` / `done` state, and delivers it at a turn boundary. It queues by default; `wakeup` mode also opens one idle session. It was extracted from the [Noema](https://github.com/Noema-Harness/noema-agent) workspace; nothing in it is Noema-specific.
 
 - Repository: <https://github.com/c3115644151/dsh-inbox-bridge>
-- Version: 1.5.1, MIT
+- Version: 2.0.3, MIT
 - Environment: Node.js >= 20; the plugin starts with the DSH process
 
 ## What it solves
@@ -49,7 +49,7 @@ npm i -g dsh-inbox-bridge
 dsh plugin add dsh-inbox-bridge
 ```
 
-After install, the plugin entry lives in the `inbox-bridge` row of `cordis.patch.yml`. Restart DSH after changing the plugin's code or config.
+After install, the plugin entry lives in the `inbox-bridge` row of `cordis.patch.yml`. Changes to the plugin's code or config are picked up by a DSH profile recomposition: disable and re-enable the plugin in Plugin Manager; no process restart is needed.
 
 ## Prerequisites
 
@@ -141,6 +141,7 @@ A notice is a `source.kind = inbox-bridge` message carrying the event keys and t
 - **GitHub API rate limits** — each poll calls at least 3 `gh` endpoints; when rate-limited, that poll is skipped and logged. A larger `intervalMs` lowers the rate.
 - **Polling only runs while DSH runs** — nothing is pushed while DSH is stopped; after a restart, the next poll picks up whatever the source still keeps.
 - **The notice body is Chinese** — `label` changes the title, but the built-in guidance text is fixed Chinese.
+- **The built-in source is GitHub only** — CI, pull request and issue events come from `gh`. `poll` / `ack` can point at a custom script, but this package ships no mail or local-command source.
 
 ### Upgrade note (1.5.x to 2.0.0)
 
@@ -162,7 +163,7 @@ npm test
 node --test index.test.mjs scripts/github-inbox.test.mjs scripts/inbox-bridge.test.mjs
 ```
 
-The 45 tests cover the pure logic: state transitions (never backwards, a repeated delivery moves the timestamp forward), event classification, the resurface window, recovery/auto-close, the delivery guard, repository association, the wake budget and notice formatting.
+The 47 tests cover the pure logic: state transitions (never backwards, a repeated delivery moves the timestamp forward), event classification, the resurface window, recovery/auto-close, the delivery guard, repository association, the wake budget and notice formatting.
 
 | File | Responsibility |
 | --- | --- |
