@@ -75,6 +75,11 @@ window.__ModuleLoader__.load({
       }
     }
 
+    // The very first thing the module does. If the Host log never shows this,
+    // the bundle never ran in the page at all — which is a different problem
+    // from "it ran and drew nothing", and the two must not be confused.
+    report(`module loaded (react ${typeof React?.version === "string" ? React.version : "unknown"})`);
+
     const COPY = {
       zh: {
         label: "GitHub 收件箱",

@@ -2,6 +2,9 @@
 
 Format: keep a short entry per released version. Dates are UTC.
 
+## 2.10.3
+
+- 客户端模块在加载的第一行就向 Host 报告自己已经执行（连同 React 版本），用来区分「模块没跑到」和「跑了但没画出东西」。这两种情况以前在日志里长得一样。
 ## 2.10.2
 
 - 胶囊外面加了一层兜底：渲染出错时它退化成只有图标和名字的胶囊，并把原因写进 plugin.log，而不是整行凭空消失。
