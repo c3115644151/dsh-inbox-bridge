@@ -643,7 +643,13 @@ export function pollOnce({
     issues.push(issue);
   }
   const payload = {
-    runs: Array.isArray(runsResult.value) ? runsResult.value : [],
+    // The default branch always counts; a feature branch counts only while this
+    // identity has an open PR from it.
+    runs: filterRuns(
+      Array.isArray(runsResult.value) ? runsResult.value : [],
+      Array.isArray(prsResult.value) ? prsResult.value : [],
+      me,
+    ),
     prs: Array.isArray(prsResult.value) ? prsResult.value : [],
     notifications: Array.isArray(feed.notifications) ? feed.notifications : [],
     comments: Array.isArray(feed.comments) ? feed.comments : [],
@@ -881,9 +887,33 @@ export function resolveLogin(cwd) {
 }
 
 export function fetchRuns(cwd) {
-  return ghJson(["run", "list", "--branch", "main", "--limit", "20", "--json", RUN_FIELDS], {
+  // No `--branch`: a branch you opened a PR from is watched too (see
+  // `filterRuns`), so its failures are not invisible until the PR is merged.
+  return ghJson(["run", "list", "--limit", "40", "--json", RUN_FIELDS], {
     cwd,
   });
+}
+
+/**
+ * Branches whose runs are worth reading: the default branch, plus the branches
+ * of PRs this identity opened. Other people's feature branches stay out — their
+ * failures are not this agent's work.
+ */
+export function watchedBranches(prs = [], me = null) {
+  const branches = new Set(["main"]);
+  for (const pr of Array.isArray(prs) ? prs : []) {
+    const branch = pr?.headRefName;
+    if (typeof branch !== "string" || branch.length === 0) continue;
+    if (prRole(pr, me) !== null) branches.add(branch);
+  }
+  return branches;
+}
+
+export function filterRuns(runs = [], prs = [], me = null) {
+  const branches = watchedBranches(prs, me);
+  return (Array.isArray(runs) ? runs : []).filter((run) =>
+    branches.has(String(run?.headBranch ?? "")),
+  );
 }
 
 export function fetchOpenIssues(cwd) {

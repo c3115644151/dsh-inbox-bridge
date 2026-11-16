@@ -16,6 +16,7 @@ import {
   extractNotificationEvents,
   extractPrEvents,
   extractRunEvents,
+  filterRuns,
   formatEvent,
   mentionsLogin,
   prRole,
@@ -31,6 +32,7 @@ import {
   readStateFile,
   sortEvents,
   updateState,
+  watchedBranches,
 } from "./github-inbox.mjs";
 
 // ---------------------------------------------------------------------------
@@ -44,6 +46,7 @@ function run(overrides = {}) {
     displayTitle: "fix: pin the maintenance test to explicit CI modes",
     conclusion: "failure",
     headSha: "e71e9c6a1b2c3d4e5f60718293a4b5c6d7e8f901",
+    headBranch: "main",
     createdAt: "2026-11-15T03:46:58Z",
     url: "https://github.com/Noema-Harness/noema-agent/actions/runs/43673883619",
     ...overrides,
@@ -781,6 +784,25 @@ test("reading the state file back keeps every slice, so a poll does not start bl
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("a failing run on my pull request's branch is news; a stranger's branch is not", () => {
+  const prs = [
+    pullRequest({ number: 24, headRefName: "feat/mine" }),
+    pullRequest({ number: 25, headRefName: "feat/theirs", author: { login: "someone-else" } }),
+  ];
+  assert.deepEqual([...watchedBranches(prs, ME)].sort(), ["feat/mine", "main"]);
+
+  const runs = [
+    run({ databaseId: 24, headBranch: "feat/mine", conclusion: "failure" }),
+    run({ databaseId: 25, headBranch: "feat/theirs", conclusion: "failure" }),
+    run({ databaseId: 26, headBranch: "main", conclusion: "failure" }),
+  ];
+  const kept = filterRuns(runs, prs, ME);
+  assert.deepEqual(kept.map((item) => item.databaseId), [24, 26]);
+
+  const events = extractRunEvents(kept, normalizeState({ lastPollAt: "2026-11-16T00:00:00.000Z" }));
+  assert.deepEqual(events.map((event) => event.key), ["run:24", "run:26"]);
 });
 
 test("the same PR number in two repositories becomes two keys", () => {

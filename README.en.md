@@ -2,7 +2,7 @@
 
 **Before your agent says anything, it already knows what changed on GitHub — only the parts that concern its work.**
 
-While you work, it takes a quick look at GitHub: did the PR you are involved in break, is someone waiting for your review, did anyone answer the issue assigned to you, is the default branch red. The things you should handle get picked out and dropped into the context as a few lines when your next turn starts; everything else stays out of sight. While you are not talking to your agent, it does not touch GitHub at all.
+While you work, it takes a quick look at GitHub: did the PR you are involved in break, is someone waiting for your review, did anyone answer the issue assigned to you, is the default branch, or the branch your own pull request lives on, red. The things you should handle get picked out and dropped into the context as a few lines when your next turn starts; everything else stays out of sight. While you are not talking to your agent, it does not touch GitHub at all.
 
 ## What it takes off your plate
 

@@ -2,6 +2,10 @@
 
 Format: keep a short entry per released version. Dates are UTC.
 
+## 2.5.0
+
+- CI 不再只看默认分支：我自己开的 PR 所在分支也会被读，分支上的失败同样会成为事件；别人分支上的失败仍然不打扰。
+- 为此 gh run list 改为一次抓全部分支（上限 40 条），再按「默认分支 + 我的 PR 分支」过滤。
 ## 2.4.2
 
 - 启动日志与通知里的轮询间隔改成可读写法：不足一分钟显示秒（poll every 20 秒），不再出现 poll 0 min。
