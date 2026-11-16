@@ -2,6 +2,9 @@
 
 Format: keep a short entry per released version. Dates are UTC.
 
+## 2.10.5
+
+- `exports` 里补回 `"./package.json"`。宿主按 Node 的解析规则读插件的 manifest 才能发现 `dsh.client`；`exports` 一旦存在却没列 manifest，解析会直接抛错，客户端入口于是被安静地跳过——页面里既没有胶囊，也没有任何一条错误。所有内建客户端包都导出了这份 manifest。
 ## 2.10.4
 
 - 客户端模块在导入 React 之前就先报一声，导入之后再报一次（含 React 版本与 portal 能力）；React/react-dom 的模块形状（本体还是 { default }）两种都接受。之前一旦导入失败，整行会毫无痕迹地消失。
