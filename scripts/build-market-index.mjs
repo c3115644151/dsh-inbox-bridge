@@ -126,15 +126,22 @@ if (isCheck) {
   if (isRelease) {
     const head = git(["rev-parse", "HEAD"]);
     const meta = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
-    if (pinned !== head) {
-      console.error(`release: docs/index.json pins ${pinned.slice(0, 7)} but HEAD is ${head.slice(0, 7)}: run \`npm run market\` and commit`);
-      process.exit(1);
-    }
     if (entry.versions[0].version !== meta.version) {
       console.error(`release: docs/index.json lists ${entry.versions[0].version} but package.json is ${meta.version}`);
       process.exit(1);
     }
-    console.log(`release index is current (${meta.version} @ ${head.slice(0, 7)})`);
+    // The index may be committed on top of the release commit it pins: only
+    // shipped code changes between the pin and HEAD would make the release stale.
+    const shipped = git(["diff", "--name-only", `${pinned}..${head}`, "--", "index.js", "scripts", "cordis.patch.yml", "locale", "package.json"])
+      .split("\n")
+      .filter((file) => file !== "" && file !== "scripts/build-market-index.mjs");
+    if (shipped.length > 0) {
+      console.error(
+        `release: ${pinned.slice(0, 7)} is older than the shipped plugin code (${shipped.join(", ")}): run \`npm run market\` and commit`,
+      );
+      process.exit(1);
+    }
+    console.log(`release index is current (${meta.version} @ ${pinned.slice(0, 7)})`);
   }
 } else {
   fs.mkdirSync(path.dirname(OUT), { recursive: true });
