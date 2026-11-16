@@ -2,6 +2,11 @@
 
 Format: keep a short entry per released version. Dates are UTC.
 
+## 2.3.1
+
+- 一次轮询失败会在 `plugin.log` 里留一行 `poll skipped: <reason>`。以前它和「收件箱是空的」长得一模一样。
+- 新增 `debug` 开关（默认关）：打开后 `plugin.log` 记录每个边界事件（会话注册、回合开始/结束、用户消息、每次轮询的进出），用来判断是没触发还是触发后没结果。
+
 ## 2.3.0
 
 - `repos`：一个实例订阅一组仓库。队列共用，状态按仓库分片（`state.json` 的 `repos`），事件 key 带仓库前缀 `owner/name#…`——同一个 PR 号在不同仓库是两个事件。

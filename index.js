@@ -63,6 +63,8 @@ const DEFAULTS = Object.freeze({
    * `wakeAfterIdleMs`). Mirrors tool-jobs' `completionDelivery`.
    */
   delivery: "quiet",
+  /** log every boundary event (turn start/end, message, registration) — for wiring problems */
+  debug: false,
   /**
    * Roles allowed to open a turn on an idle session. Empty by default: a notice
    * may queue silently for hours, but it never spends the user's attention
@@ -129,6 +131,11 @@ export function apply(ctx, config) {
     }
   };
 
+  /** Wiring trace, off unless `debug: true`: every boundary event the plugin sees. */
+  const debug = (line) => {
+    if (options.debug) log(`debug: ${line}`);
+  };
+
   // What the plugin believes it is doing, for `dsh-inbox-bridge status`: the
   // effective config without secrets, plus where the state lives.
   const writeRuntime = () => {
@@ -189,6 +196,7 @@ export function apply(ctx, config) {
   let startedAt = 0;
 
   const poll = async () => {
+    debug(`poll: enter (polling=${polling}, agents=${agents.size}, since=${Date.now() - startedAt}ms)`);
     if (polling || agents.size === 0) return;
     // Turn start fires both a status change and a session event; one poll is
     // enough for both, and a duplicate would only spend a second `gh` call.
@@ -197,7 +205,11 @@ export function apply(ctx, config) {
     polling = true;
     try {
       const payload = await pollEvents(options);
+      debug(`poll: payload skipped=${payload.skipped ?? "no"} events=${payload.events?.length ?? 0}`);
       if (payload.skipped) {
+        // A poll that cannot reach the source must leave a trace; silence here is
+        // how a broken install looks exactly like an empty inbox.
+        log(`poll skipped: ${payload.skipped}`);
         // No source at all: tell the user once in a while instead of failing silently.
         if ((options.repos?.length ?? 0) === 0) announceOffline(payload.skipped);
         return;
@@ -306,7 +318,10 @@ export function apply(ctx, config) {
 
   writeRuntime();
   for (const agent of ctx.agents.list()) register(agent);
-  ctx.on("agent/created", ({ agent }) => register(agent));
+  ctx.on("agent/created", (payload = {}) => {
+    debug(`created ${keyOf(payload.agent)}`);
+    register(payload.agent);
+  });
   log(
     `started: ${agents.size} agent(s), poll ${Math.round(options.intervalMs / 60_000)} min ` +
       `while a turn runs, delivery ${options.delivery}${options.repos?.length ? `, repos ${options.repos.join(", ")}` : ""}`,
@@ -317,7 +332,9 @@ export function apply(ctx, config) {
   // session costs no subprocess and no network — that is the point of owning the
   // schedule here instead of running a fixed timer.
   ctx.on("agent/status", ({ agent: incoming, status } = {}) => {
-    const agent = incoming ? agents.get(keyOf(incoming)) : undefined;
+    const key = keyOf(incoming);
+    const agent = key ? agents.get(key) : undefined;
+    debug(`status ${key} -> ${status} (${agent ? "known" : "unknown"}, ${agents.size} registered)`);
     if (!agent) return;
     lastActive.set(agent, Date.now());
     if (status === "running") {
@@ -334,6 +351,7 @@ export function apply(ctx, config) {
   ctx.on("session/event", (session, event) => {
     if (event?.type !== "user/message") return;
     if (event.data?.source?.kind !== "user") return;
+    debug(`user message in ${session?.id}`);
     const key = session?.id ?? keyOf({ session });
     const agent = key ? agents.get(key) : undefined;
     if (!agent) return;

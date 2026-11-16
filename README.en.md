@@ -91,6 +91,7 @@ Nothing but GitHub (through `gh`) is contacted, no data is sent anywhere else, a
 | `cwd` | DSH process cwd | workspace that owns the state, and the starting point for `repo` inference |
 | `repo` | inferred from `origin` | `owner/name` to watch; `INBOX_REPO` overrides |
 | `repos` | `[]` | watch several repositories from one instance — `["owner/one", "owner/two"]`; wins over `repo` |
+| `debug` | `false` | log every boundary event to `plugin.log`, to tell "never polled" apart from "polled, nothing new" |
 | `intervalMs` | `600000` (10 min) | **in-turn** poll interval; nothing polls while idle |
 | `timeoutMs` | `45000` | per-command timeout |
 | `maxEvents` | `6` | events listed per notice |
@@ -235,7 +236,7 @@ npm test
 node --test index.test.mjs scripts/github-inbox.test.mjs scripts/inbox-bridge.test.mjs
 ```
 
-66 个用例 cover the pure logic: three-state transitions (no regressions, repeated delivery moves the timestamp), classification, the resurface window, recovery, delivery guards, repository detection, identity and role routing, the four wake gates, notice text and status output.
+68 个用例 cover the pure logic: three-state transitions (no regressions, repeated delivery moves the timestamp), classification, the resurface window, recovery, delivery guards, repository detection, identity and role routing, the four wake gates, notice text and status output.
 
 | File | Responsibility |
 | --- | --- |

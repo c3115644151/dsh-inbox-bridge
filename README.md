@@ -91,6 +91,7 @@ gh auth status
 | `cwd` | DSH 进程工作目录 | 状态文件所属的工作区，也是推断 `repo` 的起点 |
 | `repo` | 从 `origin` 推断 | 监听的 `owner/name`；`INBOX_REPO` 可覆盖 |
 | `repos` | `[]` | 同时监听多个仓库：`["owner/one", "owner/two"]`；非空时优先于 `repo` |
+| `debug` | `false` | 在 `plugin.log` 里记录每个边界事件，用来排查「没轮询」还是「轮询了但没事件」 |
 | `intervalMs` | `600000`（10 分钟） | **回合进行中**两次轮询的间隔；空闲时完全不轮询 |
 | `timeoutMs` | `45000` | 单次命令超时 |
 | `maxEvents` | `6` | 每条通知列出的事件数 |
@@ -235,7 +236,7 @@ npm test
 node --test index.test.mjs scripts/github-inbox.test.mjs scripts/inbox-bridge.test.mjs
 ```
 
-66 个用例覆盖纯逻辑：三态迁移（不倒退、重复投递推进时间戳）、分类、resurface 窗口、恢复收口、投递守卫、仓库识别、身份与角色路由、唤醒四道门、通知文案、状态输出。
+68 个用例覆盖纯逻辑：三态迁移（不倒退、重复投递推进时间戳）、分类、resurface 窗口、恢复收口、投递守卫、仓库识别、身份与角色路由、唤醒四道门、通知文案、状态输出。
 
 | 文件 | 职责 |
 | --- | --- |

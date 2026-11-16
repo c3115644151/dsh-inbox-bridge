@@ -359,6 +359,7 @@ test("a status event for the same session reaches the poll schedule", async () =
     apply(ctx, mergeConfig({
       cwd: root,
       repo: "owner/name",
+      debug: true,
       poll: {
         command: process.execPath,
         args: ["-e", `require("node:fs").appendFileSync(${JSON.stringify(marker)}, "x");console.log("{\\"events\\":[]}")`],
@@ -372,6 +373,34 @@ test("a status event for the same session reaches the poll schedule", async () =
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     assert.equal((await import("node:fs")).existsSync(marker), true, "the turn start did not poll");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a poll that cannot reach the source says so in the log", async () => {
+  const root = mkdtempSync(join(tmpdir(), "inbox-skip-"));
+  const logPath = join(root, ".work", "inbox-bridge", "plugin.log");
+  try {
+    const ctx = fakeContext([fakeAgent(root)]);
+    const { apply } = await import("./index.js");
+    apply(ctx, mergeConfig({
+      cwd: root,
+      repo: "owner/name",
+      poll: {
+        command: process.execPath,
+        args: ["-e", `console.log(JSON.stringify({ skipped: "gh is not authenticated" }))`],
+      },
+      ack: { command: process.execPath, args: ["-e", "console.log('{}')"] },
+    }));
+    ctx.emit("agent/status", { agent: { session: { id: "session-1" } }, status: "running" });
+    const fs = await import("node:fs");
+    const deadline = Date.now() + 5_000;
+    const logged = () => fs.existsSync(logPath) && fs.readFileSync(logPath, "utf8").includes("poll skipped: gh is not authenticated");
+    while (Date.now() < deadline && !logged()) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(logged(), true, "a skipped poll left no trace");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
