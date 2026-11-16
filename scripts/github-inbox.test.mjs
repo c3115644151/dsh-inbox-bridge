@@ -9,6 +9,7 @@ import { join } from "node:path";
 
 import {
   MAX_SEEN,
+  clearableThreads,
   diffEvents,
   extractCommentEvents,
   extractEvents,
@@ -812,4 +813,67 @@ test("the same PR number in two repositories becomes two keys", () => {
   assert.equal(two[0].key, "owner/two#pr:7:author:failed[]|review:NONE");
   assert.notEqual(one[0].key, two[0].key);
   assert.equal(one[0].repo, "owner/one");
+});
+
+test("clearing threads follows the scope, and off means hands off", () => {
+  const threads = [
+    notification({ id: "11", repository: { full_name: "c3115644151/dsh-inbox-bridge" } }),
+    notification({ id: "22", repository: { full_name: "Noema-Harness/noema-agent" } }),
+  ];
+  assert.deepEqual(
+    clearableThreads(threads, { scope: "off", repo: "c3115644151/dsh-inbox-bridge" }),
+    [],
+  );
+  assert.deepEqual(
+    clearableThreads(threads, { scope: "repo", repo: "c3115644151/dsh-inbox-bridge" }),
+    ["11"],
+  );
+  assert.deepEqual(clearableThreads(threads, { scope: "all", repo: "x/y" }), ["11", "22"]);
+});
+
+test("a poll marks the threads it just read as read, and says how many", () => {
+  const marked = [];
+  const result = pollOnce({
+    state: normalizeState({}),
+    ...sources({
+      runs: [run()],
+      feed: {
+        ok: true,
+        source: "notifications",
+        notifications: [notification({ id: "77", repository: { full_name: watchedRepo() } })],
+      },
+    }),
+    clear: "repo",
+    markRead: (ids) => {
+      marked.push(...ids);
+      return { cleared: ids, failed: [] };
+    },
+    now: new Date("2026-11-15T04:00:00Z"),
+  });
+  assert.deepEqual(marked, ["77"]);
+  assert.deepEqual(result.cleared, ["77"]);
+  assert.deepEqual(result.clearFailed, []);
+});
+
+test("clearing off never touches the threads", () => {
+  let called = false;
+  const result = pollOnce({
+    state: normalizeState({}),
+    ...sources({
+      runs: [run()],
+      feed: {
+        ok: true,
+        source: "notifications",
+        notifications: [notification({ id: "88", repository: { full_name: watchedRepo() } })],
+      },
+    }),
+    clear: "off",
+    markRead: () => {
+      called = true;
+      return { cleared: [], failed: [] };
+    },
+    now: new Date("2026-11-15T04:00:00Z"),
+  });
+  assert.equal(called, false);
+  assert.deepEqual(result.cleared, []);
 });

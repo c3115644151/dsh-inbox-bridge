@@ -37,6 +37,7 @@ DSH 的插件配置里，一个 `dsh-inbox-bridge` 条目即可；等价写法�
 | `maxConsecutiveWakes` | `3` | 一个会话在你下次发言前最多被唤醒几次，之后只排队 |
 | `identity` | `{ kind: "user" }` | 用哪个身份读 GitHub，见下 |
 | `roles` | `[]` | 只接收这些角色的事件；空 = 全收 |
+| `clear` | `"repo"` | 把这一轮读过的通知线程标为已读：`repo` 只清盯的仓库，`all` 清整个账号，`off` 不碰收件箱。GitHub 没有「完成」API，所以清的是未读角标，历史仍在收件箱里 |
 | `debug` | `false` | 把每个边界事件写进 `plugin.log`，用来排查「没轮询」还是「轮询了没结果」 |
 | `poll` | 插件自带 CLI 的 `poll` | 换掉抓取命令：`{ command, args }`，只要能输出约定的 JSON，来源可以不是 GitHub |
 | `ack` | 插件自带 CLI 的 `ack` | 同上，换掉收口命令 |

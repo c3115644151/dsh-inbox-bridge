@@ -428,3 +428,17 @@ test("a poll that cannot reach the source says so in the log", async () => {
     removeTree(root);
   }
 });
+
+test("thread clearing is on for the watched repositories, and refuses nonsense", () => {
+  assert.equal(mergeConfig({}).clear, "repo");
+  assert.equal(mergeConfig({ clear: "all" }).clear, "all");
+  assert.equal(mergeConfig({ clear: "off" }).clear, "off");
+  assert.throws(() => mergeConfig({ clear: "sometimes" }), /`clear` must be "off", "repo" or "all"/u);
+});
+
+test("the poll child is told which threads to clear", () => {
+  // The collector reads the scope from INBOX_CLEAR; `off` means the variable is
+  // absent, so an old configuration keeps its hands off the inbox.
+  const options = mergeConfig({ clear: "off" });
+  assert.equal(options.clear, "off");
+});

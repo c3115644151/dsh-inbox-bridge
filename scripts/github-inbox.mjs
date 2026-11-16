@@ -100,6 +100,10 @@ Usage:
   --repeat    list current events without the local seen filter (the bridge owns delivery state)
   --repo <owner/name>  watch a repository; repeat for several
                        (default: INBOX_REPO, comma or space separated, else this git remote)
+  --clear <scope>      mark the notification threads this poll read as read:
+                       repo (watched repositories), all (whole account), off (default
+                       off; the bridge sets it). GitHub has no "done" API, so this
+                       clears the unread badge, not the inbox history.
 
 State:   .work/github-inbox/state.json (one slice per repository)
 History: .work/github-inbox/pending.md`;
@@ -611,10 +615,12 @@ export function pollOnce({
   repeat = false,
   now = new Date(),
   me = null,
+  clear = "off",
   fetchRuns,
   fetchPrs,
   fetchFeed = () => ({ ok: true, source: "none", notifications: [], comments: [], issues: [] }),
   fetchIssues,
+  markRead,
 } = {}) {
   const runsResult =
     typeof fetchRuns === "function" ? fetchRuns() : { ok: false, reason: "no run source" };
@@ -658,10 +664,19 @@ export function pollOnce({
   const events = extractEvents(payload, state, { me });
   const fresh = sortEvents(repeat ? events : diffEvents(events, state));
   const nextState = updateState(state, { ...payload, events, now });
+  // Reading a thread and leaving it unread is what makes an inbox unusable:
+  // once the poll has turned these threads into events, mark them read.
+  const threads = clearableThreads(payload.notifications, { scope: clear, repo: activeRepo });
+  const cleared =
+    threads.length > 0 && typeof markRead === "function"
+      ? markRead(threads)
+      : { cleared: [], failed: [] };
   return {
     events,
     fresh,
     nextState,
+    cleared: cleared.cleared ?? [],
+    clearFailed: cleared.failed ?? [],
     source: feed.ok === true ? (feed.source ?? null) : null,
     feedSkipped:
       feedResult && feedResult.ok === false ? (feedResult.reason ?? "feed failed") : null,
@@ -964,6 +979,41 @@ export function notificationsSince(state, cwd) {
   };
 }
 
+/**
+ * Notification threads this poll may mark as read. GitHub's REST API can only
+ * mark a thread read (there is no "done" mutation), so the inbox stays as
+ * history while the unread badge stops growing.
+ */
+export function clearableThreads(notifications = [], { scope = "repo", repo = REPO } = {}) {
+  if (scope === "off") return [];
+  const wanted = (Array.isArray(notifications) ? notifications : []).filter((thread) => {
+    if (scope === "all") return true;
+    return thread?.repository?.full_name === repo;
+  });
+  return wanted.map((thread) => String(thread?.id ?? "")).filter((id) => id.length > 0);
+}
+
+/** Mark notification threads read, one PATCH per thread. Never throws. */
+export function markThreadsRead(ids = [], cwd) {
+  const cleared = [];
+  const failed = [];
+  for (const id of ids) {
+    const result = ghJson(["api", "-X", "PATCH", `notifications/threads/${id}`], { cwd });
+    if (result.ok) cleared.push(id);
+    else failed.push({ id, reason: result.reason });
+  }
+  return { cleared, failed };
+}
+
+/**
+ * Every unread thread on the account, across repositories. Only used when the
+ * user asked for `clear: "all"`: the repo-scoped feed cannot see other projects.
+ */
+export function fetchAccountThreads(cwd) {
+  const result = ghJson(["api", "notifications?all=false&per_page=50"], { cwd });
+  return result.ok && Array.isArray(result.value) ? result.value : [];
+}
+
 export function fetchFeed(state, cwd) {
   // A GitHub App has no user notification stream: the endpoint answers
   // `403 Resource not accessible by integration`. Reading the repository feeds
@@ -997,6 +1047,7 @@ export function parseArgs(argv = []) {
     json: false,
     quiet: false,
     help: false,
+    clear: (process.env.INBOX_CLEAR ?? "off").trim() || "off",
   };
   const fromEnv = (process.env.INBOX_REPO ?? "")
     .split(/[,\s]+/u)
@@ -1017,6 +1068,18 @@ export function parseArgs(argv = []) {
       options.expectRepo = false;
       continue;
     }
+    if (argument === "--clear") {
+      options.expectClear = true;
+      continue;
+    }
+    if (options.expectClear) {
+      if (!["off", "repo", "all"].includes(argument)) {
+        throw new Error(`not a clearing scope: ${argument} (use off, repo or all)`);
+      }
+      options.clear = argument;
+      options.expectClear = false;
+      continue;
+    }
     if (argument === "--poll") options.mode = "poll";
     else if (argument === "--all") options.mode = "all";
     else if (argument === "--json") options.json = true;
@@ -1025,6 +1088,7 @@ export function parseArgs(argv = []) {
     else throw new Error(`unknown option: ${argument}`);
   }
   if (options.expectRepo) throw new Error("`--repo` needs a value");
+  if (options.expectClear) throw new Error("`--clear` needs a value");
   options.repos = [...new Set(options.repos.map((repo) => repo.trim()).filter(Boolean))];
   for (const repo of options.repos) {
     if (!/^[\w.-]+\/[\w.-]+$/u.test(repo)) throw new Error(`not an owner/name repository: ${repo}`);
@@ -1071,6 +1135,8 @@ function runPoll({ repoRoot, stateFile, pendingFile, state, options, now, me, re
   const fresh = [];
   const skipped = [];
   const notices = [];
+  const cleared = [];
+  const clearFailed = [];
   const nextRepos = { ...normalizeStateFile(state).repos };
 
   for (const repo of repos) {
@@ -1082,6 +1148,8 @@ function runPoll({ repoRoot, stateFile, pendingFile, state, options, now, me, re
       repeat: options.repeat === true,
       now,
       me,
+      clear: options.clear ?? "off",
+      markRead: (ids) => markThreadsRead(ids, repoRoot),
       fetchRuns: () => fetchRuns(repoRoot),
       fetchPrs: () => fetchOpenPullRequests(repoRoot),
       fetchIssues: () => fetchOpenIssues(repoRoot),
@@ -1095,6 +1163,8 @@ function runPoll({ repoRoot, stateFile, pendingFile, state, options, now, me, re
     // different facts, and the queue must not collapse them into one.
     const tagged = tagEvents(repo, result.fresh);
     fresh.push(...tagged);
+    cleared.push(...(result.cleared ?? []));
+    clearFailed.push(...(result.clearFailed ?? []));
     if (result.feedSkipped) notices.push(`${repo}: feed skipped (${result.feedSkipped})`);
     nextRepos[repo] = {
       ...result.nextState,
@@ -1106,6 +1176,16 @@ function runPoll({ repoRoot, stateFile, pendingFile, state, options, now, me, re
         events: result.fresh.length,
       },
     };
+  }
+
+  if (options.clear === "all" && activeIdentity?.kind !== "app") {
+    // The repo-scoped feed only sees the watched repositories; `all` means the
+    // whole account, which is what makes the unread badge stop growing.
+    const accountThreads = fetchAccountThreads(repoRoot);
+    const ids = clearableThreads(accountThreads, { scope: "all" });
+    const sweep = markThreadsRead(ids, repoRoot);
+    cleared.push(...sweep.cleared);
+    clearFailed.push(...sweep.failed);
   }
 
   if (Object.keys(nextRepos).length === 0) {
@@ -1124,6 +1204,8 @@ function runPoll({ repoRoot, stateFile, pendingFile, state, options, now, me, re
           polledAt: toIso(now),
           skipped,
           fresh,
+          cleared,
+          clearFailed,
           stateFile,
           pendingFile,
           state: withMeta,
@@ -1134,6 +1216,12 @@ function runPoll({ repoRoot, stateFile, pendingFile, state, options, now, me, re
     );
   } else {
     for (const event of fresh) console.log(formatEvent(event));
+    if (cleared.length > 0 && !options.quiet) {
+      console.log(`github-inbox: cleared ${cleared.length} notification(s)`);
+    }
+    for (const entry of clearFailed) {
+      if (!options.quiet) console.log(`github-inbox: could not clear ${entry.id} (${entry.reason})`);
+    }
     if (fresh.length === 0 && !options.quiet) {
       console.log(`github-inbox: no new events (polled ${toIso(now)}, ${repos.join(", ")})`);
     }

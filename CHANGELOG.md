@@ -2,6 +2,12 @@
 
 Format: keep a short entry per released version. Dates are UTC.
 
+## 2.6.0
+
+- 轮询读过的通知线程会被标为已读，未读角标不再只增不减。`clear` 控制范围：`repo`（默认，只清盯着的仓库）、`all`（整个账号）、`off`（不碰）。
+- GitHub 没有“完成”的公开接口：REST 只有 `PATCH /notifications/threads/{id}`，标记的是已读，收件箱历史保留。
+- CLI 增加 `--clear off|repo|all`，输出里报告清掉了几条。
+
 ## 2.5.0
 
 - CI 不再只看默认分支：我自己开的 PR 所在分支也会被读，分支上的失败同样会成为事件；别人分支上的失败仍然不打扰。

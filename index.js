@@ -91,6 +91,12 @@ const DEFAULTS = Object.freeze({
   identity: { kind: "user", login: null, token: null, tokenEnv: null },
   /** Event roles this host accepts (`author`/`reviewer`/`assignee`/`mention`/`ci`); empty = all */
   roles: [],
+  /**
+   * Which notification threads to mark read once a poll has read them: `"repo"`
+   * only the watched repositories, `"all"` everything the feed returns, `"off"`
+   * leaves the inbox alone. GitHub has no "done" API, so this is read, not done.
+   */
+  clear: "repo",
   poll: { command: process.execPath, args: [CLI, "poll"] },
   ack: { command: process.execPath, args: [CLI, "ack"] },
 });
@@ -211,6 +217,10 @@ export function apply(ctx, config) {
     try {
       const payload = await pollEvents(options);
       debug(`poll: payload skipped=${payload.skipped ?? "no"} events=${payload.events?.length ?? 0}`);
+      if (payload.cleared > 0) log(`marked ${payload.cleared} notification(s) read`);
+      for (const entry of payload.clearFailed ?? []) {
+        log(`could not mark ${entry.id} read: ${entry.reason}`);
+      }
       if (payload.skipped) {
         // A poll that cannot reach the source must leave a trace; silence here is
         // how a broken install looks exactly like an empty inbox.
@@ -574,6 +584,12 @@ export function mergeConfig(config) {
       `inbox-bridge: \`wakesPerHour\` must be a non-negative integer, got ${JSON.stringify(wakesPerHour)}`,
     );
   }
+  const clear = given.clear ?? DEFAULTS.clear;
+  if (!["off", "repo", "all"].includes(clear)) {
+    throw new Error(
+      `inbox-bridge: \`clear\` must be "off", "repo" or "all", got ${JSON.stringify(clear)}`,
+    );
+  }
   return {
     ...DEFAULTS,
     ...given,
@@ -582,6 +598,7 @@ export function mergeConfig(config) {
     delivery,
     identity,
     roles,
+    clear,
     wakeOn,
     intervalMs,
     wakeAfterIdleMs,
@@ -617,6 +634,8 @@ async function pollEvents(options) {
   return {
     events: events.filter((event) => event && typeof event.key === "string"),
     skipped: payload?.skipped ?? null,
+    cleared: Array.isArray(payload?.cleared) ? payload.cleared.length : 0,
+    clearFailed: Array.isArray(payload?.clearFailed) ? payload.clearFailed : [],
   };
 }
 
@@ -667,6 +686,7 @@ function runCommand(spec, options, extraEnv = {}) {
               ? { INBOX_REPO: options.repo }
               : {}),
           ...identityEnv(options.identity),
+          ...(options.clear && options.clear !== "off" ? { INBOX_CLEAR: options.clear } : {}),
           ...extraEnv,
         },
         timeout: options.timeoutMs,
