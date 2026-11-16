@@ -67,12 +67,13 @@ State lives in `.work/inbox-bridge/state.json` under the working directory; the 
 | --- | --- | --- |
 | `label` | `外部收件箱` | how the notice is titled |
 | `cwd` | the DSH process cwd | workspace the state belongs to |
-| `intervalMs` | `120000` | poll interval |
+| `intervalMs` | `45000` | poll interval |
 | `timeoutMs` | `45000` | per-command timeout |
 | `maxEvents` | `6` | events listed per notice |
 | `resurfaceMs` | `21600000` (6 h) | when a delivered event comes back |
 | `offlineReminderMs` | `43200000` (12 h) | how often to say the source is unreachable |
 | `injectWhileRunning` | `false` | inject mid-turn (interrupts tool loops) |
+| `wake` | `first` | `followup` one idle agent so a notice starts a turn; `all` every idle agent, `off` inject only |
 | `poll` / `ack` | the bundled CLI | `{ command, args }` for any custom source |
 
 ## Tests

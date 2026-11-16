@@ -1,6 +1,6 @@
 {
   "name": "dsh-inbox-bridge",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Poll any external source (CI, issues, mail, any command) and inject new events into the next DeepSeek Harness agent step, with delivered/handled bookkeeping, resurfacing and auto-close.",
   "type": "module",
   "license": "MIT",

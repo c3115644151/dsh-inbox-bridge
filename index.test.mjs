@@ -1,11 +1,11 @@
-﻿import test from "node:test";
+import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { deliveryTargets, detectRepo, filterUndelivered, formatEvents, mergeConfig } from "./index.js";
+import { deliveryTargets, detectRepo, filterUndelivered, formatEvents, mergeConfig, wakeTargets } from "./index.js";
 
 const idle = { status: "idle" };
 const running = { status: "running" };
@@ -43,6 +43,15 @@ test("the interrupt switch delivers to running agents too", () => {
   });
   assert.deepEqual(ready, [idle, running]);
   assert.deepEqual(deferred, []);
+});
+
+test("wake defaults to one idle agent so a notice starts a turn", () => {
+  assert.deepEqual(wakeTargets([idle, unknown], {}), [idle]);
+});
+
+test("wake can cover every idle agent or be turned off", () => {
+  assert.deepEqual(wakeTargets([idle, unknown], { wake: "all" }), [idle, unknown]);
+  assert.deepEqual(wakeTargets([idle, unknown], { wake: "off" }), []);
 });
 
 test("an agent without a status field is treated as idle", () => {

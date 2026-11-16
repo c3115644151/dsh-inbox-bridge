@@ -9,9 +9,10 @@
  * Delivery respects the agent's turn boundary: events are injected only while the
  * agent is idle, so they appear at the start of the next real turn instead of
  * interrupting a running tool loop; a poll that hits a running agent is held and
- * retried when the run goes idle. Does not own: fetching the source (the
- * configured poller does), the meaning of "handled" (the ack command decides),
- * or waking an idle agent — inject never wakes the driver.
+ * retried when the run goes idle. `wake` (default `first`) delivers the notice to
+ * one idle agent with `followup`, which also starts a turn; other agents still
+ * receive it through `inject`. Does not own: fetching the source (the
+ * configured poller does) or the meaning of "handled" (the ack command decides).
  */
 import { execFile, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -32,7 +33,7 @@ const DEFAULTS = Object.freeze({
   label: "外部收件箱",
   cwd: process.cwd(),
   repo: null,
-  intervalMs: 120_000,
+  intervalMs: 45_000,
   timeoutMs: 45_000,
   maxEvents: 6,
   /** command the notice tells the agent to run; set it to your project's wrapper */
@@ -43,6 +44,8 @@ const DEFAULTS = Object.freeze({
   offlineReminderMs: 12 * 60 * 60 * 1000,
   /** inject while the agent is running (interrupts tool loops; off by default) */
   injectWhileRunning: false,
+  /** wake a turn with followup: `first` one idle agent, `all` every idle agent, `off` never */
+  wake: "first",
   poll: { command: process.execPath, args: [CLI, "poll"] },
   ack: { command: process.execPath, args: [CLI, "ack"] },
 });
@@ -111,10 +114,13 @@ export function apply(ctx, config) {
         return;
       }
       const text = formatEvents(events, options);
+      const waking = new Set(wakeTargets(ready, options));
       let delivered = 0;
       for (const agent of ready) {
         try {
-          agent.inject(buildMessage(events.length, text, options.label));
+          const message = buildMessage(events.length, text, options.label);
+          if (waking.has(agent)) agent.followup({ content: message.content, source: message.source });
+          else agent.inject(message);
           delivered += 1;
         } catch (error) {
           log(`inject failed: ${describe(error)}`);
@@ -124,6 +130,7 @@ export function apply(ctx, config) {
         for (const event of events) recentlyDelivered.set(event.key, now);
         log(
           `injected ${events.length} event(s) into ${delivered} idle agent(s)` +
+            (waking.size > 0 ? `; woke ${waking.size} agent(s)` : "") +
             (deferred.length > 0 ? `; ${deferred.length} running agent(s) skipped` : ""),
         );
         await ackEvents(options, events, "delivered");
@@ -184,6 +191,18 @@ export function deliveryTargets(agents, options) {
     else deferred.push(agent);
   }
   return { ready, deferred };
+}
+
+/**
+ * Which ready agents get the notice as a `followup` (starts a turn) instead of an
+ * `inject` (waits for the next step). `first` keeps the cost predictable when
+ * several sessions are idle; `all` is opt-in.
+ */
+export function wakeTargets(ready, options) {
+  const mode = options?.wake ?? "first";
+  if (mode === "all") return ready.slice();
+  if (mode === "first") return ready.slice(0, 1);
+  return [];
 }
 
 export function mergeConfig(config) {
