@@ -36,6 +36,7 @@ window.__ModuleLoader__.load({
         clear: "顺手标已读",
         sweep: "清理收件箱",
         quiet: "不替你开轮",
+        open: "打开收件箱",
         roles: { author: "我是作者", reviewer: "请我评审", assignee: "指派给我", mention: "提到我", ci: "CI", any: "" },
         ago: { now: "刚刚", minutes: (n) => `${n} 分钟前`, hours: (n) => `${n} 小时前`, days: (n) => `${n} 天前` },
       },
@@ -54,6 +55,7 @@ window.__ModuleLoader__.load({
         clear: "marks read",
         sweep: "sweeps the inbox",
         quiet: "never opens a turn",
+        open: "open the inbox",
         roles: { author: "author", reviewer: "reviewer", assignee: "assignee", mention: "mention", ci: "CI", any: "" },
         ago: { now: "just now", minutes: (n) => `${n}m ago`, hours: (n) => `${n}h ago`, days: (n) => `${n}d ago` },
       },
@@ -193,6 +195,16 @@ window.__ModuleLoader__.load({
         color: "var(--dsw-alias-text-secondary, #6b7280)",
         borderBottom: "1px solid var(--dsw-alias-border-subtle, rgba(128,128,128,.18))",
       },
+      age: {
+        flex: "0 0 auto",
+        fontSize: "10.5px",
+        color: "var(--dsw-alias-text-secondary, #6b7280)",
+        whiteSpace: "nowrap",
+        fontVariantNumeric: "tabular-nums",
+      },
+      rowHover: {
+        background: "var(--dsw-alias-bg-hover, rgba(127,127,127,.14))",
+      },
       row: {
         display: "grid",
         gridTemplateColumns: "auto minmax(0, 1fr) auto",
@@ -219,6 +231,13 @@ window.__ModuleLoader__.load({
         textOverflow: "ellipsis",
         whiteSpace: "nowrap",
         display: "block",
+      },
+      openLink: {
+        marginLeft: "auto",
+        color: "var(--dsw-alias-text-secondary, #6b7280)",
+        textDecoration: "none",
+        borderBottom: " 1px dotted currentColor",
+        whiteSpace: "nowrap",
       },
       meta: {
         display: "flex",
@@ -358,7 +377,21 @@ window.__ModuleLoader__.load({
                   "div",
                   { style: styles.head },
                   h("span", null, active ? text.waiting(waiting) : text.empty),
-                  h("span", null, lastPoll ? text.synced(ago(lastPoll, text)) : text.never),
+                  h(
+                    "span",
+                    { style: { display: "inline-flex", gap: "8px", alignItems: "baseline" } },
+                    h("span", null, lastPoll ? text.synced(ago(lastPoll, text)) : text.never),
+                    h(
+                      "a",
+                      {
+                        href: "https://github.com/notifications",
+                        target: "_blank",
+                        rel: "noreferrer",
+                        style: styles.openLink,
+                      },
+                      text.open,
+                    ),
+                  ),
                 ),
                 (status.events ?? []).length > 0
                   ? status.events.map((event) => h(EventRow, { key: event.key, event, text }))
