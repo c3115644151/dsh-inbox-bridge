@@ -540,7 +540,15 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   main(process.argv.slice(2)).then(
     (code) => process.exit(code ?? 0),
     (error) => {
-      console.error(`clear-inbox: ${error.message}`);
+      // A bare "Uncaught" tells whoever reads the log nothing. Keep the message
+      // and the first frames, which is what says whether the profile is busy or
+      // the page changed.
+      const text = String(error?.message ?? error);
+      const frames = String(error?.stack ?? "")
+        .split("\n")
+        .slice(1, 3)
+        .join("\n");
+      console.error(`clear-inbox: ${text}${frames ? `\n${frames}` : ""}`);
       process.exit(1);
     },
   );
