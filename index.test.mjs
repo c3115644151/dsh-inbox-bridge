@@ -1445,6 +1445,10 @@ test("only the host's own page may read or change this instance", () => {
   assert.equal(fromHostPage(ask({ "sec-fetch-site": "cross-site" })), false);
   assert.equal(fromHostPage(ask({ "sec-fetch-site": "same-site" })), false);
   assert.equal(fromHostPage(ask({})), false);
+  // A browser fetch names how it is fetched even when it sends no origin --
+  // the desktop shell's own reads look like this, and they must keep working.
+  assert.equal(fromHostPage(ask({ "sec-fetch-mode": "cors" })), true);
+  assert.equal(fromHostPage(ask({ "sec-fetch-dest": "empty" })), true);
   assert.equal(fromHostPage(ask({ origin: "http://127.0.0.1:3281" })), true);
   assert.equal(fromHostPage(ask({ origin: "http://127.0.0.1:9999" })), false);
   assert.equal(fromHostPage(ask({ referer: "http://127.0.0.1:3281/app/" })), true);

@@ -980,6 +980,20 @@ export function apply(ctx, config) {
     if (!server || typeof server.register !== "function") return;
     routeReady = true;
     let served = 0;
+    let refusedCount = 0;
+    // A caller that is not the host page tells us nothing useful, but its
+    // headers tell us why the gate said no -- only when it first happens, and
+    // every tenth after, so a stray client cannot flood the log.
+    const whyRefused = (request) => {
+      const said = (name) => {
+        try {
+          return request?.headers?.get?.(name) ?? "-";
+        } catch {
+          return "?";
+        }
+      };
+      return `site ${said("sec-fetch-site")}, mode ${said("sec-fetch-mode")}, origin ${said("origin")}, referer ${said("referer")}`;
+    };
     // One answer for every caller that is not the host's page: no detail about
     // what exists here, and no hint that a setting was within reach.
     const refused = () =>
@@ -999,7 +1013,13 @@ export function apply(ctx, config) {
             served += 1;
             // Only the page the host serves reads this: another tab on the same
             // machine must not learn which repositories this instance watches.
-            if (!fromHostPage(request)) return refused();
+            if (!fromHostPage(request)) {
+              refusedCount += 1;
+              if (refusedCount === 1 || refusedCount % 10 === 0) {
+                log(`status refused ${refusedCount} time(s): ${whyRefused(request)}`);
+              }
+              return refused();
+            }
             // Which session asked decides what is shown: two sessions in
             // different repositories must not read the same list.
             let sessionId = null;
@@ -1009,7 +1029,9 @@ export function apply(ctx, config) {
               sessionId = null;
             }
             // One line per read is too loud for a 20 s poll; the first read and
-            // every tenth after it still prove which origin asked.
+            // every tenth after it still prove which origin asked — and the
+            // first one records what the page actually sends, so the gate can
+            // tighten on evidence instead of on a guess.
             if (served === 1 || served % 10 === 0) {
               let origin = "none";
               try {
@@ -1018,6 +1040,7 @@ export function apply(ctx, config) {
                 origin = "unreadable";
               }
               log(`status read ${served} time(s), origin ${origin}, session ${sessionId ?? "-"}`);
+              if (served === 1) log(`status headers: ${whyRefused(request)}`);
             }
             return new Response(`${JSON.stringify(uiPayload(sessionId))}\n`, {
               headers: {
@@ -1366,9 +1389,10 @@ export function fromHostPage(request, { origin = null, self = null } = {}) {
   if (claimed) return Boolean(here) && claimed === here;
   const referer = headers.get("referer");
   if (referer) return Boolean(here) && (referer === here || referer.startsWith(`${here}/`));
-  // Nothing at all: not a browser page. `same-origin` and `none` are the only
-  // fetch sites a page the host serves can produce.
-  return site === "same-origin" || site === "none";
+  // Nothing at all: not a browser page (a bare `curl`, a script). A browser
+  // fetch always says how it is fetched, even when it sends no origin.
+  const mode = headers.get("sec-fetch-mode") ?? headers.get("sec-fetch-dest");
+  return Boolean(mode) || site === "same-origin" || site === "none";
 }
 
 function sourceLabel(options) {

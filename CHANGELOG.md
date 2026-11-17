@@ -1,3 +1,9 @@
+## 2.21.3
+
+- **修 2.21.2 的一个回归：桌面壳读不到状态，胶囊自己退场。** 桌面壳把页面的 fetch 走自己的 IPC 桥送进来，请求里没有 `Sec-Fetch-Site`、只有 `Sec-Fetch-Mode: cors`；2.21.2 的准入把它当成非浏览器客户端拒了，面板连续两次读失败就把自己藏起来——看起来就是「胶囊怎么又没了」。现在准入按「浏览器形状」判断：显式 `cross-site`/`same-site` 与 `Origin` 不匹配仍然 403，没有 `Sec-Fetch-Site` 但带 `Sec-Fetch-Mode`/`Sec-Fetch-Dest` 的请求放行，裸 `curl` 与脚本仍然 403。
+- 状态路由在第一次读时记一行收到的请求头（`status headers: site -, mode cors, origin -, referer -`），准入下次要收紧时有据可依，而不是靠猜。
+- 局限写进文档：本机进程伪造这几个请求头仍能通过；写设置依旧要每次进程启动重新生成的 token。
+
 ## 2.21.2
 
 - **这个端口只应答宿主自己的页面。** 状态、改配置、页面日志三条路由以前对任何本地进程都开放：谁都能读走这个实例盯着哪些仓库，也都能拿到状态里那个能改设置的 token（市场收录就卡在这一条上）。现在三条都在入口处判断请求是不是宿主页面发起的——同源 `fetch` 带 `Sec-Fetch-Site: same-origin`，带 `Origin` 时必须是本端口的来源；裸 `curl`、别的标签页、别的来源一律 403。实测：不带浏览器标记的 `GET /inbox-bridge/status.json` → 403，带 `Sec-Fetch-Site: same-origin` → 200；`prefs` 无论有没有 token，缺了页面标记都是 403。
