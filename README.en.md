@@ -27,6 +27,7 @@ That is also why it only reads: its job is to make the agent aware. The work hap
 - **It reads repositories, not the notification inbox.** GitHub's notification inbox pushes per account and cannot tell one session or repository from another; querying repository state directly keeps two repositories on the same account apart.
 - **Polling follows turns.** Once when a session starts, every minute while a turn runs, once when it ends; an idle session makes no request. Only with `delivery: wakeup` does it also read on that interval while idle — without that it could never wake you while you are away.
 - **It also watches security and merge state.** Open Dependabot and code-scanning alerts, and a pull request of yours that conflicts with the base branch or is behind it, matter as much as a red check.
+- **The run that happens at night counts too.** A scheduled workflow that fails says it was scheduled, instead of reading as the last push failing; a review comment on your own pull request is reported as itself, and a push that answers it closes it.
 - **It goes into the context, and opens a turn only when it has to.** By default a notice arrives at the next safe injection point and does not interrupt the tool loop; with `delivery: wakeup` it opens a turn only for a listed `wakeOn` role, in the one session responsible for that repository (or the one you named), idle for 15 minutes, at most 3 times in a row per session, and at most 2 times an hour — anything else keeps queueing. A notice is marked `delivered`, and unhandled events come back once after six hours.
 
 ## What you will see
@@ -39,7 +40,7 @@ At the top of a turn:
 >
 > Act only where it affects the current work; when done, run `node "...\dsh-inbox-bridge\scripts\inbox-bridge.mjs" ack --done -- <key>`.
 
-`[Dependabot]` is an open dependency advisory and `[Code scanning]` an open code-scanning alert. The rest of the bracket states the relation to that identity: `reviewer` means it waits for your review, `author` means you opened it, `assignee` means it is assigned to you, `mention` means a comment mentions you. Run the `ack` command when you are done; an unacknowledged event is repeated after six hours rather than piling up.
+`[Dependabot]` is an open dependency advisory, `[Code scanning]` an open code-scanning alert, `[Scheduled]` a scheduled run that failed, and `[Review]` a review comment on your own pull request (with file and line). The rest of the bracket states the relation to that identity: `reviewer` means it waits for your review, `author` means you opened it, `assignee` means it is assigned to you, `mention` means a comment mentions you. Run the `ack` command when you are done; an unacknowledged event is repeated after six hours rather than piling up.
 
 ## The panel
 
@@ -47,7 +48,7 @@ The status row under the composer carries a chip: when something is waiting, a b
 
 - the events: role, repository, title (link), time;
 - the identity and the last poll;
-- three controls: delivery (queue only / may wake), message clearing (off / mark read / archive to Done — one choice), and which repositories this session subscribes to (paste a repository link or type `owner/name`; one list per session).
+- four controls: delivery (queue only / may wake), who takes it (when several sessions watch the same repository, say which one may be woken; a lone watcher owns it by itself), the rhythm (how idle is idle: 1 / 5 / 15 minutes; wakes per hour: 1 / 2 / 4), message clearing (off / mark read / archive to Done — one choice), and which repositories this session subscribes to (paste a repository link or type `owner/name`; one list per session).
 
 Each control explains itself on hover. Changes apply immediately and are stored in `<cwd>/.work/inbox-bridge/prefs.json`; they do not rewrite the DSH plugin configuration, and a reset returns to the configured values. The panel is per session: switching sessions shows that session's repositories, and says so plainly when they are not subscribed.
 

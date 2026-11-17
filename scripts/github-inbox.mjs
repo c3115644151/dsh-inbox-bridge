@@ -71,12 +71,12 @@ const FAILED_CHECK_STATES = new Set([
   "STARTUP_FAILURE",
 ]);
 const RUN_FIELDS =
-  "databaseId,name,displayTitle,conclusion,headSha,headBranch,workflowName,createdAt,url";
+  "databaseId,name,displayTitle,conclusion,headSha,headBranch,workflowName,createdAt,url,event";
 const PR_FIELDS =
-  "number,title,headRefName,url,statusCheckRollup,reviewDecision,updatedAt,author,reviewRequests,assignees,isDraft,mergeStateStatus";
+  "number,title,headRefName,headRefOid,url,statusCheckRollup,reviewDecision,updatedAt,author,reviewRequests,assignees,isDraft,mergeStateStatus";
 // Order inside one notice: something to fix first, then what is waiting on a
 // person, then conversation.
-const KIND_ORDER = { recovered: 0, security: 1, ci: 2, pr: 3, comment: 4, issue: 5 };
+const KIND_ORDER = { recovered: 0, security: 1, ci: 2, pr: 3, review: 4, comment: 5, issue: 6 };
 /** How a GitHub notification reason maps onto the role vocabulary. */
 const NOTIFICATION_ROLES = {
   review_requested: "reviewer",
@@ -311,6 +311,10 @@ export function extractRunEvents(runs = [], state = {}) {
     // job (billing, permissions): no code change fixes it, so it is grouped
     // and reported once instead of once per retried run.
     const infra = run.conclusion === "startup_failure";
+    // A scheduled workflow is the one thing nobody is watching run: it fires at
+    // night on the default branch, and its failure looks exactly like the last
+    // push failing unless the fact says which one it was.
+    const scheduled = String(run.event ?? "") === "schedule";
     const group = `${singleLine(run.workflowName ?? run.name ?? "ci")}|${singleLine(
       run.headBranch ?? "",
     )}`;
@@ -319,9 +323,10 @@ export function extractRunEvents(runs = [], state = {}) {
     events.push({
       key: infra ? `infra:${group}` : `run:${id}`,
       kind: infra ? "infra" : "ci",
-      label: "CI",
+      label: scheduled ? "Scheduled" : "CI",
       runId: id,
       group,
+      scheduled,
       conclusion: run.conclusion,
       title: singleLine(run.displayTitle ?? run.name ?? ""),
       name: singleLine(run.name ?? ""),
@@ -347,7 +352,7 @@ export function extractRunEvents(runs = [], state = {}) {
     events.push({
       key: `run:${id}:recovered`,
       kind: "recovered",
-      label: "CI",
+      label: String(latest.event ?? "") === "schedule" ? "Scheduled" : "CI",
       runId: id,
       conclusion: "success",
       group: `${singleLine(latest.workflowName ?? latest.name ?? "ci")}|${singleLine(
@@ -437,6 +442,49 @@ export function extractPrEvents(prs = [], { me = null } = {}) {
       reasons,
       url: pr?.url ?? "",
       at: pr?.updatedAt ?? pr?.updated_at ?? null,
+    });
+  }
+  return events;
+}
+
+/**
+ * Review comments on pull requests I authored. GitHub has no "done" state for a
+ * comment, so the only honest closure is the code itself: a comment is written
+ * against a commit (`commit_id`), and once the branch has moved past that commit
+ * the remark has been answered. The key therefore carries the comment id, while
+ * the event is only reported while the comment still sits on the current tip —
+ * a push that addresses it makes the source go quiet, which closes it.
+ */
+export function extractReviewCommentEvents(comments = [], { me = null, prs = [] } = {}) {
+  const mine = new Map();
+  for (const pr of Array.isArray(prs) ? prs : []) {
+    if (pr?.number != null && prRole(pr, me) === "author") mine.set(pr.number, pr);
+  }
+  const events = [];
+  for (const comment of Array.isArray(comments) ? comments : []) {
+    const number = Number(String(comment?.pull_request_url ?? "").split("/").pop());
+    const pr = mine.get(number);
+    if (!pr) continue;
+    // My own replies are not news.
+    if (me && comment?.user?.login === me) continue;
+    const written = comment?.commit_id ?? null;
+    if (pr.headRefOid && written && String(pr.headRefOid) !== String(written)) continue;
+    const id = comment?.id;
+    if (!id) continue;
+    const where = [comment?.path, comment?.line ?? comment?.original_line]
+      .filter((part) => part != null && part !== "")
+      .join(":");
+    events.push({
+      key: `pr:${number}:review:${id}`,
+      kind: "review",
+      role: "author",
+      repo: activeRepo,
+      label: "Review",
+      number,
+      ref: where,
+      title: `${comment?.user?.login ?? "someone"}: ${singleLine(comment?.body ?? "").slice(0, 120)}`,
+      url: comment?.html_url ?? pr?.url ?? "",
+      at: comment?.created_at ?? null,
     });
   }
   return events;
@@ -631,13 +679,22 @@ export function extractSecurityEvents(alerts = []) {
 }
 
 export function extractEvents(
-  { runs = [], prs = [], notifications = [], comments = [], issues = [], security = [] } = {},
+  {
+    runs = [],
+    prs = [],
+    notifications = [],
+    comments = [],
+    issues = [],
+    security = [],
+    reviews = [],
+  } = {},
   state = {},
   { me = null } = {},
 ) {
   const events = [
     ...extractRunEvents(runs, state),
     ...extractPrEvents(prs, { me }),
+    ...extractReviewCommentEvents(reviews, { me, prs }),
     ...extractNotificationEvents(notifications),
     ...extractCommentEvents(comments, { me }),
     ...extractIssueEvents(issues, state, { me }),
@@ -727,6 +784,7 @@ export function pollOnce({
   fetchFeed = () => ({ ok: true, source: "none", notifications: [], comments: [], issues: [] }),
   fetchIssues,
   fetchSecurity,
+  fetchReviews,
   markRead,
 } = {}) {
   const runsResult =
@@ -763,6 +821,14 @@ export function pollOnce({
     typeof fetchSecurity === "function" ? fetchSecurity() : { alerts: [], notes: [] };
   const security = Array.isArray(securityResult?.alerts) ? securityResult.alerts : [];
   const securityNotes = Array.isArray(securityResult?.notes) ? securityResult.notes : [];
+  // Review comments are a feed like the others: a token that cannot read them
+  // reports nothing, and that must not skip the poll.
+  const reviewsResult =
+    typeof fetchReviews === "function" ? fetchReviews() : { ok: true, value: [] };
+  const reviews =
+    reviewsResult && reviewsResult.ok === true && Array.isArray(reviewsResult.value)
+      ? reviewsResult.value
+      : [];
   const payload = {
     // The default branch always counts; a feature branch counts only while this
     // identity has an open PR from it.
@@ -776,6 +842,7 @@ export function pollOnce({
     comments: Array.isArray(feed.comments) ? feed.comments : [],
     issues,
     security,
+    reviews,
   };
   const events = extractEvents(payload, state, { me });
   const fresh = sortEvents(repeat ? events : diffEvents(events, state));
@@ -812,10 +879,21 @@ export function formatEvent(event) {
   switch (event.kind) {
     case "ci": {
       const conclusion = event.conclusion === "failure" ? "failed" : (event.conclusion ?? "failed");
-      return compact([`[CI] run ${event.runId}`, `${conclusion}:`, title, sha, url]);
+      return compact([
+        `[${event.label ?? "CI"}] run ${event.runId}`,
+        `${conclusion}:`,
+        title,
+        sha,
+        url,
+      ]);
     }
     case "recovered":
-      return compact([`[CI] recovered: run ${event.runId} succeeded:`, title, sha, url]);
+      return compact([
+        `[${event.label ?? "CI"}] recovered: run ${event.runId} succeeded:`,
+        title,
+        sha,
+        url,
+      ]);
     case "pr":
       return compact([
         `[PR${role}] #${event.number}`,
@@ -825,6 +903,12 @@ export function formatEvent(event) {
       ]);
     case "comment":
       return compact([`[Comment${role}] ${event.ref ?? ""}:`, title, url]);
+    case "review":
+      return compact([
+        `[Review${role}] #${event.number}${event.ref ? ` ${event.ref}` : ""}:`,
+        title,
+        url,
+      ]);
     case "issue":
       return compact([`[Issue${role}] ${event.ref ?? ""}:`, title, url]);
     case "security":
@@ -1059,6 +1143,19 @@ export function fetchOpenIssues(cwd) {
 
 export function fetchOpenPullRequests(cwd) {
   return ghJson(["pr", "list", "--state", "open", "--json", PR_FIELDS], { cwd });
+}
+
+/**
+ * Review comments across the open pull requests, newest first. One call for the
+ * whole repository is cheaper than one per PR, and it is where "someone asked me
+ * to change something" actually lives: a review request says a review is wanted,
+ * not what was said.
+ */
+export function fetchReviewComments(cwd) {
+  return ghJson(
+    ["api", `repos/${activeRepo}/pulls/comments?sort=created&direction=desc&per_page=30`],
+    { cwd },
+  );
 }
 
 /**
@@ -1308,6 +1405,7 @@ function runPoll({ repoRoot, stateFile, pendingFile, state, options, now, me, re
       fetchIssues: () => fetchOpenIssues(repoRoot),
       fetchFeed: (currentState) => fetchFeed(currentState, repoRoot),
       fetchSecurity: () => fetchSecurityAlerts(repoRoot),
+      fetchReviews: () => fetchReviewComments(repoRoot),
     });
     if (result.skipped) {
       skipped.push({ repo, reason: result.skipped });

@@ -110,7 +110,7 @@ window.__ModuleLoader__.load({
         none: "未配置仓库",
         open: "打开收件箱",
         more: (n) => `还有 ${n} 条`,
-        kinds: { Dependabot: "依赖告警", "Code scanning": "代码告警" },
+        kinds: { Dependabot: "依赖告警", "Code scanning": "代码告警", Scheduled: "定时任务", Review: "评审意见" },
         roles: { author: "作者", reviewer: "评审", assignee: "指派", mention: "提及", ci: "CI", any: "" },
         ago: { now: "刚刚", minutes: (n) => `${n} 分钟前`, hours: (n) => `${n} 小时前`, days: (n) => `${n} 天前` },
         pick: {
@@ -132,6 +132,16 @@ window.__ModuleLoader__.load({
           signInWaiting: "已打开登录窗口，登录后自动生效。",
           signInOpen: "打开登录窗口",
           signInTip: "在插件自己的浏览器配置里登录一次；之后归档会自动运行，失效时会再打开这个窗口。",
+          owner: "谁来接",
+          ownerTip: "这个仓库的唤醒落到哪个会话。多个会话在看同一仓库时，没指定就不会叫任何人。",
+          ownerReleaseTip: "再点一次取消指定",
+          idle: "空闲多久",
+          idleTip: "会话安静满这么长时间，才允许唤醒；否则只把事件留下等下一轮。",
+          minute1: "1 分钟",
+          minute5: "5 分钟",
+          minute15: "15 分钟",
+          budget: "每小时",
+          budgetTip: "这个实例每小时最多唤醒几次，用完后只排队。",
           subscribe: "订阅仓库",
           subscribeTip: "此会话关注的 GitHub 仓库；事件只按这里的仓库投递。",
           typeRepo: "owner/repo 或链接",
@@ -166,7 +176,7 @@ window.__ModuleLoader__.load({
         none: "no repositories configured",
         open: "open the inbox",
         more: (n) => `${n} more`,
-        kinds: { Dependabot: "Dependabot", "Code scanning": "Code scan" },
+        kinds: { Dependabot: "Dependabot", "Code scanning": "Code scan", Scheduled: "scheduled", Review: "review" },
         roles: { author: "author", reviewer: "reviewer", assignee: "assignee", mention: "mention", ci: "CI", any: "" },
         ago: { now: "just now", minutes: (n) => `${n}m ago`, hours: (n) => `${n}h ago`, days: (n) => `${n}d ago` },
         pick: {
@@ -188,6 +198,16 @@ window.__ModuleLoader__.load({
           signInWaiting: "The sign-in window is open; archiving resumes when you finish.",
           signInOpen: "open sign-in",
           signInTip: "Sign in once in this plugin's own browser profile; afterwards archiving runs on its own and reopens this window if the session expires.",
+          owner: "who takes it",
+          ownerTip: "Which session a wakeup for this repository reaches. With several sessions watching one repository, nobody is woken until you name one.",
+          ownerReleaseTip: "click again to clear",
+          idle: "quiet for",
+          idleTip: "A session must be this quiet before a wakeup may open a turn; otherwise the event waits for a later poll.",
+          minute1: "1 min",
+          minute5: "5 min",
+          minute15: "15 min",
+          budget: "per hour",
+          budgetTip: "How many wakeups this instance may spend each hour; past that, events only queue.",
           subscribe: "repositories",
           subscribeTip: "The repositories this session follows; events are delivered only for them.",
           typeRepo: "owner/repo or link",
@@ -442,6 +462,14 @@ window.__ModuleLoader__.load({
         textOverflow: "ellipsis",
         whiteSpace: "nowrap",
       },
+      ownerList: {
+        display: "flex",
+        alignItems: "center",
+        flexWrap: "wrap",
+        gap: "4px",
+        minWidth: 0,
+        justifyContent: "flex-end",
+      },
       metaValue: {
         color: "var(--dsw-alias-label-secondary)",
         textAlign: "right",
@@ -688,15 +716,18 @@ window.__ModuleLoader__.load({
      * One change at a time, through the host's own route. The token is the one
      * this process handed out with the status, so another page cannot do this.
      */
-    async function change(status, set, value) {
+    async function change(status, set, value, target) {
       const token = status?.token;
       if (!token) return { ok: false, error: "no token" };
       const session = status?.sessionId
         ? `&session=${encodeURIComponent(status.sessionId)}`
         : "";
+      // A claim names the session that should own a repository, which need not be
+      // the session this page belongs to.
+      const named = target ? `&target=${encodeURIComponent(target)}` : "";
       const url = `/inbox-bridge/prefs?token=${encodeURIComponent(token)}&set=${encodeURIComponent(
         set,
-      )}&value=${encodeURIComponent(value)}${session}`;
+      )}&value=${encodeURIComponent(value)}${session}${named}`;
       try {
         const response = await fetch(url, { cache: "no-store" });
         return await response.json();
@@ -717,11 +748,11 @@ window.__ModuleLoader__.load({
       const [error, setError] = React.useState(null);
       const [draft, setDraft] = React.useState("");
       const pick = text.pick;
-      const send = async (set, value) => {
+      const send = async (set, value, target) => {
         if (busy) return;
         setBusy(true);
         setError(null);
-        const result = await change(status, set, value);
+        const result = await change(status, set, value, target);
         setBusy(false);
         if (!result.ok) {
           setError(result.error ?? "failed");
@@ -777,6 +808,74 @@ window.__ModuleLoader__.load({
             "mode",
           ),
         ),
+        // A wakeup has to reach one session. When several sessions watch the same
+        // repository only the person can say which one is responsible, so the
+        // choice belongs next to the switch that makes wakeups possible at all.
+        status.delivery === "wakeup" && sessionRepo && (status.wake?.viewers?.length ?? 0) > 1
+          ? h(
+              "div",
+              { style: styles.controlRow },
+              h("span", { style: styles.controlLabel, title: pick.ownerTip }, pick.owner),
+              h(
+                "div",
+                { style: styles.ownerList },
+                status.wake.viewers.map((viewer) =>
+                  h(
+                    "button",
+                    {
+                      key: viewer.id,
+                      type: "button",
+                      disabled: busy,
+                      "aria-pressed": Boolean(viewer.primary),
+                      title: viewer.primary ? `${viewer.label} · ${pick.ownerReleaseTip}` : viewer.label,
+                      onClick: () => void send("primary", viewer.primary ? "" : sessionRepo, viewer.id),
+                      style: { ...styles.seg, ...(viewer.primary ? styles.segOn : {}) },
+                    },
+                    viewer.label,
+                  ),
+                ),
+              ),
+            )
+          : null,
+        // How patient the wakeup is: quiet at least this long, at most this many
+        // times an hour. Both were file-only settings until a session could ask
+        // for them from here.
+        status.delivery === "wakeup"
+          ? h(
+              "div",
+              { style: styles.controlRow },
+              h("span", { style: styles.controlLabel, title: pick.idleTip }, pick.idle),
+              seg(
+                pick.idle,
+                [
+                  [1, pick.minute1, pick.idleTip],
+                  [5, pick.minute5, pick.idleTip],
+                  [15, pick.minute15, pick.idleTip],
+                ],
+                Math.round((status.wake?.idleMs ?? 900000) / 60000),
+                "idle",
+                "idle",
+              ),
+            )
+          : null,
+        status.delivery === "wakeup"
+          ? h(
+              "div",
+              { style: styles.controlRow },
+              h("span", { style: styles.controlLabel, title: pick.budgetTip }, pick.budget),
+              seg(
+                pick.budget,
+                [
+                  [1, "1", pick.budgetTip],
+                  [2, "2", pick.budgetTip],
+                  [4, "4", pick.budgetTip],
+                ],
+                status.wake?.perHour ?? 2,
+                "budget",
+                "budget",
+              ),
+            )
+          : null,
         h(
           "div",
           { style: styles.controlRow },

@@ -117,13 +117,32 @@ export function preferenceNext(current = {}, action = "", value = "", options = 
   }
   if (action === "primary") {
     // Who may be woken for this repository. An empty value releases the claim.
-    if (!sessionId) return null;
-    const repo = value ? repoFromInput(value) : sessionRepo;
+    // The page may name the session it means (`target`), because the person is
+    // choosing among the sessions watching a repository, not necessarily
+    // speaking from the one that should own it.
+    const owner = options.targetSession ?? sessionId;
+    if (!owner) return null;
+    const repo = value ? repoFromInput(value) : (options.sessionRepo ?? null);
     if (!repo) return null;
     const primary = { ...(next.primary ?? {}) };
-    if (value) primary[repo] = sessionId;
+    if (value) primary[repo] = owner;
     else delete primary[repo];
     next.primary = primary;
+    return next;
+  }
+  if (action === "idle") {
+    // How long a session must be quiet before a wakeup may open a turn. Minutes
+    // in the page, milliseconds here; zero means "as soon as nobody is busy".
+    const minutes = Number(value);
+    if (!Number.isFinite(minutes) || minutes < 0 || minutes > 24 * 60) return null;
+    next.wakeAfterIdleMs = Math.round(minutes * 60_000);
+    return next;
+  }
+  if (action === "budget") {
+    // How many wakeups an hour this instance may spend in total.
+    const perHour = Number(value);
+    if (!Number.isInteger(perHour) || perHour < 1 || perHour > 24) return null;
+    next.wakesPerHour = perHour;
     return next;
   }
   return null;
@@ -381,6 +400,15 @@ export function apply(ctx, config) {
           roles: options.roles ?? [],
         }
       : null;
+    // A repository can be watched by several sessions in the same directory, and
+    // a wakeup has to reach the one the person named. The page can only offer
+    // that choice if it knows who else is watching.
+    const viewers = repo
+      ? [...agents.entries()]
+          .map(([id, each]) => ({ id, label: sessionLabel(each), repo: repoOf(each) }))
+          .filter((entry) => entry.repo && entry.repo.toLowerCase() === repo.toLowerCase())
+          .map(({ id, label }) => ({ id, label }))
+      : [];
     return {
       ...buildUiPayload({
         options,
@@ -388,6 +416,7 @@ export function apply(ctx, config) {
         source: readJson(join(options.cwd, SOURCE_STATE_REL)),
         recent,
         session,
+        viewers,
       }),
       // The page proves it is this process's page before it may change anything,
       // and shows which choices came from it rather than from the profile.
@@ -550,7 +579,18 @@ export function apply(ctx, config) {
       signIn.signedIn = true;
       log(`swept the notification inbox: ${line || "done"} (${Date.now() - began}ms)`);
     } catch (error) {
-      if (error?.exitCode === 2) {
+      // The command's own answer outranks its exit code. `--json` prints
+      // `{ ok: true, … }` even when the process ends non-zero (a browser it could
+      // not fully close, say), and reporting that as a failure would teach people
+      // to ignore the line that is supposed to mean "this is broken".
+      const answer = parseJsonAnswer(error?.stdout);
+      if (answer?.ok === true) {
+        signIn.signedIn = true;
+        const archived = Number.isFinite(answer.archived) ? `${answer.archived} thread(s)` : "done";
+        log(`swept the notification inbox: ${archived} (${Date.now() - began}ms)`);
+        return;
+      }
+      if (error?.exitCode === 2 || answer?.reason === "sign-in-required") {
         // The command says "sign-in required"; raise the window rather than
         // asking the operator to copy a command out of the log.
         signIn.signedIn = false;
@@ -884,6 +924,10 @@ export function apply(ctx, config) {
             const action = url.searchParams.get("set") ?? "";
             const value = url.searchParams.get("value") ?? "";
             const sessionId = url.searchParams.get("session") || null;
+            // A claim names the session that should own a repository, which is
+            // not always the session the page is drawn for.
+            const named = url.searchParams.get("target") || null;
+            const targetSession = named && agents.has(named) ? named : null;
             // Which repository the session lives in, so "subscribe my repo" and
             // "unsubscribe the last one" know what the default is.
             const sessionRepo = sessionId ? repoOf(agents.get(sessionId)) : null;
@@ -901,6 +945,7 @@ export function apply(ctx, config) {
                 ...options,
                 sessionId,
                 sessionRepo,
+                targetSession,
               });
               if (action === "signin") {
                 // Not a setting: open the window that archiving needs.
@@ -1366,6 +1411,10 @@ function runCommand(spec, options, extraEnv = {}) {
           // needs a person once" (the sweep needs a browser sign-in), which is
           // not the same problem as a crashed command.
           if (typeof error.code === "number") failure.exitCode = error.code;
+          // Keep the command's own words: a `--json` run may have answered while
+          // still exiting non-zero, and the answer is the better evidence.
+          failure.stdout = stdout ?? "";
+          failure.stderr = stderr ?? "";
           reject(failure);
           return;
         }
@@ -1403,10 +1452,10 @@ export function filterUndelivered(events, seen, now, resurfaceMs) {
 
 export function pollLabel(ms) {
   const value = Number.isFinite(ms) ? ms : DEFAULTS.intervalMs;
-  const minutes = Math.round(value / 60_000);
-  if (minutes >= 1) return `${minutes} 分钟`;
-  // A sub-minute interval is legitimate in tests and while debugging; "0 分钟"
-  // would read as "never".
+  // Round numbers of minutes read best ("15 分钟"); anything else is stated in
+  // seconds, because 90 000 ms is not "2 分钟" — it is 90 秒, and rounding it up
+  // makes the notice promise a wait longer than it will be.
+  if (value >= 60_000 && value % 60_000 === 0) return `${Math.round(value / 60_000)} 分钟`;
   return `${Math.max(1, Math.round(value / 1_000))} 秒`;
 }
 
@@ -1474,6 +1523,7 @@ export function buildUiPayload({
   now = Date.now(),
   session = null,
   signIn = null,
+  viewers = null,
 }) {
   const configured = options.repos?.length > 0 ? options.repos : options.repo ? [options.repo] : [];
   // A session sees exactly what a poll would deliver to it: the repositories it
@@ -1511,6 +1561,17 @@ export function buildUiPayload({
     .sort((left, right) => String(right.at ?? "").localeCompare(String(left.at ?? "")))
     .slice(0, 20);
   const identity = options.identity ?? DEFAULTS.identity;
+  // How a wakeup may happen, in the terms the page can change: which roles, how
+  // quiet a session must be, how many an hour, and which session owns the
+  // repository this page is looking at.
+  const claims = options.primary ?? {};
+  const ownerOf = (name) => {
+    if (!name) return null;
+    const wanted = String(name).toLowerCase();
+    const hit = Object.keys(claims).find((key) => key.toLowerCase() === wanted);
+    return hit ? claims[hit] : null;
+  };
+  const sessionRepo = scoped ? (session.repo ?? repos[0] ?? null) : null;
   return {
     at: new Date(now).toISOString(),
     label: options.label ?? DEFAULTS.label,
@@ -1532,6 +1593,17 @@ export function buildUiPayload({
     sweep: options.sweep?.when ?? null,
     signIn: signIn ?? { signedIn: null, open: false, attemptedAt: null },
     intervalMs: options.intervalMs ?? DEFAULTS.intervalMs,
+    wake: {
+      on: options.wakeOn ?? [],
+      idleMs: options.wakeAfterIdleMs ?? DEFAULTS.wakeAfterIdleMs,
+      perHour: options.wakesPerHour ?? DEFAULTS.wakesPerHour,
+      primary: ownerOf(sessionRepo),
+      // Who else is watching this repository, and which of them owns it today.
+      viewers: (viewers ?? []).map((entry) => ({
+        ...entry,
+        primary: ownerOf(sessionRepo) === entry.id,
+      })),
+    },
     queue: counts,
     events: events.slice(0, 20),
     polls: repos.map((repo) => ({ repo, ...(source?.repos?.[repo]?.lastPoll ?? {}) })),
@@ -1558,4 +1630,26 @@ function describeEvent(event) {
 
 function describe(error) {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * The last JSON object a command printed, or null. Children print progress lines
+ * before their answer, so scan from the end and take the first line that parses.
+ */
+function parseJsonAnswer(stdout) {
+  const lines = String(stdout ?? "")
+    .trim()
+    .split(/\r?\n/u)
+    .reverse();
+  for (const line of lines) {
+    const text = line.trim();
+    if (!text.startsWith("{")) continue;
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && typeof parsed === "object") return parsed;
+    } catch {
+      // Not the answer; keep looking.
+    }
+  }
+  return null;
 }

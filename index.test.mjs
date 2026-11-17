@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { buildMessage, buildUiPayload, deliver, deliveryTargets, detectRepo, filterUndelivered, formatEvents, matchesWatch, mergeConfig, preferenceNext, repoFromInput, repoOf, wakePlan } from "./index.js";
+import { buildMessage, buildUiPayload, deliver, deliveryTargets, detectRepo, filterUndelivered, formatEvents, matchesWatch, mergeConfig, pollLabel, preferenceNext, repoFromInput, repoOf, wakePlan } from "./index.js";
 
 const idle = { status: "idle" };
 const running = { status: "running" };
@@ -796,6 +796,62 @@ test("a turn with findings sweeps the inbox and says what it archived", async ()
   }
 });
 
+test("a sweep that answers ok is not a failure, whatever its exit code", async () => {
+  const root = mkdtempSync(join(tmpdir(), "inbox-sweep-answer-"));
+  const logPath = join(root, ".work", "inbox-bridge", "plugin.log");
+  try {
+    const ctx = fakeContext([fakeAgent(root)]);
+    const { apply } = await import("./index.js");
+    apply(
+      ctx,
+      mergeConfig({
+        cwd: root,
+        repo: "owner/name",
+        poll: {
+          command: process.execPath,
+          args: [
+            "-e",
+            `console.log(JSON.stringify({ events: [{ key: "run:1", kind: "ci", title: "ci failed", role: "ci", repo: "owner/name" }] }))`,
+          ],
+        },
+        ack: { command: process.execPath, args: ["-e", "console.log('{}')"] },
+        sweep: {
+          command: process.execPath,
+          // A browser that could not close cleanly leaves a non-zero exit even
+          // though the archiving itself succeeded. The answer is the evidence.
+          args: [
+            "-e",
+            "console.log(JSON.stringify({ ok: true, archived: 2 }));process.exit(1)",
+            "sweeper.mjs",
+          ],
+        },
+      }),
+    );
+    ctx.emit("agent/status", { agent: { session: { id: "session-1" } }, status: "running" });
+    const fs = await import("node:fs");
+    const read = () => (fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf8") : "");
+    const deadline = Date.now() + 6_000;
+    const swept = () => read().includes("swept the notification inbox: 2 thread(s)");
+    while (Date.now() < deadline && !swept()) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(swept(), true, "an ok answer was not taken at its word");
+    assert.equal(read().includes("sweep failed"), false, "an ok answer was reported as a failure");
+  } finally {
+    removeTree(root);
+  }
+});
+
+test("a poll interval is stated in the unit that is exact", () => {
+  // 90 000 ms is the default idle window: "2 分钟" would promise a longer wait
+  // than the one that actually happens.
+  assert.equal(pollLabel(90_000), "90 秒");
+  assert.equal(pollLabel(60_000), "1 分钟");
+  assert.equal(pollLabel(600_000), "10 分钟");
+  assert.equal(pollLabel(900_000), "15 分钟");
+  assert.equal(pollLabel(20_000), "20 秒");
+});
+
 test("a sweep that needs a person says so, instead of looking like a crash", async () => {
   const root = mkdtempSync(join(tmpdir(), "inbox-sweep-login-"));
   const logPath = join(root, ".work", "inbox-bridge", "plugin.log");
@@ -999,6 +1055,60 @@ test("a session subscribes for itself, and the instance follows so it gets polle
 
 test("an unknown setting is refused instead of silently doing nothing", () => {
   assert.equal(preferenceNext({}, "colour", "blue", {}), null);
+});
+
+test("the page can name the session that owns a repository, and tune the wakeup", () => {
+  const options = { sessionId: "session-a", sessionRepo: "owner/one" };
+
+  // A claim may name another session: the person is choosing among the ones
+  // watching the repository, not necessarily from the one that should own it.
+  const claimed = preferenceNext({}, "primary", "owner/one", { ...options, targetSession: "session-b" });
+  assert.deepEqual(claimed.primary, { "owner/one": "session-b" });
+
+  // Without a target it claims for the session the page belongs to, and an
+  // empty value releases the repository again.
+  assert.deepEqual(preferenceNext({}, "primary", "owner/one", options).primary, { "owner/one": "session-a" });
+  assert.deepEqual(preferenceNext(claimed, "primary", "", options).primary, {});
+
+  // Minutes in, milliseconds out — including zero, which means "as soon as
+  // nobody is busy".
+  assert.equal(preferenceNext({}, "idle", "5", {}).wakeAfterIdleMs, 300_000);
+  assert.equal(preferenceNext({}, "idle", "0", {}).wakeAfterIdleMs, 0);
+  assert.equal(preferenceNext({}, "idle", "-1", {}), null);
+  assert.equal(preferenceNext({}, "idle", "yesterday", {}), null);
+
+  assert.equal(preferenceNext({}, "budget", "4", {}).wakesPerHour, 4);
+  assert.equal(preferenceNext({}, "budget", "0", {}), null);
+  assert.equal(preferenceNext({}, "budget", "2.5", {}), null);
+});
+
+test("the page is told who watches the repository and who owns it", () => {
+  const payload = buildUiPayload({
+    options: mergeConfig({
+      repos: ["owner/one"],
+      delivery: "wakeup",
+      wakeOn: ["author"],
+      primary: { "owner/one": "session-b" },
+    }),
+    session: { id: "session-a", repo: "owner/one", repos: ["owner/one"], roles: [] },
+    viewers: [
+      { id: "session-a", label: "one" },
+      { id: "session-b", label: "two" },
+    ],
+  });
+  assert.deepEqual(payload.wake.on, ["author"]);
+  assert.equal(payload.wake.idleMs, 900_000);
+  assert.equal(payload.wake.perHour, 2);
+  assert.equal(payload.wake.primary, "session-b");
+  assert.deepEqual(payload.wake.viewers, [
+    { id: "session-a", label: "one", primary: false },
+    { id: "session-b", label: "two", primary: true },
+  ]);
+
+  // Nobody watching means nothing to choose between, and no owner.
+  const alone = buildUiPayload({ options: mergeConfig({ repo: "owner/one" }), viewers: [] });
+  assert.equal(alone.wake.primary, null);
+  assert.deepEqual(alone.wake.viewers, []);
 });
 
 test("a repository with two watching sessions wakes none of them until one is responsible", () => {

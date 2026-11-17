@@ -17,7 +17,7 @@ That is also why it only reads: its job is to make the agent aware. The work hap
 - **Relevance comes from your identity.** It queries the repositories as your local `gh` login (or a configured App identity) and keeps only events where you are the author, the reviewer, the assignee, or are mentioned.
 - **It reads repositories, not the notification inbox.** The notification inbox pushes per account and cannot tell sessions or repositories apart; querying repository state keeps two repositories on the same account apart.
 - **Polling follows turns.** Once at the start, every minute while a turn runs, once at the end; an idle session makes no request.
-- **The panel is editable.** The chip shows a blue dot and a count when something waits; hovering opens the events and three controls: delivery, message clearing (off / mark read / archive to Done — one choice), and which repositories this session subscribes to (paste a link or type `owner/name`).
+- **The panel is editable.** The chip shows a blue dot and a count when something waits; hovering opens the events and a few controls: delivery, who takes a wakeup (when several sessions watch one repository), the rhythm (how idle is idle, wakes per hour), message clearing (off / mark read / archive to Done — one choice), and which repositories this session subscribes to (paste a link or type `owner/name`).
 
 ## Install
 

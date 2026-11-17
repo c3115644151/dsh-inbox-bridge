@@ -17,6 +17,7 @@ import {
   extractNotificationEvents,
   extractPrEvents,
   extractRunEvents,
+  extractReviewCommentEvents,
   extractSecurityEvents,
   filterRuns,
   formatEvent,
@@ -810,6 +811,79 @@ test("a failing run on my pull request's branch is news; a stranger's branch is 
 
   const events = extractRunEvents(kept, normalizeState({ lastPollAt: "2026-11-16T00:00:00.000Z" }));
   assert.deepEqual(events.map((event) => event.key), ["run:24", "run:26"]);
+});
+
+test("a scheduled run says it was scheduled, so a nightly failure is not read as a push", () => {
+  const state = normalizeState({ lastPollAt: "2026-11-16T00:00:00.000Z" });
+  const nightly = extractRunEvents(
+    [run({ databaseId: 77, event: "schedule", workflowName: "nightly-cache", name: "nightly-cache" })],
+    state,
+  );
+  assert.equal(nightly.length, 1);
+  assert.equal(nightly[0].key, "run:77");
+  assert.equal(nightly[0].label, "Scheduled");
+  assert.equal(nightly[0].scheduled, true);
+  assert.match(formatEvent(nightly[0]), /^\[Scheduled\] run 77 failed: /u);
+
+  // A run triggered by a push keeps the plain CI name it always had.
+  const pushed = extractRunEvents([run({ databaseId: 78, event: "push" })], state);
+  assert.equal(pushed[0].label, "CI");
+  assert.equal(pushed[0].scheduled, false);
+
+  // The recovery of a nightly job is labeled the same way as its failure.
+  const recovered = extractRunEvents(
+    [run({ databaseId: 79, conclusion: "success", event: "schedule", workflowName: "nightly-cache" })],
+    normalizeState({
+      lastPollAt: "2026-11-16T00:00:00.000Z",
+      lastRun: { id: 77, conclusion: "failure" },
+    }),
+  );
+  const healed = recovered.find((event) => event.kind === "recovered");
+  assert.equal(healed?.label, "Scheduled");
+});
+
+test("a review comment on my pull request is news until a push answers it", () => {
+  const prs = [
+    pullRequest({ number: 7, headRefOid: "aaaa1111" }),
+    pullRequest({ number: 8, author: { login: "someone-else" }, headRefOid: "bbbb2222" }),
+  ];
+  const comment = (overrides = {}) => ({
+    id: 42,
+    pull_request_url: "https://api.github.com/repos/Noema-Harness/noema-agent/pulls/7",
+    user: { login: "ichika0130" },
+    body: "this branch drops the retry\n\nplease keep it",
+    path: "src/a.ts",
+    line: 12,
+    commit_id: "aaaa1111",
+    html_url: "https://github.com/Noema-Harness/noema-agent/pull/7#discussion_r42",
+    created_at: "2026-11-17T09:00:00Z",
+    ...overrides,
+  });
+
+  const fresh = extractReviewCommentEvents([comment()], { me: ME, prs });
+  assert.equal(fresh.length, 1);
+  assert.equal(fresh[0].key, "pr:7:review:42");
+  assert.equal(fresh[0].kind, "review");
+  assert.equal(fresh[0].role, "author");
+  assert.equal(fresh[0].ref, "src/a.ts:12");
+  assert.match(fresh[0].title, /^ichika0130: this branch drops the retry/u);
+  assert.match(formatEvent(fresh[0]), /^\[Review\/author\] #7 src\/a\.ts:12: /u);
+
+  // A push past the commit the comment was written on answers it: the source
+  // stops reporting it, which is how the queue closes it.
+  const answered = extractReviewCommentEvents([comment({ commit_id: "old00000" })], { me: ME, prs });
+  assert.deepEqual(answered, []);
+
+  // A comment on somebody else's pull request is not mine to carry.
+  const foreign = extractReviewCommentEvents(
+    [comment({ pull_request_url: "https://api.github.com/repos/o/r/pulls/8" })],
+    { me: ME, prs },
+  );
+  assert.deepEqual(foreign, []);
+
+  // My own replies are not news either.
+  const mine = extractReviewCommentEvents([comment({ user: { login: ME } })], { me: ME, prs });
+  assert.deepEqual(mine, []);
 });
 
 test("the same PR number in two repositories becomes two keys", () => {
