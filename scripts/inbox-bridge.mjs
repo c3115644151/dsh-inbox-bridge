@@ -143,12 +143,12 @@ export function recordPending(state, events, at) {
 
 /**
  * Rebuild the events a previous poll recorded but never delivered, so a turn
- * that starts later still learns about them. Facts are forgotten after
- * `resurfaceMs`: a notice nobody received for six hours is no longer news.
+ * that starts later still learns about them. These never expire: a fact that
+ * nobody was told about has no second chance, and a queue that quietly drops it
+ * is worse than a queue with one stale line in it. Delivered facts have their
+ * own `resurfaceMs` window in `classify`.
  */
-export function carriedPending(state, events, options = {}) {
-  const now = options.now ?? Date.now();
-  const resurfaceMs = options.resurfaceMs ?? RESURFACE_MS;
+export function carriedPending(state, events) {
   const live = new Set(
     (Array.isArray(events) ? events : [])
       .filter((event) => event && typeof event.key === "string")
@@ -158,8 +158,6 @@ export function carriedPending(state, events, options = {}) {
   for (const [key, entry] of Object.entries(state?.events ?? {})) {
     if (!entry || entry.status !== "pending" || (entry.attempts ?? 0) !== 0) continue;
     if (live.has(key)) continue;
-    const at = Number.isFinite(Date.parse(entry.at)) ? Date.parse(entry.at) : now;
-    if (now - at >= resurfaceMs) continue;
     // A record written before this field existed still knows its repository: the
     // key starts with it, and routing the fact matters more than the round trip.
     const repo = entry.repo ?? repoFromKey(key);
@@ -252,9 +250,7 @@ export function autoDone(state, events, at) {
  * this, a notice nobody explicitly acks comes back every `resurfaceMs`
  * forever, which is how a five-hour-old item ends up back on the line.
  */
-export function closeResolved(state, events, { at, repos = [], now, resurfaceMs } = {}) {
-  const nowMs = Number.isFinite(now) ? now : Date.parse(at ?? "") || Date.now();
-  const window = resurfaceMs ?? RESURFACE_MS;
+export function closeResolved(state, events, { at, repos = [] } = {}) {
   const events_ = { ...(state?.events ?? {}) };
   const covered = new Set(
     (Array.isArray(repos) ? repos : []).map((repo) => String(repo).toLowerCase()),
@@ -272,14 +268,11 @@ export function closeResolved(state, events, { at, repos = [], now, resurfaceMs 
     const repo = hash > 0 ? key.slice(0, hash).toLowerCase() : null;
     if (!repo || !covered.has(repo)) continue;
     if (live.has(key)) continue;
-    // Never told anyone about it, and still recent: a fact we have not reported
-    // yet is not settled by the source going quiet. Issues and comments are
-    // reported once, so closing a held one would drop exactly the news a wakeup
-    // was waiting for. Past the resurface window it stops being news.
-    if (entry.status === "pending" && (entry.attempts ?? 0) === 0) {
-      const seenAt = Number.isFinite(Date.parse(entry.at)) ? Date.parse(entry.at) : nowMs;
-      if (nowMs - seenAt < window) continue;
-    }
+    // Never told anyone about it: the source going quiet does not settle it.
+    // Issues, comments and review comments are reported once, so closing a held
+    // one would drop exactly the news a wakeup was waiting for — there is no
+    // second chance to see it. Keep it until somebody is told.
+    if (entry.status === "pending" && (entry.attempts ?? 0) === 0) continue;
     events_[key] = { ...entry, status: "done", at };
     marked.push(key);
   }
@@ -371,7 +364,7 @@ export function pollOnce(root, options = {}) {
     groups.pending.length > 0
       ? recordPending(quiet.state, groups.pending, at)
       : { state: quiet.state, marked: [] };
-  const carried = carriedPending(recorded.state, events, options);
+  const carried = carriedPending(recorded.state, events);
   if (
     recorded.marked.length > 0 ||
     quiet.marked.length > 0 ||

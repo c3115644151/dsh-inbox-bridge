@@ -1,4 +1,4 @@
-## 未发布（等确认后定版本号）
+## 2.21.0
 
 - **定位换了：现在是会话通知器，不是 GitHub 通知器。** 它不再回答「我账号上有什么消息」，而是回答「这个会话在 GitHub 上做的事有没有回音」——查的是这个会话自己的条目、以及它接管的仓库。结果：插件与 GitHub 账号解耦，两个共用同一账号的实例不再互相干扰。
 - **接管取代订阅。** 打开工作区的第一个会话自动接管它所在的仓库，之后的会话默认不接管；面板里可以接管或释放。措辞从「订阅/取消订阅」统一为「接管/释放」，因为接管听起来是「我把这个仓库的账算在自己头上」，而不是「我在追踪一个仓库的事件」。
@@ -8,6 +8,7 @@
 - **轮询的仓库 = 所有活着的会话接管的并集**（加实例级 `repo`/`repos`）。没人接管就不轮询，日志与面板都照实说，不再摆着没人要看的仓库。
 - **顺手修的三个缺陷。** ①待投事实落盘时丢了 `repo`，回读后两道归属门空转，把它交给了恰好空闲的会话；现在落盘与回读都保留仓库，插件侧再用 key 前缀兜底。②被留下的事实用每一轮被当成「新发现」，于是一个 pending 就让归档每分钟开一次浏览器；现在只在新事实出现时才归档，失败后 30 分钟不重试。③没有 message 的失败（浏览器侧异常）被记成 `Uncaught`，现在打印真正的错误行。
 - 文档按新定位重写（README / README.en / how-it-works / configuration / DETAIL），README 增加一张架构图。
+- **没送到的事实不会过期。** 以前「留下待投」的事实若 6 小时内没人接手就会被当成过期丢弃；issue、评论、评审意见这类只报一次的事实因此会凭空消失。现在它们一直留在队列里，直到真的送到某个会话（投递之后的 6 小时重提窗口照旧）。
 - 回归测试：`a fact that lost its repository is still routed by its key`、`a held fact does not sweep the inbox`、`a repository fact belongs to its owner, an item fact to whoever works there`、`my own items collapse into one fact each, wherever they live`、`nothing owned means nothing is polled`。
 
 ## 2.20.1

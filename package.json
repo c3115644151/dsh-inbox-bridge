@@ -1,6 +1,6 @@
 {
   "name": "dsh-inbox-bridge",
-  "version": "2.20.1",
+  "version": "2.21.0",
   "displayName": "GitHub inbox",
   "description": "DSH 插件：给每个会话配一个自己的 GitHub 通知器——用这个会话的身份看它做的事有没有回音（我提的 PR 被评审了吗、CI 挂在哪一次、派给我的 issue 有人回了没有），连同接管的仓库里的 CI 失败、安全告警、评审请求与 @提及，在自己回合送进上下文；会话空闲又遇到要紧的事时也能主动开一轮。仓库级的事只给接管者，条目级的事给在仓库里干活的会话，同一条事实只叫一个会话。只读 GitHub。",
   "type": "module",

@@ -177,15 +177,17 @@ test("an event held while everyone was busy reaches a later poll", () => {
     const carried = carriedPending(delivered.state, [], { now: Date.parse("2026-11-17T12:43:00Z") });
     assert.deepEqual(carried, []);
 
-    // Past the window a notice nobody received is no longer news.
+    // A fact nobody was told about keeps waiting, however long that takes: it
+    // cannot be reported twice, so expiring it would delete the news.
     const stale = recordPending(
       { events: {} },
       [issue],
       "2026-11-17T12:40:00Z",
     );
+    const late = carriedPending(stale.state, [], { now: Date.parse("2026-11-17T19:00:00Z") });
     assert.deepEqual(
-      carriedPending(stale.state, [], { now: Date.parse("2026-11-17T19:00:00Z") }),
-      [],
+      late.map((event) => event.key),
+      ["o/r#issue:5"],
     );
 
     // A record written before the field existed still names its repository: the
