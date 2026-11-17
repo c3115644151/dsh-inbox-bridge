@@ -177,17 +177,58 @@ async function connect(wsUrl) {
 }
 
 /**
- * Runs in the page. Selects everything in the inbox and presses Done, then
- * reports what happened. Retries the click because the toolbar renders lazily.
+ * Runs in the page. Selects the rows that belong to `repo` (everything when
+ * `repo` is null) and presses Done, then reports what happened. Retries the
+ * click because the toolbar renders lazily.
+ *
+ * The view is already narrowed by a `repo:` search, but that alone is a thin
+ * guarantee: if GitHub ever ignores the qualifier, the page would hand us the
+ * whole account and this script would archive it. So each row is also checked
+ * against its own links — a row that clearly belongs to another repository is
+ * left alone. A row whose repository cannot be read is kept, because the view
+ * is the only evidence available at that point.
  */
-const SWEEP = `(async () => {
-  const rows = () => [...document.querySelectorAll('input[type=checkbox][name="notification_ids[]"]')];
+export const sweepScript = (repo) => `(async () => {
+  const boxes = () => [...document.querySelectorAll('input[type=checkbox][name="notification_ids[]"]')];
+  const owner = ${JSON.stringify(repo ?? null)};
+  const pathOf = (link) => {
+    try { return new URL(link.href).pathname; } catch { return ""; }
+  };
+  const repoPaths = (node) =>
+    [...node.querySelectorAll('a[href]')]
+      .map(pathOf)
+      .filter((path) => /^\\/[^/]+\\/[^/]+\\//.test(path));
+  const rowOf = (box) => {
+    let node = box;
+    let found = null;
+    for (let depth = 0; depth < 10 && node; depth += 1) {
+      const count = node.querySelectorAll?.('input[type=checkbox][name="notification_ids[]"]').length ?? 0;
+      if (count > 1) break;
+      if (count === 1 && repoPaths(node).length > 0) found = node;
+      node = node.parentElement;
+    }
+    return found;
+  };
+  const foreign = (box) => {
+    if (!owner) return false;
+    const row = rowOf(box);
+    if (!row) return false;
+    const paths = repoPaths(row);
+    if (paths.length === 0) return false;
+    return !paths.some((path) => path.startsWith('/' + owner + '/'));
+  };
   const started = Date.now();
-  const before = rows().length;
+  const all = boxes();
+  const before = all.length;
   if (before === 0) {
-    return { archived: 0, before: 0, after: 0, empty: true };
+    return { archived: 0, before: 0, after: 0, skipped: 0, empty: true };
   }
-  for (const box of rows()) box.click();
+  const mine = all.filter((box) => !foreign(box));
+  const skipped = before - mine.length;
+  if (mine.length === 0) {
+    return { archived: 0, before, after: before, skipped, unscoped: true };
+  }
+  for (const box of mine) box.click();
   await new Promise((r) => setTimeout(r, 700));
   for (let attempt = 0; attempt < 10; attempt += 1) {
     const done = [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Done');
@@ -199,9 +240,9 @@ const SWEEP = `(async () => {
   }
   for (let waited = 0; waited < 30; waited += 1) {
     await new Promise((r) => setTimeout(r, 300));
-    if (rows().length === 0) break;
+    if (boxes().length === 0) break;
   }
-  return { archived: before - rows().length, before, after: rows().length, empty: false, ms: Date.now() - started };
+  return { archived: before - boxes().length, before, after: boxes().length, skipped, empty: false, ms: Date.now() - started };
 })()`;
 
 async function main(argv) {
@@ -422,13 +463,16 @@ async function main(argv) {
         await devtools.send("Page.navigate", { url: urlFor(repo) });
         const view = await waitForList();
         if (view?.signIn) return await unsorted();
-        const result = await read(SWEEP);
-        perRepo.push({ repo, archived: result.archived ?? 0, before: result.before ?? 0 });
+        const result = await read(sweepScript(repo));
+        perRepo.push({ repo, archived: result.archived ?? 0, before: result.before ?? 0, skipped: result.skipped ?? 0 });
+        if (result.unscoped) perRepo[perRepo.length - 1].unscoped = true;
       }
       const archived = perRepo.reduce((sum, each) => sum + each.archived, 0);
+      const skipped = perRepo.reduce((sum, each) => sum + (each.skipped ?? 0), 0);
       const summary = {
         ok: true,
         archived,
+        skipped,
         repos: perRepo.map((each) => each.repo).filter(Boolean),
         perRepo,
         ms: Date.now() - started,
@@ -436,7 +480,11 @@ async function main(argv) {
       };
       if (options.json) console.log(JSON.stringify(summary));
       else if (summary.empty) console.log("nothing to archive in the repositories you watch");
-      else console.log(`archived ${archived} thread(s) in ${Math.round(summary.ms / 100) / 10}s`);
+      else {
+        const guarded = skipped > 0 ? `, left ${skipped} thread(s) of other repositories alone` : "";
+        const confused = perRepo.some((each) => each.unscoped) ? "; the page did not name the rows it showed, so nothing was archived" : "";
+        console.log(`archived ${archived} thread(s) in ${Math.round(summary.ms / 100) / 10}s${guarded}${confused}`);
+      }
       return 0;
     } finally {
       devtools.close();

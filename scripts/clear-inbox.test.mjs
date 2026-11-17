@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { archiveTargets, inboxUrlFor, parseArgs } from "./clear-inbox.mjs";
+import { archiveTargets, inboxUrlFor, parseArgs, sweepScript } from "./clear-inbox.mjs";
 
 test("the sweep archives the repositories the plugin watches, one view each", () => {
   const plan = archiveTargets({ repos: ["owner/one", "owner/two"] });
@@ -56,4 +56,17 @@ test("--check and --dry-run are separate switches", () => {
   const both = parseArgs(["--check", "--dry-run"]);
   assert.equal(both.check, true);
   assert.equal(both.dryRun, true);
+});
+
+test("the page script refuses rows that belong to another repository", () => {
+  // The search view is narrowed by `repo:`, but the page script checks each row
+  // against its own links too: if GitHub ignored the qualifier, an unfiltered
+  // row must never be archived. The guard is generated per repository, so this
+  // test keeps it from being removed without a trace.
+  const scoped = sweepScript("owner/repo");
+  assert.match(scoped, /const owner = "owner\/repo";/u);
+  assert.match(scoped, /\.startsWith\('\/' \+ owner \+ '\/'\)/u);
+  assert.match(scoped, /unscoped: true/u);
+  // `--all` is the only mode that keeps every row.
+  assert.match(sweepScript(null), /const owner = null;/u);
 });
