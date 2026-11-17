@@ -26,6 +26,7 @@ That is also why it only reads: its job is to make the agent aware. The work hap
 - **Relevance comes from your identity.** It queries the repositories as your `gh` login (or a configured App identity) and keeps only events where you are the author, the reviewer, the assignee, or are mentioned. Failed checks on someone else's PR, and unrelated repositories, never enter the queue.
 - **It reads repositories, not the notification inbox.** GitHub's notification inbox pushes per account and cannot tell one session or repository from another; querying repository state directly keeps two repositories on the same account apart.
 - **Polling follows turns.** Once when a session starts, every minute while a turn runs, once when it ends; an idle session makes no request. Only with `delivery: wakeup` does it also read on that interval while idle — without that it could never wake you while you are away.
+- **It also watches security and merge state.** Open Dependabot and code-scanning alerts, and a pull request of yours that conflicts with the base branch or is behind it, matter as much as a red check.
 - **It goes into the context, and opens a turn only when it has to.** By default a notice arrives at the next safe injection point and does not interrupt the tool loop; with `delivery: wakeup` it opens a turn only for a listed `wakeOn` role, with the session idle for 15 minutes, at most 3 times in a row per session, and at most 2 times an hour — anything else keeps queueing. A notice is marked `delivered`, and unhandled events come back once after six hours.
 
 ## What you will see
@@ -38,7 +39,7 @@ At the top of a turn:
 >
 > Act only where it affects the current work; when done, run `node "...\dsh-inbox-bridge\scripts\inbox-bridge.mjs" ack --done -- <key>`.
 
-The bracket states the relation to that identity: `reviewer` means it waits for your review, `author` means you opened it, `assignee` means it is assigned to you, `mention` means a comment mentions you. Run the `ack` command when you are done; an unacknowledged event is repeated after six hours rather than piling up.
+`[Dependabot]` is an open dependency advisory and `[Code scanning]` an open code-scanning alert. The rest of the bracket states the relation to that identity: `reviewer` means it waits for your review, `author` means you opened it, `assignee` means it is assigned to you, `mention` means a comment mentions you. Run the `ack` command when you are done; an unacknowledged event is repeated after six hours rather than piling up.
 
 ## The panel
 
@@ -78,6 +79,8 @@ dsh plugin add dsh-inbox-bridge
 All three routes install the same package; versions live on [npm](https://www.npmjs.com/package/dsh-inbox-bridge).
 
 Then give it a working directory (`cwd`) in the plugin configuration. The repository and the identity are read from that directory's `git remote` and from `gh`; nothing else needs filling in.
+
+To see what it can actually see: `node scripts/inbox-bridge.mjs doctor` walks the identity, repository access, each repository's last poll and the queue; for one event that never reached you, `node scripts/inbox-bridge.mjs explain <key>` says where it stopped.
 
 ## Configuration
 

@@ -820,6 +820,25 @@ test("the page sees what is still open, newest first, and nothing already closed
   assert.equal(payload.at, new Date(0).toISOString());
 });
 
+test("a labelled event keeps its own name on the page and in the notice", () => {
+  const payload = buildUiPayload({
+    options: { label: "外部收件箱", repos: ["a/b"], identity: { kind: "user", login: "me" } },
+    queue: { "a/b#dependabot:3": { status: "pending", at: "2026-01-02T00:00:00Z" } },
+    recent: new Map([
+      ["a/b#dependabot:3", { kind: "Dependabot", role: "any", title: "high Prototype pollution", url: "u" }],
+    ]),
+    now: 0,
+  });
+  assert.equal(payload.events[0].kind, "Dependabot");
+
+  const notice = formatEvents(
+    [{ key: "a/b#dependabot:3", kind: "security", label: "Dependabot", role: "any", ref: "foo", title: "high Prototype pollution", url: "u" }],
+    { label: "外部收件箱", identity: { kind: "user", login: "me" }, delivery: "quiet" },
+  );
+  assert.match(notice, /- \[Dependabot\] foo high Prototype pollution u/u);
+  assert.ok(!notice.includes("[security]"));
+});
+
 test("the page keeps at most twenty open events", () => {
   const queue = {};
   for (let index = 0; index < 30; index += 1) {

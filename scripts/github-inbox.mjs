@@ -73,8 +73,10 @@ const FAILED_CHECK_STATES = new Set([
 const RUN_FIELDS =
   "databaseId,name,displayTitle,conclusion,headSha,headBranch,workflowName,createdAt,url";
 const PR_FIELDS =
-  "number,title,headRefName,url,statusCheckRollup,reviewDecision,updatedAt,author,reviewRequests,assignees,isDraft";
-const KIND_ORDER = { recovered: 0, ci: 1, pr: 2, comment: 3, issue: 4 };
+  "number,title,headRefName,url,statusCheckRollup,reviewDecision,updatedAt,author,reviewRequests,assignees,isDraft,mergeStateStatus";
+// Order inside one notice: something to fix first, then what is waiting on a
+// person, then conversation.
+const KIND_ORDER = { recovered: 0, security: 1, ci: 2, pr: 3, comment: 4, issue: 5 };
 /** How a GitHub notification reason maps onto the role vocabulary. */
 const NOTIFICATION_ROLES = {
   review_requested: "reviewer",
@@ -105,6 +107,10 @@ Usage:
                        bridge sets it). GitHub has no "done" API, so this clears
                        the unread badge, not the inbox history. Only threads from
                        the repositories this instance reads are touched.
+
+Security: open Dependabot and code-scanning alerts are read as well. A repository
+          without either feature answers 403/404, which is reported (in --json)
+          instead of skipped, so one missing feature never hides the rest.
 
 State:   .work/github-inbox/state.json (one slice per repository)
 History: .work/github-inbox/pending.md`;
@@ -250,11 +256,29 @@ export function tagEvents(repo, events = []) {
 
 const IN_PROGRESS_CHECK_STATES = new Set(["QUEUED", "IN_PROGRESS", "PENDING", "WAITING", "REQUESTED"]);
 
+// A pull request that cannot be merged is work, even when nothing failed: the
+// branch has to be rebased or the conflict resolved. These two states are the
+// ones a person has to act on; BLOCKED/UNSTABLE are already covered by the
+// review and check digests.
+const BLOCKED_MERGE_STATES = new Set(["DIRTY", "BEHIND"]);
+
+export function mergeBlocker(pr) {
+  const state = String(pr?.mergeStateStatus ?? "").toUpperCase();
+  if (BLOCKED_MERGE_STATES.has(state)) return state;
+  // `gh pr list --json mergeable` answers CONFLICTING when the merge is dirty;
+  // accept it so the older field shape keeps working.
+  return String(pr?.mergeable ?? "").toUpperCase() === "CONFLICTING" ? "DIRTY" : null;
+}
+
 export function prStatusDigest(pr) {
   // 摘要只反映“需要你处理的状态”：失败的检查与评审决定。
   // 进行中或成功完成的检查不进 key，否则同一 PR 在检查跑完前会被反复当成新事件。
   const failing = failingCheckNames(pr).sort();
-  return `failed[${failing.join(",")}]|review:${String(pr?.reviewDecision ?? "").toUpperCase() || "NONE"}`;
+  const blocker = mergeBlocker(pr);
+  // 只在真的冲突/落后时才把合并状态写进 key：合并干净的 PR 保持原来的 key，
+  // 已投递的事实不会因为一次格式变化被重新提醒一次。
+  const merge = blocker ? `|merge:${blocker}` : "";
+  return `failed[${failing.join(",")}]|review:${String(pr?.reviewDecision ?? "").toUpperCase() || "NONE"}${merge}`;
 }
 
 export function failingCheckNames(pr) {
@@ -383,6 +407,7 @@ export function extractPrEvents(prs = [], { me = null } = {}) {
     if (role === null) continue;
     const review = String(pr?.reviewDecision ?? "").toUpperCase();
     const failing = failingCheckNames(pr);
+    const blocker = mergeBlocker(pr);
     const reasons = [];
     if (role === "reviewer") {
       // Already reviewed: the ball is back with the author.
@@ -391,6 +416,10 @@ export function extractPrEvents(prs = [], { me = null } = {}) {
     } else {
       if (failing.length) reasons.push(`checks failed: ${failing.slice(0, 4).join(", ")}`);
       if (review === "CHANGES_REQUESTED") reasons.push("changes requested");
+      // Merging is the author's job, not the reviewer's: a reviewer reading a
+      // conflicted PR has nothing to do about the conflict.
+      if (blocker === "DIRTY") reasons.push("merge conflict with the base branch");
+      if (blocker === "BEHIND") reasons.push("behind the base branch");
     }
     if (reasons.length === 0) continue;
     // A reviewer's key must not move when checks change: it is the same review
@@ -526,8 +555,58 @@ export function extractIssueEvents(issues = [], state = {}, { me = null } = {}) 
   return events;
 }
 
+/**
+ * Security advisories are repository facts, not personal ones: they belong to
+ * whoever maintains the repository, so they carry role `any` and are never the
+ * reason to wake a session (unless `wakeOn` names `any`).
+ * The key is the alert number alone, so an open alert stays one entry while it
+ * is being fixed, and closes by itself once the alert is resolved — a fixed
+ * vulnerability stops being reported, and `closeResolved` settles it.
+ */
+export function extractSecurityEvents(alerts = []) {
+  const events = [];
+  for (const entry of Array.isArray(alerts) ? alerts : []) {
+    const alert = entry?.alert;
+    const number = alert?.number;
+    if (number == null) continue;
+    if (entry.source === "dependabot") {
+      const severity = singleLine(alert?.security_advisory?.severity ?? "unknown").toLowerCase();
+      const pkg = singleLine(alert?.dependency?.package?.name ?? "");
+      const summary = singleLine(alert?.security_advisory?.summary ?? "vulnerable dependency");
+      events.push({
+        key: `dependabot:${number}`,
+        kind: "security",
+        role: "any",
+        repo: activeRepo,
+        label: "Dependabot",
+        ref: pkg ? `${pkg} #${number}` : `#${number}`,
+        title: compact([severity, summary]),
+        url: alert?.html_url ?? "",
+        at: alert?.updated_at ?? alert?.created_at ?? null,
+      });
+      continue;
+    }
+    if (entry.source === "code-scanning") {
+      const rule = singleLine(alert?.rule?.description ?? alert?.rule?.id ?? "code scanning alert");
+      const where = singleLine(alert?.most_recent_instance?.location?.path ?? "");
+      events.push({
+        key: `code-scanning:${number}`,
+        kind: "security",
+        role: "any",
+        repo: activeRepo,
+        label: "Code scanning",
+        ref: where ? `${where} #${number}` : `#${number}`,
+        title: rule,
+        url: alert?.html_url ?? "",
+        at: alert?.updated_at ?? alert?.created_at ?? null,
+      });
+    }
+  }
+  return events;
+}
+
 export function extractEvents(
-  { runs = [], prs = [], notifications = [], comments = [], issues = [] } = {},
+  { runs = [], prs = [], notifications = [], comments = [], issues = [], security = [] } = {},
   state = {},
   { me = null } = {},
 ) {
@@ -537,6 +616,7 @@ export function extractEvents(
     ...extractNotificationEvents(notifications),
     ...extractCommentEvents(comments, { me }),
     ...extractIssueEvents(issues, state, { me }),
+    ...extractSecurityEvents(security),
   ];
   // Every event names the repository it came from and how this identity is
   // involved, so delivery never has to guess either from the session's cwd.
@@ -621,6 +701,7 @@ export function pollOnce({
   fetchPrs,
   fetchFeed = () => ({ ok: true, source: "none", notifications: [], comments: [], issues: [] }),
   fetchIssues,
+  fetchSecurity,
   markRead,
 } = {}) {
   const runsResult =
@@ -649,6 +730,14 @@ export function pollOnce({
     if (number != null) issueNumbers.add(number);
     issues.push(issue);
   }
+  // Security advisories are optional: a repository without Dependabot, or a
+  // token without the security scopes, answers 403/404. That must not skip the
+  // poll — it only means this instance cannot see those facts, and the reason
+  // is reported instead of swallowed.
+  const securityResult =
+    typeof fetchSecurity === "function" ? fetchSecurity() : { alerts: [], notes: [] };
+  const security = Array.isArray(securityResult?.alerts) ? securityResult.alerts : [];
+  const securityNotes = Array.isArray(securityResult?.notes) ? securityResult.notes : [];
   const payload = {
     // The default branch always counts; a feature branch counts only while this
     // identity has an open PR from it.
@@ -661,6 +750,7 @@ export function pollOnce({
     notifications: Array.isArray(feed.notifications) ? feed.notifications : [],
     comments: Array.isArray(feed.comments) ? feed.comments : [],
     issues,
+    security,
   };
   const events = extractEvents(payload, state, { me });
   const fresh = sortEvents(repeat ? events : diffEvents(events, state));
@@ -681,6 +771,7 @@ export function pollOnce({
     source: feed.ok === true ? (feed.source ?? null) : null,
     feedSkipped:
       feedResult && feedResult.ok === false ? (feedResult.reason ?? "feed failed") : null,
+    securityNotes,
   };
 }
 
@@ -711,6 +802,8 @@ export function formatEvent(event) {
       return compact([`[Comment${role}] ${event.ref ?? ""}:`, title, url]);
     case "issue":
       return compact([`[Issue${role}] ${event.ref ?? ""}:`, title, url]);
+    case "security":
+      return compact([`[${event.label ?? "Security"}] ${event.ref ?? ""}:`, title, url]);
     default:
       return compact([`[${event.label ?? event.kind ?? "event"}${role}]`, title, url]);
   }
@@ -943,6 +1036,31 @@ export function fetchOpenPullRequests(cwd) {
   return ghJson(["pr", "list", "--state", "open", "--json", PR_FIELDS], { cwd });
 }
 
+/**
+ * Open security advisories for the watched repository. Never fatal: a private
+ * repository on a free plan, a disabled Dependabot, or a token without the
+ * `security_events` scope all answer 403/404, and the poll continues.
+ */
+export function fetchSecurityAlerts(cwd) {
+  const wanted = [
+    { source: "dependabot", path: "dependabot/alerts" },
+    { source: "code-scanning", path: "code-scanning/alerts" },
+  ];
+  const alerts = [];
+  const notes = [];
+  for (const { source, path } of wanted) {
+    const result = ghJson(["api", `repos/${activeRepo}/${path}?state=open&per_page=20`], { cwd });
+    if (!result.ok) {
+      notes.push(`${source} unavailable (${result.reason})`);
+      continue;
+    }
+    for (const alert of Array.isArray(result.value) ? result.value : []) {
+      alerts.push({ source, alert });
+    }
+  }
+  return { alerts, notes };
+}
+
 export function notificationsSince(state, cwd) {
   const since =
     typeof state?.lastPollAt === "string" && Number.isFinite(Date.parse(state.lastPollAt))
@@ -1132,6 +1250,7 @@ function runPoll({ repoRoot, stateFile, pendingFile, state, options, now, me, re
   const fresh = [];
   const skipped = [];
   const notices = [];
+  const securityNotes = [];
   const cleared = [];
   const clearFailed = [];
   const nextRepos = { ...normalizeStateFile(state).repos };
@@ -1151,6 +1270,7 @@ function runPoll({ repoRoot, stateFile, pendingFile, state, options, now, me, re
       fetchPrs: () => fetchOpenPullRequests(repoRoot),
       fetchIssues: () => fetchOpenIssues(repoRoot),
       fetchFeed: (currentState) => fetchFeed(currentState, repoRoot),
+      fetchSecurity: () => fetchSecurityAlerts(repoRoot),
     });
     if (result.skipped) {
       skipped.push({ repo, reason: result.skipped });
@@ -1163,6 +1283,10 @@ function runPoll({ repoRoot, stateFile, pendingFile, state, options, now, me, re
     cleared.push(...(result.cleared ?? []));
     clearFailed.push(...(result.clearFailed ?? []));
     if (result.feedSkipped) notices.push(`${repo}: feed skipped (${result.feedSkipped})`);
+    // A repository without Dependabot / code scanning answers 403 on every poll.
+    // That is a standing fact about the install, not news per minute, so it is
+    // reported in `--json` and by `doctor` instead of the per-poll log line.
+    for (const note of result.securityNotes ?? []) securityNotes.push(`${repo}: ${note}`);
     nextRepos[repo] = {
       ...result.nextState,
       lastPoll: {
@@ -1193,6 +1317,7 @@ function runPoll({ repoRoot, stateFile, pendingFile, state, options, now, me, re
           fresh,
           cleared,
           clearFailed,
+          securityNotes,
           stateFile,
           pendingFile,
           state: withMeta,

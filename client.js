@@ -110,6 +110,7 @@ window.__ModuleLoader__.load({
         none: "未配置仓库",
         open: "打开收件箱",
         more: (n) => `还有 ${n} 条`,
+        kinds: { Dependabot: "依赖告警", "Code scanning": "代码告警" },
         roles: { author: "作者", reviewer: "评审", assignee: "指派", mention: "提及", ci: "CI", any: "" },
         ago: { now: "刚刚", minutes: (n) => `${n} 分钟前`, hours: (n) => `${n} 小时前`, days: (n) => `${n} 天前` },
         pick: {
@@ -161,6 +162,7 @@ window.__ModuleLoader__.load({
         none: "no repositories configured",
         open: "open the inbox",
         more: (n) => `${n} more`,
+        kinds: { Dependabot: "Dependabot", "Code scanning": "Code scan" },
         roles: { author: "author", reviewer: "reviewer", assignee: "assignee", mention: "mention", ci: "CI", any: "" },
         ago: { now: "just now", minutes: (n) => `${n}m ago`, hours: (n) => `${n}h ago`, days: (n) => `${n}d ago` },
         pick: {
@@ -570,7 +572,7 @@ window.__ModuleLoader__.load({
     }
 
     function Role({ role, text }) {
-      const label = text.roles[role] ?? "";
+      const label = text.roles[role] ?? text.kinds?.[role] ?? "";
       if (!label) return null;
       return h("span", { style: styles.tag }, label);
     }
@@ -591,7 +593,7 @@ window.__ModuleLoader__.load({
         h(
           "span",
           { style: { display: "inline-flex", gap: "6px", alignItems: "baseline", minWidth: 0 } },
-          h(Role, { role: event.kind === "ci" ? "ci" : event.role, text }),
+          h(Role, { role: event.role && event.role !== "any" ? event.role : event.kind, text }),
           event.repo
             ? h("span", { style: styles.tag, title: event.repo }, event.repo.split("/").pop())
             : null,

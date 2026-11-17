@@ -9,8 +9,12 @@ import {
   autoDone,
   classify,
   closeResolved,
+  describeDoctor,
   describeEvent,
   describeStatus,
+  explainKey,
+  formatDoctor,
+  formatExplanation,
   formatStatus,
   readState,
   transition,
@@ -260,5 +264,170 @@ test("status explains a wakeup that cannot wake anyone", () => {
     const text = formatStatus(describeStatus(root, { readGitRepo: () => null }));
     assert.match(text, /GitHub App app\[bot\]，令牌已配置/u);
     assert.match(text, /wakeup，但 wakeOn 为空（仍是只排队）/u);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// doctor: what this install can and cannot see
+// ---------------------------------------------------------------------------
+
+test("doctor says which identity can read which repository, and what is stale", () => {
+  withWorkspace((root) => {
+    writeFileSync(
+      join(root, ".work", "inbox-bridge", "runtime.json"),
+      JSON.stringify({
+        cwd: root,
+        repo: "owner/one",
+        repos: ["owner/one", "owner/two"],
+        delivery: "quiet",
+        intervalMs: 60000,
+        roles: [],
+        identity: { kind: "user", login: "c3115644151", token: null },
+        sweep: null,
+      }),
+    );
+    writeFileSync(
+      join(root, ".work", "inbox-bridge", "state.json"),
+      JSON.stringify({ events: { "owner/one#run:1": { status: "pending", at: AT } } }),
+    );
+    writeFileSync(
+      join(root, ".work", "github-inbox", "state.json"),
+      JSON.stringify({
+        version: 2,
+        repos: {
+          "owner/one": { lastPoll: { at: new Date(Date.now() - 60_000).toISOString() } },
+          "owner/two": { lastPoll: { at: new Date(Date.now() - 90 * 60_000).toISOString() } },
+        },
+      }),
+    );
+
+    const report = describeDoctor(root, {
+      readGitRepo: () => null,
+      probeGh: (argv) => {
+        if (argv[0] === "api" && argv[1] === "user") return { ok: true, value: "c3115644151" };
+        const repo = String(argv[1] ?? "").replace(/^repos\//u, "");
+        return repo === "owner/two"
+          ? { ok: false, reason: "HTTP 404: Not Found" }
+          : { ok: true, value: repo };
+      },
+    });
+
+    const byId = Object.fromEntries(report.checks.map((check) => [check.id, check]));
+    assert.equal(byId.identity.status, "ok");
+    assert.equal(byId["repo:owner/one"].status, "ok");
+    assert.equal(byId["repo:owner/two"].status, "fail");
+    assert.match(byId["repo:owner/two"].detail, /没有被授权/u);
+    assert.equal(byId["poll:owner/one"].status, "ok");
+    assert.equal(byId["poll:owner/two"].status, "warn");
+    assert.match(byId["poll:owner/two"].title, /上次轮询在 90 分钟前/u);
+    assert.equal(byId.queue.status, "ok");
+    assert.equal(report.summary.fail, 1);
+
+    const text = formatDoctor(report);
+    assert.match(text, /fail  owner\/two 读不到/u);
+    assert.match(text, /fail 是“它现在确实做不到”/u);
+  });
+});
+
+test("doctor calls a lapsed App token a failure, not a warning", () => {
+  withWorkspace((root) => {
+    writeFileSync(
+      join(root, ".work", "inbox-bridge", "runtime.json"),
+      JSON.stringify({
+        cwd: root,
+        repos: ["owner/one"],
+        intervalMs: 60000,
+        identity: { kind: "app", login: "agent[bot]", token: "configured" },
+      }),
+    );
+    const report = describeDoctor(root, {
+      readGitRepo: () => null,
+      probeGh: () => ({ ok: false, reason: "HTTP 401: Bad credentials" }),
+    });
+    const identity = report.checks.find((check) => check.id === "identity");
+    assert.equal(identity.status, "fail");
+    assert.match(identity.detail, /安装令牌一小时过期/u);
+    assert.equal(report.summary.fail > 0, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// explain: why one key is (or is not) in front of an agent
+// ---------------------------------------------------------------------------
+
+test("explain says a role filter is what keeps a fact out of the session", () => {
+  withWorkspace((root) => {
+    writeFileSync(
+      join(root, ".work", "inbox-bridge", "runtime.json"),
+      JSON.stringify({
+        repos: ["owner/one"],
+        roles: ["author", "reviewer"],
+        delivery: "quiet",
+        wakeOn: [],
+      }),
+    );
+    writeFileSync(
+      join(root, ".work", "inbox-bridge", "state.json"),
+      JSON.stringify({ events: { "owner/one#pr:9:assignee:x": { status: "pending", at: AT } } }),
+    );
+    const info = explainKey(root, "owner/one#pr:9:assignee:x");
+    assert.equal(info.role, "assignee");
+    assert.equal(info.entry.status, "pending");
+    assert.match(info.verdict, /在队列里等投递/u);
+    assert.ok(info.notes.some((note) => /角色门槛挡住了它/u.test(note)));
+    assert.ok(info.notes.some((note) => /只注入模式/u.test(note)));
+    assert.match(formatExplanation(info), /key       owner\/one#pr:9:assignee:x/u);
+  });
+});
+
+test("explain names the repository that is not subscribed, and the next resurface", () => {
+  withWorkspace((root) => {
+    writeFileSync(
+      join(root, ".work", "inbox-bridge", "runtime.json"),
+      JSON.stringify({
+        repos: ["owner/one"],
+        roles: [],
+        delivery: "wakeup",
+        wakeOn: ["reviewer"],
+        wakeAfterIdleMs: 900000,
+        wakesPerHour: 2,
+        maxConsecutiveWakes: 3,
+      }),
+    );
+    writeFileSync(
+      join(root, ".work", "inbox-bridge", "state.json"),
+      JSON.stringify({
+        events: {
+          "owner/two#run:1": { status: "delivered", at: AT, attempts: 1, kind: "ci" },
+          "owner/one#pr:5:reviewer:review-requested": {
+            status: "delivered",
+            at: AT,
+            attempts: 2,
+            kind: "pr",
+          },
+        },
+      }),
+    );
+    const unsubscribed = explainKey(root, "owner/two#run:1");
+    assert.ok(unsubscribed.notes.some((note) => /不在这台实例的订阅里/u.test(note)));
+    assert.match(unsubscribed.next, /最早重提时间/u);
+
+    const twice = explainKey(root, "owner/one#pr:5:reviewer:review-requested");
+    assert.match(twice.next, /收口成 done/u);
+    assert.ok(twice.notes.some((note) => /命中 wakeOn/u.test(note)));
+  });
+});
+
+test("explain distinguishes never-reported from already-closed", () => {
+  withWorkspace((root) => {
+    writeFileSync(
+      join(root, ".work", "github-inbox", "state.json"),
+      JSON.stringify({
+        version: 2,
+        repos: { "owner/one": { seen: { "run:7": AT } } },
+      }),
+    );
+    assert.match(explainKey(root, "owner/one#run:7").verdict, /报过，但已经不在队列里/u);
+    assert.match(explainKey(root, "owner/one#run:8").verdict, /没有报出过它/u);
   });
 });

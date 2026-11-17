@@ -390,6 +390,348 @@ export function detectRepo(cwd) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// doctor / explain — what this install can and cannot see
+//
+// The failures that actually bit users were silent: a client module that never
+// registered, a notification scope that dropped the subscriptions, a schedule
+// that never fired while idle. None of them produced a line saying "I could
+// have done this and did not". These two commands answer that question without
+// changing any behaviour.
+// ---------------------------------------------------------------------------
+
+function probeGh(root, args) {
+  try {
+    const stdout = execFileSync("gh", args, {
+      cwd: root,
+      encoding: "utf8",
+      timeout: 20_000,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return { ok: true, value: String(stdout).trim() };
+  } catch (error) {
+    const stderr = typeof error?.stderr === "string" ? error.stderr : "";
+    const first = stderr.trim().split("\n")[0];
+    return {
+      ok: false,
+      reason: first || (error instanceof Error ? error.message : String(error)),
+    };
+  }
+}
+
+const DOCTOR_MARKS = { ok: "ok  ", warn: "warn", fail: "fail" };
+const ROLE_WORDS = new Set(["any", "author", "reviewer", "assignee", "mention", "ci"]);
+
+/**
+ * Check the install end to end: is the plugin running here, does its identity
+ * still work, can it read each subscribed repository, is each of them actually
+ * being polled, is the queue coherent, and is the sweep signed in.
+ * Every probe is injectable so the checks stay offline in tests.
+ */
+export function describeDoctor(root, options = {}) {
+  const readJson = options.readJson ?? readJsonFile;
+  const git = options.readGitRepo ?? detectRepo;
+  const gh = options.probeGh ?? ((argv) => probeGh(root, argv));
+  const now = options.now ?? Date.now();
+  const checks = [];
+  const add = (id, status, title, detail = null) => checks.push({ id, status, title, detail });
+
+  const runtime = readJson(resolve(root, RUNTIME_REL));
+  const source = readJson(resolve(root, SOURCE_STATE_REL));
+  const queue = readState(stateFileOf(root)).events ?? {};
+  const counts = { pending: 0, delivered: 0, done: 0 };
+  for (const entry of Object.values(queue)) {
+    if (entry?.status in counts) counts[entry.status] += 1;
+  }
+
+  if (!runtime) {
+    add(
+      "plugin",
+      "warn",
+      "插件还没在这个工作区运行过（没有 runtime.json）",
+      "在 DSH 里启用 inbox-bridge；如果 profile 的 cwd 指向别的目录，那个目录才是它的工作区",
+    );
+  } else {
+    add("plugin", "ok", `插件在这里运行过：${runtime.cwd ?? root}`);
+  }
+
+  const repos =
+    Array.isArray(runtime?.repos) && runtime.repos.length > 0
+      ? runtime.repos
+      : [options.repo ?? git(root)].filter(Boolean);
+
+  const identity = runtime?.identity ?? null;
+  if (!identity) {
+    add("identity", "warn", "还不知道插件用什么身份读 GitHub", "插件没运行过，或 runtime.json 里没有 identity");
+  } else if (identity.kind === "app") {
+    const live = gh(["api", "installation/repositories", "--jq", ".repositories | length"]);
+    if (live.ok) {
+      add(
+        "identity",
+        "ok",
+        `GitHub App 令牌现在有效（可列出 ${live.value} 个仓库）`,
+        "App 的安装令牌一小时过期。配置里写死一个令牌，过期后插件会安静地什么都不读——" +
+          "用 INBOX_IDENTITY_TOKEN 每轮换新令牌，或改用用户身份。",
+      );
+    } else {
+      add(
+        "identity",
+        "fail",
+        "GitHub App 令牌被拒绝",
+        `${live.reason} —— 安装令牌一小时过期，换一个新令牌再试`,
+      );
+    }
+  } else {
+    const who = gh(["api", "user", "--jq", ".login"]);
+    if (who.ok) {
+      const mismatch =
+        identity.login && identity.login !== who.value ? `runtime.json 记录的是 ${identity.login}` : null;
+      add("identity", "ok", `本机 gh 已登录为 ${who.value}`, mismatch);
+    } else {
+      add("identity", "fail", "本机 gh 没有可用的登录", who.reason);
+    }
+  }
+
+  if (repos.length === 0) {
+    add("repos", "fail", "没有订阅任何仓库", "在面板里添加仓库，或给 profile 写 repos: ['owner/name']");
+  }
+  for (const repo of repos) {
+    const result = gh(["api", `repos/${repo}`, "--jq", ".full_name"]);
+    if (result.ok) add(`repo:${repo}`, "ok", `${repo} 可读`);
+    else
+      add(
+        `repo:${repo}`,
+        "fail",
+        `${repo} 读不到`,
+        `${result.reason} —— 名字写错，或这个身份没有被授权（App 需要装到这个仓库上）`,
+      );
+  }
+
+  const intervalMs = Number(runtime?.intervalMs ?? 0);
+  const staleAfter = intervalMs > 0 ? intervalMs * 3 : 15 * 60 * 1000;
+  for (const repo of repos) {
+    const last = source?.repos?.[repo]?.lastPoll ?? null;
+    const at = Date.parse(last?.at ?? "");
+    if (!Number.isFinite(at)) {
+      add(
+        `poll:${repo}`,
+        "warn",
+        `${repo} 还没有轮询记录`,
+        "等下一次回合边界，或手动跑一次 node scripts/inbox-bridge.mjs list",
+      );
+      continue;
+    }
+    const age = Math.max(0, now - at);
+    const minutes = Math.round(age / 60_000);
+    if (age > staleAfter) {
+      add(
+        `poll:${repo}`,
+        "warn",
+        `${repo} 上次轮询在 ${minutes} 分钟前（间隔 ${Math.round(intervalMs / 60_000)} 分钟）`,
+        "插件可能停了，或这个仓库刚被加进订阅",
+      );
+    } else {
+      add(`poll:${repo}`, "ok", `${repo} 上次轮询在 ${minutes} 分钟前`);
+    }
+  }
+
+  const staleDelivered = Object.entries(queue).filter(([, entry]) => {
+    const at = Date.parse(entry?.at ?? "");
+    return entry?.status === "delivered" && Number.isFinite(at) && now - at > RESURFACE_MS;
+  });
+  add(
+    "queue",
+    staleDelivered.length > 0 ? "warn" : "ok",
+    `队列 pending ${counts.pending} · delivered ${counts.delivered} · done ${counts.done}`,
+    staleDelivered.length === 0
+      ? null
+      : `${staleDelivered.length} 条已投递但超过 6 小时没人收口（例如 ${staleDelivered[0][0]}）：` +
+          "它们到期会重提一次，然后自行收口；想立刻清掉用 ack --all-delivered",
+  );
+
+  if (!source) {
+    add("source", "warn", "还没有来源状态：这台机器还没轮询过 GitHub");
+  } else if (source.version !== 2 || typeof source.repos !== "object") {
+    add(
+      "source",
+      "warn",
+      "来源状态是旧格式（单仓库）",
+      "下一次轮询会把它升级成按仓库分片；在此之前 status 只显示一个仓库",
+    );
+  } else {
+    const names = Object.keys(source.repos);
+    add("source", "ok", `来源状态按仓库分片：${names.join(", ") || "（空）"}`);
+  }
+
+  if (runtime?.sweep && runtime.sweep !== "off" && runtime.sweep !== null) {
+    const cookies = join(resolve(root), ".work", "browser-profile", "Default", "Cookies");
+    const cli = join(dirname(fileURLToPath(import.meta.url)), "clear-inbox.mjs");
+    if (existsSync(cookies)) {
+      add(
+        "sweep",
+        "ok",
+        "清理收件箱用的浏览器配置里有登录痕迹",
+        "这只是痕迹，不代表会话还有效；真失效时日志会写 sweep needs a one-time sign-in",
+      );
+    } else {
+      add(
+        "sweep",
+        "warn",
+        "清理收件箱还没有登录过",
+        `运行一次 node "${cli}" --login，在那个窗口里登录 GitHub（一次即可，之后无头运行复用这个配置）`,
+      );
+    }
+  }
+
+  const summary = {
+    ok: checks.filter((check) => check.status === "ok").length,
+    warn: checks.filter((check) => check.status === "warn").length,
+    fail: checks.filter((check) => check.status === "fail").length,
+  };
+  return { at: new Date(now).toISOString(), root, repos, checks, summary };
+}
+
+export function formatDoctor(report) {
+  const lines = [];
+  for (const check of report.checks) {
+    lines.push(`${DOCTOR_MARKS[check.status] ?? "····"}  ${check.title}`);
+    if (check.detail) {
+      for (const line of String(check.detail).split("\n")) lines.push(`      ${line}`);
+    }
+  }
+  const { ok, warn, fail } = report.summary;
+  lines.push("", `${ok} ok · ${warn} warn · ${fail} fail`);
+  lines.push(
+    fail > 0
+      ? "fail 是“它现在确实做不到”：先修它，否则队列会一直是空的。"
+      : warn > 0
+        ? "warn 是“可能让你疑惑，但还不一定坏”：多数是还没发生的事。"
+        : "没有发现问题。",
+  );
+  return lines.join("\n");
+}
+
+/**
+ * Why one key is (or is not) in front of an agent. Reads only local state, so
+ * it is safe to run at any time; the delivery decision is reconstructed from
+ * runtime.json (identity, repositories, roles, delivery) and the queue.
+ */
+export function explainKey(root, key, options = {}) {
+  const readJson = options.readJson ?? readJsonFile;
+  const now = options.now ?? Date.now();
+  const runtime = readJson(resolve(root, RUNTIME_REL));
+  const source = readJson(resolve(root, SOURCE_STATE_REL));
+  const queue = readState(stateFileOf(root)).events ?? {};
+  const cut = typeof key === "string" ? key.indexOf("#") : -1;
+  const repo = cut > 0 ? key.slice(0, cut) : null;
+  const inner = cut > 0 ? key.slice(cut + 1) : String(key ?? "");
+  const entry = queue[key] ?? null;
+  const slice =
+    repo && source?.repos && typeof source.repos === "object" ? (source.repos[repo] ?? null) : null;
+  const seenAt = slice?.seen?.[inner] ?? slice?.seen?.[key] ?? null;
+  const role = inner.split(":").find((part) => ROLE_WORDS.has(part)) ?? null;
+  const subscribed =
+    Array.isArray(runtime?.repos) && runtime.repos.length > 0 ? runtime.repos.includes(repo) : null;
+  const roleFilter = Array.isArray(runtime?.roles) ? runtime.roles : [];
+  const wakes = Array.isArray(runtime?.wakeOn) ? runtime.wakeOn : [];
+
+  const notes = [];
+  if (repo && subscribed === false) {
+    notes.push(
+      `这个仓库不在这台实例的订阅里（repos: ${runtime.repos.join(", ") || "空"}），所以它永远不会被投递`,
+    );
+  }
+  if (role && roleFilter.length > 0 && role !== "any" && !roleFilter.includes(role)) {
+    notes.push(`角色门槛挡住了它：roles 只收 ${roleFilter.join(" / ")}，而它是 ${role}`);
+  }
+  if (entry || seenAt) {
+    if (role && runtime?.delivery === "wakeup") {
+      if (wakes.includes(role) || wakes.includes("any")) {
+        notes.push(
+          `命中 wakeOn：会话空闲满 ${Math.round((runtime.wakeAfterIdleMs ?? 0) / 60_000)} 分钟后` +
+            `可以替你开一轮（每会话 ${runtime.maxConsecutiveWakes} 次、每小时 ${runtime.wakesPerHour} 次）`,
+        );
+      } else {
+        notes.push(`wakeOn 里没有 ${role}，所以它只排队，等你下一次发消息时才进入上下文`);
+      }
+    }
+    if (runtime?.delivery && runtime.delivery !== "wakeup") {
+      notes.push("当前是只注入模式：会随你下一次发消息进入上下文，不会替你开轮");
+    }
+  }
+  if (!runtime) notes.push("插件还没在这个工作区运行过（没有 runtime.json），下面的判断只基于本地状态");
+  if (!slice && repo) notes.push(`来源状态里没有 ${repo} 的分片：这台实例还没有轮询过它`);
+
+  let verdict;
+  let next;
+  if (entry) {
+    const status = entry.status;
+    const at = entry.at ?? null;
+    if (status === "pending") {
+      verdict = "在队列里等投递";
+      next = "下一次轮询（回合开始 / 进行中 / 结束）会把它交给仓库匹配的会话";
+    } else if (status === "delivered") {
+      const attempts = entry.attempts ?? 1;
+      verdict = `已投递 ${attempts} 次`;
+      const due = Date.parse(at ?? "");
+      if (attempts >= 2) {
+        next = "已经重提过一次仍没人处理，下一次轮询会把它收口成 done";
+      } else {
+        next =
+          "6 小时内没人收口的话会再提一次，第二次之后自动收口" +
+          (Number.isFinite(due) ? `；最早重提时间 ${new Date(due + RESURFACE_MS).toISOString()}` : "");
+      }
+    } else {
+      verdict = "已收口（done）";
+      next = "不会再被通知；事实仍然成立的话，只有 key 变化（新的失败、新的评审决定）才会重新出现";
+    }
+    if (repo && !seenAt && slice) next += "；来源这次没有报出它，下一次轮询会把它收口";
+  } else if (seenAt) {
+    verdict = "报过，但已经不在队列里";
+    next = "它被收口了：事实不再成立，或被显式 ack";
+  } else {
+    verdict = "这台实例没有报出过它";
+    next = "key 拼写不对，或者它来自别的仓库 / 别的身份";
+  }
+
+  return {
+    at: new Date(now).toISOString(),
+    key,
+    repo,
+    inner,
+    role,
+    entry,
+    seenAt,
+    runtime: runtime
+      ? { delivery: runtime.delivery, repos: runtime.repos ?? [], roles: roleFilter, wakeOn: wakes }
+      : null,
+    verdict,
+    next,
+    notes,
+  };
+}
+
+export function formatExplanation(info) {
+  const lines = [`key       ${info.key}`];
+  if (info.repo) lines.push(`repo      ${info.repo}`);
+  if (info.role) lines.push(`role      ${info.role}`);
+  if (info.entry) {
+    const attempts = info.entry.attempts ? `（投递 ${info.entry.attempts} 次）` : "";
+    lines.push(`status    ${info.entry.status}${attempts} · ${info.entry.at ?? "时间未知"}`);
+  } else if (info.seenAt) {
+    lines.push(`status    收口过 · 首次出现 ${info.seenAt}`);
+  } else {
+    lines.push("status    队列与来源状态里都没有它");
+  }
+  lines.push("", info.verdict, info.next);
+  if (info.notes.length > 0) {
+    lines.push("", "还要注意：");
+    for (const note of info.notes) lines.push(`  - ${note}`);
+  }
+  return lines.join("\n");
+}
+
 function main(argv) {
   const root = process.cwd();
   const stateFile = stateFileOf(root);
@@ -439,6 +781,25 @@ function main(argv) {
     return 0;
   }
 
+  if (command === "doctor") {
+    const report = describeDoctor(root, { repo });
+    process.stdout.write(`${json ? JSON.stringify(report, null, 2) : formatDoctor(report)}\n`);
+    // A failing check is a real "it cannot work": say so in the exit code so a
+    // script (or an agent) can tell "healthy" from "looks fine but isn't".
+    return report.summary.fail > 0 ? 1 : 0;
+  }
+
+  if (command === "explain") {
+    const key = flags.find((flag) => !flag.startsWith("--"));
+    if (!key) {
+      process.stderr.write("usage: node scripts/inbox-bridge.mjs explain <key>\n");
+      return 2;
+    }
+    const info = explainKey(root, key);
+    process.stdout.write(`${json ? JSON.stringify(info, null, 2) : formatExplanation(info)}\n`);
+    return 0;
+  }
+
   if (command === "list") {
     const result = pollOnce(root, { at, repo });
     if (result.skipped) {
@@ -478,7 +839,9 @@ function main(argv) {
   }
 
   process.stderr.write(
-    "usage: node scripts/inbox-bridge.mjs [poll|list|status|ack] [--json] [--done] [--all-delivered]\n" +
+    "usage: node scripts/inbox-bridge.mjs [poll|list|status|doctor|explain|ack] [--json] [--done] [--all-delivered]\n" +
+      "       doctor 体检：身份、仓库可读、轮询新鲜度、队列自洽、清理是否登录（有 fail 时退出码 1）\n" +
+      "       explain <key>：这条事实现在在哪一态、会被谁收到、被哪道门挡住\n" +
       "       ack 收口：`ack --done -- <key>`；只写 `--done` 之前的写法会被包装脚本吞掉\n",
   );
   return 2;

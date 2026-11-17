@@ -17,6 +17,7 @@ import {
   extractNotificationEvents,
   extractPrEvents,
   extractRunEvents,
+  extractSecurityEvents,
   filterRuns,
   formatEvent,
   mentionsLogin,
@@ -883,4 +884,108 @@ test("clearing off never touches the threads", () => {
   });
   assert.equal(called, false);
   assert.deepEqual(result.cleared, []);
+});
+
+// ---------------------------------------------------------------------------
+// Pull requests that cannot merge, and security advisories
+// ---------------------------------------------------------------------------
+
+test("a conflicted pull request is work even when nothing failed", () => {
+  const author = { login: ME };
+  const conflicted = extractPrEvents(
+    [
+      {
+        number: 12,
+        title: "feat: land the thing",
+        author,
+        reviewRequests: [],
+        assignees: [],
+        reviewDecision: "",
+        mergeStateStatus: "DIRTY",
+        statusCheckRollup: [{ name: "verify", conclusion: "SUCCESS" }],
+      },
+    ],
+    { me: ME },
+  );
+  assert.equal(conflicted.length, 1);
+  assert.match(formatEvent(conflicted[0]), /merge conflict with the base branch/u);
+  assert.match(conflicted[0].key, /\|merge:DIRTY$/u);
+
+  const behind = extractPrEvents(
+    [{ number: 13, title: "x", author, reviewDecision: "", mergeStateStatus: "BEHIND" }],
+    { me: ME },
+  );
+  assert.match(formatEvent(behind[0]), /behind the base branch/u);
+  assert.match(behind[0].key, /\|merge:BEHIND$/u);
+
+  // A reviewer reading a conflicted PR has nothing to do about the conflict:
+  // the review request is the task, and the merge state must not enter its key.
+  const asReviewer = extractPrEvents(
+    [
+      {
+        number: 14,
+        title: "x",
+        author: { login: "someone-else" },
+        reviewRequests: [{ login: ME }],
+        mergeStateStatus: "DIRTY",
+      },
+    ],
+    { me: ME },
+  );
+  assert.equal(asReviewer.length, 1);
+  assert.equal(asReviewer[0].key, "pr:14:reviewer:review-requested");
+  assert.deepEqual(asReviewer[0].reasons, ["review requested from you"]);
+});
+
+test("a clean pull request keeps the digest it had before", () => {
+  const clean = pullRequest({ mergeStateStatus: "CLEAN" });
+  assert.equal(prStatusDigest(clean), prStatusDigest(pullRequest()));
+});
+
+test("open security advisories are events keyed by the alert number", () => {
+  const alerts = [
+    {
+      source: "dependabot",
+      alert: {
+        number: 3,
+        html_url: "https://github.com/owner/repo/security/dependabot/3",
+        security_advisory: { severity: "high", summary: "Prototype pollution in foo" },
+        dependency: { package: { name: "foo" } },
+        updated_at: "2026-11-16T09:00:00Z",
+      },
+    },
+    {
+      source: "code-scanning",
+      alert: {
+        number: 7,
+        html_url: "https://github.com/owner/repo/security/code-scanning/7",
+        rule: { description: "Unvalidated input reaches the shell" },
+        most_recent_instance: { location: { path: "scripts/run.mjs" } },
+      },
+    },
+  ];
+  const events = extractSecurityEvents(alerts);
+  assert.deepEqual(
+    events.map((event) => event.key),
+    ["dependabot:3", "code-scanning:7"],
+  );
+  assert.equal(events[0].kind, "security");
+  assert.equal(events[0].role, "any");
+  assert.match(formatEvent(events[0]), /^\[Dependabot\] foo #3: high Prototype pollution/u);
+  assert.match(formatEvent(events[1]), /^\[Code scanning\] scripts\/run\.mjs #7: Unvalidated/u);
+});
+
+test("a repository without Dependabot still polls the rest", () => {
+  const result = pollOnce({
+    state: normalizeState({}),
+    ...sources({ runs: [run()] }),
+    fetchSecurity: () => ({
+      alerts: [],
+      notes: ["dependabot unavailable (HTTP 403: Resource not accessible by integration)"],
+    }),
+    now: new Date("2026-11-15T04:00:00Z"),
+  });
+  assert.equal(result.skipped, undefined);
+  assert.equal(result.fresh.length, 1);
+  assert.match(result.securityNotes[0], /dependabot unavailable/u);
 });

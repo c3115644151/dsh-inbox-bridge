@@ -321,7 +321,7 @@ export function apply(ctx, config) {
     for (const event of events) {
       recent.delete(event.key);
       recent.set(event.key, {
-        kind: event.kind ?? null,
+        kind: event.label ?? event.kind ?? null,
         role: event.role ?? null,
         title: event.title ?? null,
         url: event.url ?? null,
@@ -1362,7 +1362,7 @@ export function buildMessage(count, text, label = "外部收件箱") {
 }
 
 function describeEvent(event) {
-  const kind = event.kind ?? "event";
+  const kind = event.label ?? event.kind ?? "event";
   const role = event.role && event.role !== "any" && event.role !== "ci" ? `/${event.role}` : "";
   const ref = event.ref ? `${event.ref} ` : "";
   const url = event.url ? ` ${event.url}` : "";

@@ -26,6 +26,7 @@
 - **按身份判断相关性。** 用 `gh` 的登录身份（或配置的 App 身份）查询仓库，只保留以你为作者、评审人、指派对象或提及对象的事件；其他 PR 的检查失败、无关仓库的变动不会进入队列。
 - **只看仓库，不看通知箱。** GitHub 的通知箱（`/notifications`）按账号推送，无法区分是哪个会话、哪个仓库；这里直接查仓库状态，因此同一个账号下的两个仓库互不干扰。
 - **轮询跟随回合。** 会话开始时一次、进行中每 1 分钟一次、结束时一次，空闲会话不发请求；开启 `delivery: wakeup` 后空闲时也按同一间隔读一次，否则它没机会在你不在时叫醒你。
+- **也看安全与合并状态。** 开着的 Dependabot 告警、code scanning 告警，以及我这些 PR 与基分支的冲突或落后，和 CI 失败一样是要紧的事。
 - **送进上下文，必要时才开一轮。** 默认只在这一轮的下一次安全注入点进入会话，不打断工具循环；开启 `delivery: wakeup` 后，只有命中 `wakeOn` 的角色、会话空闲满 15 分钟、每会话连续不超过 3 次、每小时不超过 2 次时才主动开一轮，其余情况仍然排队。送达后标为 `delivered`，未处理的 6 小时后重新提醒一次。
 
 ## 你会看到什么
@@ -38,7 +39,7 @@
 >
 > 只在它影响当前工作时处理；处理完运行 `node "...\dsh-inbox-bridge\scripts\inbox-bridge.mjs" ack --done -- <key>` 标记完成。
 
-方括号里是事件与该身份的关系：`reviewer` 表示你是评审人，`author` 表示你是作者，`assignee` 表示指派给你，`mention` 表示评论中提到你。处理完执行提示里的 `ack` 命令；未 ack 的事件在 6 小时后重新提示，不会重复累积。
+`[Dependabot]` 表示一条开着的依赖告警，`[Code scanning]` 表示一条开着的代码告警。方括号里其余部分是该事件与该身份的关系：`reviewer` 表示你是评审人，`author` 表示你是作者，`assignee` 表示指派给你，`mention` 表示评论中提到你。处理完执行提示里的 `ack` 命令；未 ack 的事件在 6 小时后重新提示，不会重复累积。
 
 ## 界面
 
@@ -78,6 +79,8 @@ dsh plugin add dsh-inbox-bridge
 三条路装的是同一个包，版本见 [npm](https://www.npmjs.com/package/dsh-inbox-bridge)。
 
 安装后在插件配置里指定工作目录 `cwd`。仓库名与身份都从该目录的 `git remote` 与 `gh` 读取，不需要另外填写。
+
+想确认它到底能看见什么：`node scripts/inbox-bridge.mjs doctor` 逐项检查身份、仓库可读性、每个仓库的上次轮询与队列；某件事没到眼前，用 `node scripts/inbox-bridge.mjs explain <key>` 看它卡在哪一步。
 
 ## 配置
 

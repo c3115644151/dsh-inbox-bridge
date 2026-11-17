@@ -93,6 +93,8 @@ node scripts/inbox-bridge.mjs status            # 仓库、身份、角色、投
 node scripts/inbox-bridge.mjs poll              # 立刻抓一次
 node scripts/inbox-bridge.mjs ack --done -- <key>   # 划掉一条，并停止提醒
 node scripts/inbox-bridge.mjs ack --all-delivered --done   # 把所有 delivered 一次划掉
+node scripts/inbox-bridge.mjs doctor            # 逐项自检：身份、仓库可读性、上次轮询、队列、归档登录
+node scripts/inbox-bridge.mjs explain <key>     # 某件事走到哪一步了，为什么没到你眼前   # 把所有 delivered 一次划掉
 ```
 
 `ack` 不带 `--done` 只把它们标成 delivered，意思是「给过了但还没处理」——6 小时后会再提。经 `npm run` 转发时，`--done` 必须写在 `--` 之后，否则被 npm 吞掉。
