@@ -401,13 +401,22 @@ export function apply(ctx, config) {
         }
       : null;
     // A repository can be watched by several sessions in the same directory, and
-    // a wakeup has to reach the one the person named. The page can only offer
-    // that choice if it knows who else is watching.
+    // a wakeup has to reach the one the person means. Two sessions in one
+    // workspace have the same title and the same folder, so each name carries the
+    // last four characters of its id — the only thing that really tells them
+    // apart — and the page marks which one is asking and which one would take a
+    // wakeup right now.
     const viewers = repo
       ? [...agents.entries()]
-          .map(([id, each]) => ({ id, label: sessionLabel(each), repo: repoOf(each) }))
+          .map(([id, each]) => ({
+            id,
+            label: sessionLabel(each),
+            tag: sessionTag(each),
+            repo: repoOf(each),
+            recent: lastActive.get(each) ?? 0,
+            current: id === sessionId,
+          }))
           .filter((entry) => entry.repo && entry.repo.toLowerCase() === repo.toLowerCase())
-          .map(({ id, label }) => ({ id, label }))
       : [];
     return {
       ...buildUiPayload({
@@ -1067,8 +1076,9 @@ export function wakePlan(batches, options, state = {}) {
   // Opening a turn is expensive and public: whoever gets it suddenly starts
   // working. Several sessions can share one workspace, and then they all watch
   // the same repository, so "the session on this repository" is not an answer.
-  // A repository therefore wakes its responsible session — claimed in the page —
-  // and stays silent while more than one session watches it without a claim.
+  // Every repository therefore has exactly one owner: the one you claimed in the
+  // page, or — when nothing is claimed — the session you spoke to most recently,
+  // which is the one you were working in when you walked away.
   const watchers = new Map();
   for (const [agent, events] of batches ?? []) {
     for (const event of events) {
@@ -1077,6 +1087,22 @@ export function wakePlan(batches, options, state = {}) {
       watchers.get(repo).add(agent);
     }
   }
+
+  const ownerOf = (repo) => {
+    const claimed = primary[repo] ?? null;
+    if (claimed) return claimed;
+    let best = null;
+    let bestAt = -1;
+    for (const watcher of watchers.get(repo) ?? []) {
+      const at = lastActive.get(watcher) ?? 0;
+      const name = keyOf(watcher) ?? "";
+      if (at > bestAt || (at === bestAt && best && name < (keyOf(best) ?? ""))) {
+        best = watcher;
+        bestAt = at;
+      }
+    }
+    return best ? (keyOf(best) ?? null) : null;
+  };
 
   const recentWakes = wakes.filter((at) => now - at < 60 * 60 * 1000).length;
   let considered = 0;
@@ -1087,14 +1113,13 @@ export function wakePlan(batches, options, state = {}) {
       if (!wakeOn.includes(role)) continue;
       considered += 1;
       const repo = event.repo ?? "";
-      const owner = primary[repo] ?? null;
       const key = keyOf(agent);
+      const owner = ownerOf(repo);
       if (owner && key !== owner) {
-        why = "not-primary";
-        continue;
-      }
-      if (!owner && (watchers.get(repo)?.size ?? 0) > 1) {
-        why = "ambiguous";
+        // An explicit claim is a decision the operator made; falling back to
+        // "most recent" silently would break it. The default is not a decision,
+        // so it is allowed to move as you move between sessions.
+        why = primary[repo] ? "not-primary" : "not-recent";
         continue;
       }
       if (recentWakes >= perHour) {
@@ -1118,12 +1143,23 @@ export function wakePlan(batches, options, state = {}) {
 /** A stable, human-readable name for a session in the log. */
 export function sessionLabel(agent) {
   const header = agent?.session?.header ?? {};
-  const cwd = header.cwd ?? header.title ?? null;
+  // The title is what the session list shows ("主维护", "本地修复"); a workspace
+  // path is a fallback, and two sessions in one workspace then read the same —
+  // which is why the page adds a short id to every name it offers.
+  const title = typeof header.title === "string" ? header.title.trim() : "";
+  if (title.length > 0) return title;
+  const cwd = header.cwd ?? null;
   if (typeof cwd === "string" && cwd.length > 0) {
     const parts = cwd.replace(/[\\/]+$/u, "").split(/[\\/]/u);
     return parts[parts.length - 1] || cwd;
   }
   return agent?.session?.id ?? "session";
+}
+
+/** The last four characters of a session id: enough to tell twins apart. */
+export function sessionTag(agent) {
+  const id = keyOf(agent) ?? "";
+  return id.length > 4 ? id.slice(-4) : id;
 }
 
 /** `owner/name` a session workspace points at, cached for a short while. */
@@ -1572,6 +1608,16 @@ export function buildUiPayload({
     return hit ? claims[hit] : null;
   };
   const sessionRepo = scoped ? (session.repo ?? repos[0] ?? null) : null;
+  // The session that would receive a wakeup for this repository right now: the
+  // claimed one, or — with nothing claimed — the one you spoke to most recently.
+  // The page shows both facts so "nobody is woken" is never a mystery.
+  const watchers = (viewers ?? []).filter((entry) => entry?.id);
+  const claimed = ownerOf(sessionRepo);
+  const recentViewer = watchers.reduce(
+    (best, entry) => ((entry.recent ?? 0) > (best?.recent ?? -1) ? entry : best),
+    null,
+  );
+  const effectiveOwner = claimed ?? recentViewer?.id ?? null;
   return {
     at: new Date(now).toISOString(),
     label: options.label ?? DEFAULTS.label,
@@ -1597,11 +1643,14 @@ export function buildUiPayload({
       on: options.wakeOn ?? [],
       idleMs: options.wakeAfterIdleMs ?? DEFAULTS.wakeAfterIdleMs,
       perHour: options.wakesPerHour ?? DEFAULTS.wakesPerHour,
-      primary: ownerOf(sessionRepo),
-      // Who else is watching this repository, and which of them owns it today.
-      viewers: (viewers ?? []).map((entry) => ({
+      primary: claimed,
+      owner: effectiveOwner,
+      // Who is watching this repository, which of them would take a wakeup, and
+      // which one is asking the question.
+      viewers: watchers.map((entry) => ({
         ...entry,
-        primary: ownerOf(sessionRepo) === entry.id,
+        primary: claimed === entry.id,
+        owner: effectiveOwner === entry.id,
       })),
     },
     queue: counts,

@@ -133,8 +133,11 @@ window.__ModuleLoader__.load({
           signInOpen: "打开登录窗口",
           signInTip: "在插件自己的浏览器配置里登录一次；之后归档会自动运行，失效时会再打开这个窗口。",
           owner: "谁来接",
-          ownerTip: "这个仓库的唤醒落到哪个会话。多个会话在看同一仓库时，没指定就不会叫任何人。",
+          ownerTip: "已指定：这个仓库的唤醒只落到这一个会话。再点一次交回默认。",
+          ownerAutoTip: "没有指定：由最近跟你说话的那个会话接；点一下可以固定成别的会话。",
           ownerReleaseTip: "再点一次取消指定",
+          ownerTakesTip: "现在由它接",
+          ownerCurrent: "你正在这个会话里",
           idle: "空闲多久",
           idleTip: "会话安静满这么长时间，才允许唤醒；否则只把事件留下等下一轮。",
           minute1: "1 分钟",
@@ -199,8 +202,11 @@ window.__ModuleLoader__.load({
           signInOpen: "open sign-in",
           signInTip: "Sign in once in this plugin's own browser profile; afterwards archiving runs on its own and reopens this window if the session expires.",
           owner: "who takes it",
-          ownerTip: "Which session a wakeup for this repository reaches. With several sessions watching one repository, nobody is woken until you name one.",
+          ownerTip: "Pinned: a wakeup for this repository reaches only this session. Click again to hand it back.",
+          ownerAutoTip: "Not pinned: the session you spoke to most recently takes it. Click to fix another one.",
           ownerReleaseTip: "click again to clear",
+          ownerTakesTip: "takes it now",
+          ownerCurrent: "this is the session you are in",
           idle: "quiet for",
           idleTip: "A session must be this quiet before a wakeup may open a turn; otherwise the event waits for a later poll.",
           minute1: "1 min",
@@ -528,6 +534,13 @@ window.__ModuleLoader__.load({
         background: "var(--dsw-specific-menu, var(--dsw-alias-interactive-bg-hover))",
         color: "var(--dsw-alias-label-primary)",
       },
+      // A pinned owner is a decision, not a default: say so with a weight the
+      // hover-only background cannot express.
+      segPinned: {
+        fontWeight: 600,
+        textDecoration: "underline",
+        textUnderlineOffset: "3px",
+      },
       repos: {
         display: "flex",
         flexWrap: "wrap",
@@ -808,14 +821,23 @@ window.__ModuleLoader__.load({
             "mode",
           ),
         ),
-        // A wakeup has to reach one session. When several sessions watch the same
-        // repository only the person can say which one is responsible, so the
-        // choice belongs next to the switch that makes wakeups possible at all.
-        status.delivery === "wakeup" && sessionRepo && (status.wake?.viewers?.length ?? 0) > 1
+        // A wakeup has to reach one session. Two sessions in the same workspace look
+        // alike — same title, same folder — so every name carries the four
+        // characters of its id that differ, and the one that would take the wakeup
+        // right now is marked. Clicking pins a different one; clicking the pinned
+        // one hands the choice back to "whoever you spoke to last".
+        status.delivery === "wakeup" && sessionRepo && (status.wake?.viewers?.length ?? 0) > 0
           ? h(
               "div",
               { style: styles.controlRow },
-              h("span", { style: styles.controlLabel, title: pick.ownerTip }, pick.owner),
+              h(
+                "span",
+                {
+                  style: styles.controlLabel,
+                  title: status.wake?.primary ? pick.ownerTip : pick.ownerAutoTip,
+                },
+                pick.owner,
+              ),
               h(
                 "div",
                 { style: styles.ownerList },
@@ -827,11 +849,23 @@ window.__ModuleLoader__.load({
                       type: "button",
                       disabled: busy,
                       "aria-pressed": Boolean(viewer.primary),
-                      title: viewer.primary ? `${viewer.label} · ${pick.ownerReleaseTip}` : viewer.label,
-                      onClick: () => void send("primary", viewer.primary ? "" : sessionRepo, viewer.id),
-                      style: { ...styles.seg, ...(viewer.primary ? styles.segOn : {}) },
+                      title: [
+                        `${viewer.label} · ${viewer.tag}`,
+                        viewer.current ? pick.ownerCurrent : "",
+                        viewer.primary ? pick.ownerReleaseTip : "",
+                        viewer.owner ? pick.ownerTakesTip : "",
+                      ]
+                        .filter(Boolean)
+                        .join(" — "),
+                      onClick: () =>
+                        void send("primary", viewer.primary ? "" : sessionRepo, viewer.id),
+                      style: {
+                        ...styles.seg,
+                        ...(viewer.owner ? styles.segOn : {}),
+                        ...(viewer.primary ? styles.segPinned : {}),
+                      },
                     },
-                    viewer.label,
+                    `${viewer.label} · ${viewer.tag}`,
                   ),
                 ),
               ),

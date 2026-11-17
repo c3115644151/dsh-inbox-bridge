@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { buildMessage, buildUiPayload, deliver, deliveryTargets, detectRepo, filterUndelivered, formatEvents, matchesWatch, mergeConfig, pollLabel, preferenceNext, repoFromInput, repoOf, wakePlan } from "./index.js";
+import { buildMessage, buildUiPayload, deliver, deliveryTargets, detectRepo, filterUndelivered, formatEvents, matchesWatch, mergeConfig, pollLabel, preferenceNext, repoFromInput, repoOf, sessionLabel, sessionTag, wakePlan } from "./index.js";
 
 const idle = { status: "idle" };
 const running = { status: "running" };
@@ -1082,7 +1082,7 @@ test("the page can name the session that owns a repository, and tune the wakeup"
   assert.equal(preferenceNext({}, "budget", "2.5", {}), null);
 });
 
-test("the page is told who watches the repository and who owns it", () => {
+test("the page is told who watches the repository and who takes it", () => {
   const payload = buildUiPayload({
     options: mergeConfig({
       repos: ["owner/one"],
@@ -1092,26 +1092,46 @@ test("the page is told who watches the repository and who owns it", () => {
     }),
     session: { id: "session-a", repo: "owner/one", repos: ["owner/one"], roles: [] },
     viewers: [
-      { id: "session-a", label: "one" },
-      { id: "session-b", label: "two" },
+      { id: "session-a", label: "noema", tag: "aaaa", recent: 500, current: true },
+      { id: "session-b", label: "noema", tag: "bbbb", recent: 900, current: false },
     ],
   });
   assert.deepEqual(payload.wake.on, ["author"]);
   assert.equal(payload.wake.idleMs, 900_000);
   assert.equal(payload.wake.perHour, 2);
+  // A pin is both the claim and the effective owner.
   assert.equal(payload.wake.primary, "session-b");
+  assert.equal(payload.wake.owner, "session-b");
   assert.deepEqual(payload.wake.viewers, [
-    { id: "session-a", label: "one", primary: false },
-    { id: "session-b", label: "two", primary: true },
+    { id: "session-a", label: "noema", tag: "aaaa", recent: 500, current: true, primary: false, owner: false },
+    { id: "session-b", label: "noema", tag: "bbbb", recent: 900, current: false, primary: true, owner: true },
   ]);
+
+  // Without a pin the most recently used session takes it — and the page can say
+  // so instead of leaving "who is woken" unanswered.
+  const auto = buildUiPayload({
+    options: mergeConfig({ repos: ["owner/one"], delivery: "wakeup", wakeOn: ["author"] }),
+    session: { id: "session-a", repo: "owner/one", repos: ["owner/one"], roles: [] },
+    viewers: [
+      { id: "session-a", label: "noema", tag: "aaaa", recent: 500, current: true },
+      { id: "session-b", label: "noema", tag: "bbbb", recent: 900, current: false },
+    ],
+  });
+  assert.equal(auto.wake.primary, null);
+  assert.equal(auto.wake.owner, "session-b");
+  assert.deepEqual(
+    auto.wake.viewers.map((viewer) => viewer.owner),
+    [false, true],
+  );
 
   // Nobody watching means nothing to choose between, and no owner.
   const alone = buildUiPayload({ options: mergeConfig({ repo: "owner/one" }), viewers: [] });
   assert.equal(alone.wake.primary, null);
+  assert.equal(alone.wake.owner, null);
   assert.deepEqual(alone.wake.viewers, []);
 });
 
-test("a repository with two watching sessions wakes none of them until one is responsible", () => {
+test("the session you spoke to last takes a shared repository, unless you pin another", () => {
   const first = { session: { id: "session-a" } };
   const second = { session: { id: "session-b" } };
   const event = (role) => ({ key: "k", role, repo: "owner/one" });
@@ -1132,22 +1152,67 @@ test("a repository with two watching sessions wakes none of them until one is re
     [second, now - 120_000],
   ]);
 
-  // Both sessions watch the same repository, so neither may be chosen for it.
-  const ambiguous = wakePlan(batches, base, { now, lastActive: quiet });
-  assert.equal(ambiguous.agent, null);
-  assert.equal(ambiguous.why, "ambiguous");
+  // Two sessions watch one repository: the default is the one you were last in,
+  // so a wakeup still lands somewhere instead of nobody being told.
+  const recent = new Map([
+    [first, now - 120_000],
+    [second, now - 90_000],
+  ]);
+  const auto = wakePlan(batches, base, { now, lastActive: recent });
+  assert.equal(auto.agent, second);
+  assert.equal(auto.why, "ok");
 
-  // Claiming the repository names exactly one session.
-  const claimed = wakePlan(batches, base, { now, lastActive: quiet, primary: { "owner/one": "session-b" } });
+  // The other one is told why it was not chosen — the log has to say it. Here the
+  // recent session only has a fact this repository was not asked to wake for, so
+  // the remaining event is held rather than handed to the wrong session.
+  const mirrored = new Map([
+    [first, now - 90_000],
+    [second, now - 120_000],
+  ]);
+  const looked = wakePlan(
+    new Map([
+      [first, [event("mention")]],
+      [second, [event("author")]],
+    ]),
+    base,
+    { now, lastActive: mirrored },
+  );
+  assert.equal(looked.agent, null);
+  assert.equal(looked.why, "not-recent");
+
+  // Pinning a session overrides recency in both directions.
+  const claimed = wakePlan(batches, base, {
+    now,
+    lastActive: mirrored,
+    primary: { "owner/one": "session-b" },
+  });
   assert.equal(claimed.agent, second);
   assert.equal(claimed.why, "ok");
 
-  // A claim held by someone else keeps this repository quiet.
-  const foreign = wakePlan(batches, base, { now, lastActive: quiet, primary: { "owner/one": "session-z" } });
+  // A pin held by someone else keeps this repository quiet for everyone else.
+  const foreign = wakePlan(batches, base, {
+    now,
+    lastActive: mirrored,
+    primary: { "owner/one": "session-z" },
+  });
   assert.equal(foreign.agent, null);
   assert.equal(foreign.why, "not-primary");
 
   // One session per repository needs no claim at all.
   const alone = wakePlan(new Map([[first, [event("author")]]]), base, { now, lastActive: quiet });
   assert.equal(alone.agent, first);
+});
+
+test("sessions in one workspace are told apart by a short id", () => {
+  const twin = { session: { id: "session-1111aaaa", header: { title: "noema", cwd: "C:\\Users\\NUC\\Desktop\\noema" } } };
+  const other = { session: { id: "session-2222bbbb", header: { cwd: "C:\\Users\\NUC\\Desktop\\noema" } } };
+
+  // The title is what the session list shows, so it is the name people recognise.
+  assert.equal(sessionLabel(twin), "noema");
+  // Without a title the folder is all there is — and both twins share it.
+  assert.equal(sessionLabel(other), "noema");
+  // The id tail is what makes the two choices distinguishable at all.
+  assert.equal(sessionTag(twin), "aaaa");
+  assert.equal(sessionTag(other), "bbbb");
+  assert.notEqual(`${sessionLabel(twin)} · ${sessionTag(twin)}`, `${sessionLabel(other)} · ${sessionTag(other)}`);
 });

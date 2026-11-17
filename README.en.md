@@ -48,7 +48,7 @@ The status row under the composer carries a chip: when something is waiting, a b
 
 - the events: role, repository, title (link), time;
 - the identity and the last poll;
-- four controls: delivery (queue only / may wake), who takes it (when several sessions watch the same repository, say which one may be woken; a lone watcher owns it by itself), the rhythm (how idle is idle: 1 / 5 / 15 minutes; wakes per hour: 1 / 2 / 4), message clearing (off / mark read / archive to Done — one choice), and which repositories this session subscribes to (paste a repository link or type `owner/name`; one list per session).
+- four controls: delivery (queue only / may wake), who takes it (when several sessions watch the same repository, each is listed with the short id tail that tells same-named twins apart, and the one that would take the wakeup is marked — the default is whichever you spoke to last, one click pins another), the rhythm (how idle is idle: 1 / 5 / 15 minutes; wakes per hour: 1 / 2 / 4), message clearing (off / mark read / archive to Done — one choice), and which repositories this session subscribes to (paste a repository link or type `owner/name`; one list per session).
 
 Each control explains itself on hover. Changes apply immediately and are stored in `<cwd>/.work/inbox-bridge/prefs.json`; they do not rewrite the DSH plugin configuration, and a reset returns to the configured values. The panel is per session: switching sessions shows that session's repositories, and says so plainly when they are not subscribed.
 
