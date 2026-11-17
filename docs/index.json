@@ -28,8 +28,8 @@
         "zh": "GitHub 收件箱"
       },
       "description": {
-        "en": "Lets the agent keep watch over your repository the way a maintainer would: it reads the GitHub repositories a session subscribes to, keeps the events that concern you — failed checks, reviews waiting for you, issues assigned to you, comments that mention you, open security alerts, and pull requests that conflict with the base branch — and puts them in front of the agent in its own turn, opening one by itself when the session is idle and the fact matters, so a broken check gets fixed and a review request gets reviewed without waiting for you. A chip in the status row lists them and switches delivery, message clearing and subscriptions. Read-only; waking is opt-in and gated, and reading while idle happens only in the mode that can wake — the default queue-only mode makes no request while idle.",
-        "zh": "让 agent 像维护者一样盯着你的仓库：按会话订阅的 GitHub 仓库取数，只保留与你有关、需要你处理的事件（失败的 CI、待你评审的 PR、指派给你的 issue、@你的评论、开着的安全告警、与基分支冲突的 PR），在自己的回合送进上下文——CI 挂了就修，有人请你评审就审，不用等你回来看；会话空闲又遇到要紧的事，它也会主动开一轮。状态行里的胶囊可查看待处理项，并切换提醒方式、消息清理与订阅仓库。只读 GitHub；主动开轮需显式开启且有四道门，为它服务的空闲取数也随模式而定——默认的只注入模式空闲时不发任何请求。"
+        "en": "A GitHub notifier for each session: using that session's identity it watches whether the work it did got an answer — did the pull request I opened get reviewed, which CI run broke, did anyone reply on the issue assigned to me — plus CI failures, security alerts, review requests and mentions in the repositories it owns. What it finds becomes one message, injected at the next turn boundary; when the moment is right it can open a turn on its own. Repository-level facts go to the owner, item-level facts to whoever works in that repository, and one fact wakes one session. The chip in the status row lists what waits, switches delivery and rhythm, and manages the owned repositories. It reads GitHub only; wakeups are opt-in and pass five gates.",
+        "zh": "给每个会话配一个自己的 GitHub 通知器：用这个会话的身份，看它做的事有没有回音——我提的 PR 被评审了吗、CI 挂在哪一次、派给我的 issue 有人回了没有，还有接管的仓库里的 CI 失败、安全告警、评审请求与 @提及。查到的东西汇总成一条消息，在回合边界送进上下文；会话空闲又遇到要紧的事时也能主动开一轮。仓库级的事只给接管者，条目级的事给在仓库里干活的会话，同一条事实只叫一个会话。状态行里的胶囊可查看待处理项、切换提醒方式与节奏、管理接管的仓库。只读 GitHub；主动开轮需显式开启且有五道门。"
       },
       "icon": "icon.svg",
       "author": "c3115644151",
@@ -50,12 +50,12 @@
       },
       "versions": [
         {
-          "version": "2.20.1",
-          "publishTimestamp": 1794924600,
+          "version": "2.21.0",
+          "publishTimestamp": 1794941614,
           "source": {
             "type": "git",
             "url": "https://github.com/c3115644151/dsh-inbox-bridge",
-            "commit": "4f916e3dc5d0c58895f91fb0bc5dad2dc4f861d6"
+            "commit": "f3a8ea8665bf19791fb1b97b7683ad5e7c8a4439"
           },
           "engines": {
             "dsh": ">=0.1.0"
