@@ -271,8 +271,11 @@ export function apply(ctx, config) {
   if (Object.keys(prefs).length > 0) {
     try {
       Object.assign(options, mergeConfig({ ...baseConfig, ...prefs }));
-    } catch {
-      // A stale overlay must not stop the instance; the loop below reports it.      prefs = {};
+    } catch (error) {
+      // An overlay that cannot be merged must not stop the instance, but it also
+      // must not vanish without a word: whatever it asked for is not happening.
+      log(`overlay ignored: ${error.message ?? error}`);
+      prefs = {};
     }
   }
   const agents = new Map();
@@ -608,6 +611,11 @@ export function apply(ctx, config) {
       `while a turn runs, delivery ${options.delivery}, clear ${options.clear}` +
       `${options.sweep ? `, sweep ${options.sweep.when}` : ""}${options.repos?.length ? `, repos ${options.repos.join(", ")}` : ""}`,
   );
+  if (options.wakeOnIdle) {
+    log(
+      `wakeOn ${options.wakeOn.join(",")} is idle: delivery is ${options.delivery}, so those roles only queue`,
+    );
+  }
 
   // A turn is the only thing that makes the inbox worth reading: poll when one
   // starts, re-poll while a long one runs, poll once more when it ends. An idle
@@ -1001,11 +1009,13 @@ export function mergeConfig(config) {
       `inbox-bridge: \`wakeOn\` must be an array of role names, got ${JSON.stringify(wakeOn)}`,
     );
   }
-  if (Array.isArray(wakeOn) && wakeOn.length > 0 && delivery !== "wakeup") {
-    throw new Error(
-      'inbox-bridge: `wakeOn` only matters with `delivery: "wakeup"` — set it, or drop `wakeOn`',
-    );
-  }
+  // `wakeOn` only has an effect in wakeup mode, and the two keys can legitimately
+  // disagree: the page changes one choice at a time, so a profile that names
+  // roles next to a page that picked `quiet` is a normal intermediate state.
+  // Rejecting the whole config there would silently drop the page's other
+  // choices too — the queue then skips repositories nobody asked it to skip.
+  // Keep the roles, mark them idle, and let the startup line say why.
+  const wakeOnIdle = wakeOn.length > 0 && delivery !== "wakeup";
   const intervalMs = given.intervalMs ?? DEFAULTS.intervalMs;
   if (!Number.isInteger(intervalMs) || intervalMs < 5_000) {
     throw new Error(
@@ -1066,6 +1076,7 @@ export function mergeConfig(config) {
     clear,
     sweep: sweepSpec,
     wakeOn,
+    wakeOnIdle,
     intervalMs,
     wakeAfterIdleMs,
     wakesPerHour,

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -280,7 +280,13 @@ test("the removed wake key and malformed delivery settings fail loudly", () => {
 });
 
 test("wake settings are validated and only mean something in wakeup mode", () => {
-  assert.throws(() => mergeConfig({ wakeOn: ["reviewer"] }), /only matters with `delivery/u);
+  // A profile and the page's overlay change one key at a time, so roles sitting
+  // next to `delivery: quiet` is a normal intermediate state. It is reconciled,
+  // not refused: refusing would drop the overlay's other keys with it.
+  const idle = mergeConfig({ wakeOn: ["reviewer"] });
+  assert.deepEqual(idle.wakeOn, ["reviewer"]);
+  assert.equal(idle.delivery, "quiet");
+  assert.equal(idle.wakeOnIdle, true);
   assert.throws(() => mergeConfig({ wakeOn: "reviewer" }), /must be an array of role names/u);
   assert.throws(() => mergeConfig({ intervalMs: 1_000 }), />= 5000/u);
   assert.throws(() => mergeConfig({ wakeAfterIdleMs: -1 }), /non-negative integer/u);
@@ -288,6 +294,7 @@ test("wake settings are validated and only mean something in wakeup mode", () =>
 
   const waking = mergeConfig({ delivery: "wakeup", wakeOn: ["reviewer", "assignee"] });
   assert.deepEqual(waking.wakeOn, ["reviewer", "assignee"]);
+  assert.equal(waking.wakeOnIdle, false);
   assert.equal(waking.wakeAfterIdleMs, 15 * 60 * 1000);
   assert.equal(waking.wakesPerHour, 2);
   // Idle polling is gone: the interval is the in-turn cadence, one minute by default.
@@ -459,6 +466,49 @@ test("a wakeup opens a turn for the session on that repository, and only that se
     // A session on another repository is not merely quiet about it: it is never
     // handed the notice at all.
     assert.deepEqual(told, [], "nobody else receives the event");
+  } finally {
+    removeTree(root);
+  }
+});
+
+test("an overlay that disagrees about delivery keeps the repositories it names", async () => {
+  const root = mkdtempSync(join(tmpdir(), "inbox-overlay-"));
+  const marker = join(root, "repos.txt");
+  try {
+    // The page writes its choices into an overlay; the profile keeps its own.
+    // When the two disagree about one key, the overlay must still be honoured for
+    // the others — dropping it silently once cost the queue every repository the
+    // page had subscribed, and nothing in the log said so.
+    const stateDir = join(root, ".work", "inbox-bridge");
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(
+      join(stateDir, "prefs.json"),
+      `${JSON.stringify({ delivery: "quiet", repos: ["owner/one", "owner/two"] }, null, 2)}\n`,
+      "utf8",
+    );
+    const agent = fakeAgent(root);
+    const ctx = fakeContext([agent]);
+    const { apply } = await import("./index.js");
+    apply(ctx, mergeConfig({
+      cwd: root,
+      delivery: "wakeup",
+      wakeOn: ["reviewer"],
+      intervalMs: 600_000,
+      poll: {
+        command: process.execPath,
+        args: [
+          "-e",
+          `require("node:fs").writeFileSync(${JSON.stringify(marker)}, String(process.env.INBOX_REPO ?? ""));console.log("{\\"events\\":[]}")`,
+        ],
+      },
+      ack: { command: process.execPath, args: ["-e", "console.log('{}')"] },
+    }));
+    ctx.emit("agent/status", { agent: { session: { id: "session-1" } }, status: "running" });
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline && !existsSync(marker)) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(readFileSync(marker, "utf8"), "owner/one,owner/two");
   } finally {
     removeTree(root);
   }
