@@ -8,7 +8,9 @@ English | [中文](README.md)
 
 `dsh-inbox-bridge` is a DSH plugin. For each session it looks at the GitHub repositories that session subscribes to, collects the events that concern you (failed checks, review requests, issues assigned to you, comments mentioning you), and delivers them as one message at the next turn boundary. It reads only, never acts on your behalf, and does not start a turn on its own.
 
-![](https://c3115644151.github.io/dsh-inbox-bridge/assets/panel.png)
+<p align="center">
+  <img src="https://c3115644151.github.io/dsh-inbox-bridge/assets/panel.png" width="300" alt="The chip in the status row and the panel it opens">
+</p>
 
 ## What it does
 
@@ -31,13 +33,13 @@ The bracket states the relation to that identity: `reviewer` means it waits for 
 
 ## The panel
 
-The status row under the composer carries a chip with the number of unhandled events for the current session. Hovering it opens a panel with:
+The status row under the composer carries a chip: when something is waiting, a blue dot appears on the icon and the count follows. Hovering it opens a panel with:
 
 - the events: role, repository, title (link), time;
 - the identity and the last poll;
-- three controls: delivery (queue only / may wake), message clearing (mark read, archive to Done), and which repositories this session subscribes to (type `owner/name` to add; one list per session).
+- three controls: delivery (queue only / may wake), message clearing (off / mark read / archive to Done — one choice), and which repositories this session subscribes to (paste a repository link or type `owner/name`; one list per session).
 
-Changes apply immediately and are stored in `<cwd>/.work/inbox-bridge/prefs.json`; they do not rewrite the DSH plugin configuration, and a reset returns to the configured values. The panel is per session: switching sessions shows that session's repositories, and says so plainly when they are not subscribed.
+Each control explains itself on hover. Changes apply immediately and are stored in `<cwd>/.work/inbox-bridge/prefs.json`; they do not rewrite the DSH plugin configuration, and a reset returns to the configured values. The panel is per session: switching sessions shows that session's repositories, and says so plainly when they are not subscribed.
 
 ## Install
 
@@ -70,6 +72,8 @@ Then give it a working directory (`cwd`) in the plugin configuration. The reposi
 | `wakeOn` | empty | roles allowed to wake under `wakeup`; empty never wakes |
 | `clear` | `repo` | mark read after a poll: `repo` / `off`. Only the subscribed repositories, never the whole account |
 | `sweep` | off | archive the inbox into Done on turns that found something; needs a one-time browser sign-in |
+
+The panel's "message clearing" choice sets both: **off** (neither), **read** (clear the blue dot), **archive** (mark read and move to Done).
 
 Full configuration, CLI and state files: [configuration](docs/configuration.md).
 

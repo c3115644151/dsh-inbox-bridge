@@ -111,14 +111,25 @@ window.__ModuleLoader__.load({
         ago: { now: "刚刚", minutes: (n) => `${n} 分钟前`, hours: (n) => `${n} 小时前`, days: (n) => `${n} 天前` },
         pick: {
           mode: "提醒方式",
+          modeTip: "发现新事件时，是否允许插件主动开启一轮对话。",
           quiet: "仅注入",
+          quietTip: "只排队，等你下次发消息时随该轮进入上下文。",
           wakeup: "主动唤醒",
+          wakeupTip: "会话空闲时，插件可以替你开启一轮来处理这些事件。",
           clean: "消息清理",
+          cleanTip: "处理完通知后，GitHub 侧留下什么。只作用于订阅的仓库。",
+          cleanOff: "关闭",
+          cleanOffTip: "保留未读圆点，什么都不做。",
           read: "已读",
+          readTip: "把通知标为已读，清掉圆点；不进 Done。",
           done: "归档",
+          doneTip: "标为已读并移入 Done。归档需要一次浏览器登录。",
           subscribe: "订阅仓库",
-          typeRepo: "owner/name",
+          subscribeTip: "此会话关注的 GitHub 仓库；事件只按这里的仓库投递。",
+          typeRepo: "owner/repo 或链接",
+          typeRepoTip: "可以粘贴 https://github.com/owner/repo，也可以直接写 owner/repo。",
           add: "添加",
+          addTip: "订阅输入框里的仓库。",
           addHere: "订阅当前仓库",
           remove: "取消订阅",
           reset: "恢复配置",
@@ -148,14 +159,25 @@ window.__ModuleLoader__.load({
         ago: { now: "just now", minutes: (n) => `${n}m ago`, hours: (n) => `${n}h ago`, days: (n) => `${n}d ago` },
         pick: {
           mode: "delivery",
+          modeTip: "Whether a new event may start a turn for this session.",
           quiet: "queue only",
+          quietTip: "Wait for your next message; the notice rides along with that turn.",
           wakeup: "may wake it",
+          wakeupTip: "When the session is idle, the plugin may start a turn to handle it.",
           clean: "cleaning",
-          read: "mark read",
-          done: "archive",
+          cleanTip: "What is left in GitHub after a notice is handled. Subscribed repositories only.",
+          cleanOff: "off",
+          cleanOffTip: "Keep the unread dot; do nothing on GitHub.",
+          read: "read",
+          readTip: "Clear the unread dot without moving the thread to Done.",
+          done: "done",
+          doneTip: "Mark read and move the thread to Done. Archiving needs a one-time browser sign-in.",
           subscribe: "repositories",
-          typeRepo: "owner/name",
+          subscribeTip: "The repositories this session follows; events are delivered only for them.",
+          typeRepo: "owner/repo or link",
+          typeRepoTip: "Paste https://github.com/owner/repo, or type owner/repo.",
           add: "add",
+          addTip: "Subscribe to the repository in the field.",
           addHere: "watch this repo",
           remove: "unwatch",
           reset: "reset",
@@ -237,6 +259,19 @@ window.__ModuleLoader__.load({
         color: "var(--dsw-alias-label-secondary)",
       },
       icon: { width: "14px", height: "14px", flex: "none", display: "block" },
+      // The icon carries the count: a dot in the corner, the way GitHub marks an
+      // unread inbox, so the pill can stay to a single word.
+      iconWrap: { position: "relative", display: "inline-flex", flex: "none" },
+      iconDot: {
+        position: "absolute",
+        top: "-1px",
+        right: "-2px",
+        width: "6px",
+        height: "6px",
+        borderRadius: "50%",
+        background: "var(--dsw-alias-accent-primary, #0969da)",
+        boxShadow: "0 0 0 2px var(--dsw-alias-bg-base, #fff)",
+      },
       label: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" },
       count: { fontVariantNumeric: "tabular-nums" },
       sep: { color: "var(--dsw-alias-separator-primary)", margin: "0 6px" },
@@ -444,15 +479,29 @@ window.__ModuleLoader__.load({
       },
       repoName: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
       input: {
-        width: "88px",
-        padding: "0 2px",
-        border: "none",
-        background: "transparent",
+        flex: "1 1 auto",
+        minWidth: 0,
+        height: "22px",
+        boxSizing: "border-box",
+        padding: "0 6px",
+        border: "0.5px solid var(--dsw-alias-border-l2)",
+        borderRadius: "var(--dsw-radius-sm)",
+        background: "var(--dsw-alias-bg-subtle, transparent)",
         color: "var(--dsw-alias-label-secondary)",
         font: "inherit",
         fontSize: "11px",
         lineHeight: "18px",
         outline: "none",
+      },
+      // One line of its own under the chips: the field holds a URL, which never
+      // fits beside them without truncating the placeholder.
+      addRow: {
+        display: "flex",
+        alignItems: "center",
+        gap: "6px",
+        marginTop: "2px",
+        marginLeft: "64px",
+        minWidth: 0,
       },
       iconBtn: {
         padding: "0 4px",
@@ -636,13 +685,14 @@ window.__ModuleLoader__.load({
         h(
           "div",
           { style: styles.segGroup, role: "group", "aria-label": label },
-          options.map(([value, caption]) =>
+          options.map(([value, caption, tip]) =>
             h(
               "button",
               {
                 key: `${key}-${value}`,
                 type: "button",
                 "aria-pressed": current === value,
+                title: tip,
                 disabled: busy,
                 onClick: () => void send(set, value),
                 style: { ...styles.seg, ...(current === value ? styles.segOn : {}) },
@@ -651,21 +701,10 @@ window.__ModuleLoader__.load({
             ),
           ),
         );
-      // A toggle states its own condition, so the panel never needs a legend.
-      const toggle = (caption, on, set) =>
-        h(
-          "button",
-          {
-            type: "button",
-            disabled: busy,
-            "aria-pressed": on,
-            onClick: () => void send(set, on ? "off" : "on"),
-            style: { ...styles.seg, ...(on ? styles.segOn : {}) },
-          },
-          caption,
-        );
       const repos = status.session?.repos ?? status.repos ?? [];
       const sessionRepo = status.scope === "session" ? (status.session?.repo ?? null) : null;
+      // Two mechanisms, one decision: what happens to the notice after this poll.
+      const cleanLevel = status.sweepOn ? "done" : status.clear === "off" ? "off" : "read";
       const addDraft = () => {
         const value = draft.trim();
         if (!value) return;
@@ -678,12 +717,12 @@ window.__ModuleLoader__.load({
         h(
           "div",
           { style: styles.controlRow },
-          h("span", { style: styles.controlLabel }, pick.mode),
+          h("span", { style: styles.controlLabel, title: pick.modeTip }, pick.mode),
           seg(
             pick.mode,
             [
-              ["quiet", pick.quiet],
-              ["wakeup", pick.wakeup],
+              ["quiet", pick.quiet, pick.quietTip],
+              ["wakeup", pick.wakeup, pick.wakeupTip],
             ],
             status.delivery ?? "quiet",
             "delivery",
@@ -693,18 +732,23 @@ window.__ModuleLoader__.load({
         h(
           "div",
           { style: styles.controlRow },
-          h("span", { style: styles.controlLabel }, pick.clean),
-          h(
-            "div",
-            { style: styles.segGroup },
-            toggle(pick.read, status.clear !== "off", "read"),
-            toggle(pick.done, Boolean(status.sweepOn), "archive"),
+          h("span", { style: styles.controlLabel, title: pick.cleanTip }, pick.clean),
+          seg(
+            pick.clean,
+            [
+              ["off", pick.cleanOff, pick.cleanOffTip],
+              ["read", pick.read, pick.readTip],
+              ["done", pick.done, pick.doneTip],
+            ],
+            cleanLevel,
+            "clean",
+            "clean",
           ),
         ),
         h(
           "div",
           { style: styles.controlRow },
-          h("span", { style: styles.controlLabel }, pick.subscribe),
+          h("span", { style: styles.controlLabel, title: pick.subscribeTip }, pick.subscribe),
           h(
             "div",
             { style: styles.repos },
@@ -721,6 +765,7 @@ window.__ModuleLoader__.load({
                         type: "button",
                         disabled: busy,
                         "aria-label": `${pick.remove} ${entry}`,
+                        title: `${pick.remove} ${entry}`,
                         onClick: () => void send("unsubscribe", entry),
                         style: styles.iconBtn,
                       },
@@ -728,35 +773,6 @@ window.__ModuleLoader__.load({
                     ),
                   ),
                 ),
-            h(
-              "span",
-              { style: styles.repoChip },
-              h("input", {
-                value: draft,
-                placeholder: pick.typeRepo,
-                spellCheck: false,
-                disabled: busy,
-                onChange: (event) => setDraft(event.target.value),
-                onKeyDown: (event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    addDraft();
-                  }
-                },
-                style: styles.input,
-              }),
-              h(
-                "button",
-                {
-                  type: "button",
-                  disabled: busy || draft.trim().length === 0,
-                  onClick: addDraft,
-                  style: styles.iconBtn,
-                  "aria-label": pick.add,
-                },
-                "+",
-              ),
-            ),
             sessionRepo && !repos.includes(sessionRepo)
               ? h(
                   "button",
@@ -765,11 +781,45 @@ window.__ModuleLoader__.load({
                     disabled: busy,
                     onClick: () => void send("subscribe", sessionRepo),
                     style: styles.addBtn,
-                    title: sessionRepo,
+                    title: `${pick.addHere}：${sessionRepo}`,
                   },
                   pick.addHere,
                 )
               : null,
+          ),
+        ),
+        // The field gets its own line: a repository URL next to chips is the one
+        // thing in this panel that cannot be shortened to fit.
+        h(
+          "div",
+          { style: styles.addRow },
+          h("input", {
+            value: draft,
+            placeholder: pick.typeRepo,
+            title: pick.typeRepoTip,
+            spellCheck: false,
+            disabled: busy,
+            "aria-label": pick.subscribe,
+            onChange: (event) => setDraft(event.target.value),
+            onKeyDown: (event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                addDraft();
+              }
+            },
+            style: styles.input,
+          }),
+          h(
+            "button",
+            {
+              type: "button",
+              disabled: busy || draft.trim().length === 0,
+              onClick: addDraft,
+              style: styles.addBtn,
+              "aria-label": pick.add,
+              title: pick.addTip,
+            },
+            pick.add,
           ),
         ),
         error ? h("div", { style: styles.errorLine }, error) : null,
@@ -878,7 +928,7 @@ window.__ModuleLoader__.load({
           window.innerWidth || Infinity,
           document.documentElement?.clientWidth || Infinity,
         );
-        const width = Math.max(280, Math.min(FALLBACK_WIDTH, room - 24));
+        const width = Math.max(300, Math.min(FALLBACK_WIDTH, room - 24));
         const left = Math.min(Math.max(12, rect.left), Math.max(12, room - width - 12));
         // Keep the panel inside the space that actually exists above the chip.
         const floor = 16 + 8;
@@ -895,9 +945,15 @@ window.__ModuleLoader__.load({
         }, OPEN_DELAY_MS);
       };
 
+      const inside = () =>
+        Boolean(wrap.current?.matches(":hover")) || Boolean(panelRef.current?.matches(":hover"));
+
       const conceal = () => {
         clearTimers();
         timers.current.close = setTimeout(() => {
+          // The pill and the panel are two elements; the pointer crossing between
+          // them is a leave-then-enter, so re-check before acting on the leave.
+          if (inside()) return;
           setOpen(false);
           // Leaving the pill also clears a deliberate close, so hovering opens again next time.
           dismissed.current = false;
@@ -1017,10 +1073,19 @@ window.__ModuleLoader__.load({
             "aria-label": `${text.label} · ${waiting > 0 ? text.waiting(waiting) : text.empty}`,
             onClick: toggle,
             onFocus: reveal,
-            onBlur: conceal,
+            onBlur: (event) => {
+              // Focus moving into the panel (the subscribe field) is not leaving.
+              if (panelRef.current?.contains(event.relatedTarget)) return;
+              conceal();
+            },
             style: { ...styles.pill, ...(open ? styles.pillOn : {}) },
           },
-          h(TrayIcon),
+          h(
+            "span",
+            { style: styles.iconWrap },
+            h(TrayIcon),
+            waiting > 0 ? h("span", { style: styles.iconDot, "aria-hidden": "true" }) : null,
+          ),
           h("span", { style: styles.label }, text.label),
           waiting > 0 ? h("span", { style: styles.sep }, "·") : null,
           waiting > 0 ? h("span", { style: styles.count }, String(waiting)) : null,

@@ -43,6 +43,25 @@ const SWEEP_SCRIPT = fileURLToPath(new URL("./scripts/clear-inbox.mjs", import.m
  * Kept pure so the rules are testable without a running host: what a click means
  * is exactly this, and `apply` only writes the result.
  */
+/**
+ * What a person pastes into the subscribe field: a repository URL is the most
+ * likely thing to have on hand, so accept it, the `git@` form, and `owner/name`.
+ * Returns `owner/name`, or `null` when the text names no repository.
+ */
+export function repoFromInput(value) {
+  if (typeof value !== "string") return null;
+  const text = value.trim().replace(/^https?:\/\//iu, "").replace(/^ssh:\/\//iu, "");
+  const scp = /^(?:[^@/]+@)?github\.com:([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/u.exec(text);
+  if (scp) return `${scp[1]}/${scp[2]}`;
+  const web = /^(?:www\.)?github\.com\/([\w.-]+)\/([\w.-]+?)(?:\.git)?(?:[/#?].*)?$/u.exec(text);
+  if (web) return `${web[1]}/${web[2]}`;
+  const slug = /^([\w.-]+)\/([\w.-]+)$/u.exec(text);
+  // `example.com/repo` also matches the bare slug shape; a dotted first segment
+  // is a hostname, not an owner, so only GitHub links get that far.
+  if (slug && !slug[1].includes(".")) return `${slug[1]}/${slug[2]}`;
+  return null;
+}
+
 export function preferenceNext(current = {}, action = "", value = "", options = {}) {
   const next = { ...current };
   const sessionId = options.sessionId ?? null;
@@ -70,8 +89,17 @@ export function preferenceNext(current = {}, action = "", value = "", options = 
     next.sweep = value === "on" ? { args: [SWEEP_SCRIPT, "--json"] } : null;
     return next;
   }
+  // One control, three levels: the two mechanisms (mark read, move to Done) are
+  // not independent switches a person should have to combine by hand.
+  if (action === "clean") {
+    if (!["off", "read", "done"].includes(value)) return null;
+    next.clear = value === "off" ? "off" : "repo";
+    next.sweep = value === "done" ? { args: [SWEEP_SCRIPT, "--json"] } : null;
+    return next;
+  }
   if (action === "subscribe" || action === "unsubscribe") {
-    if (typeof value !== "string" || !/^[\w.-]+\/[\w.-]+$/u.test(value)) return null;
+    const repo = repoFromInput(value);
+    if (!repo) return null;
     if (!sessionId) return null;
     // A session subscribes; the instance follows, because it is the one that
     // polls. Without this the subscription would never see a fetch.
@@ -79,11 +107,11 @@ export function preferenceNext(current = {}, action = "", value = "", options = 
       next.sessionRepos?.[sessionId] ?? (options.sessionRepo ? [options.sessionRepo] : []);
     const list =
       action === "subscribe"
-        ? [...new Set([...current_list, value])]
-        : current_list.filter((entry) => entry !== value);
+        ? [...new Set([...current_list, repo])]
+        : current_list.filter((entry) => entry !== repo);
     next.sessionRepos = { ...(next.sessionRepos ?? {}), [sessionId]: list };
-    if (action === "subscribe" && !polled().includes(value)) {
-      next.repos = [...new Set([...polled(), value])];
+    if (action === "subscribe" && !polled().includes(repo)) {
+      next.repos = [...new Set([...polled(), repo])];
     }
     return next;
   }
@@ -559,7 +587,18 @@ export function apply(ctx, config) {
   };
 
   writeRuntime();
-  for (const agent of ctx.agents.list()) register(agent);
+  const listLive = () => {
+    try {
+      return ctx.agents.list();
+    } catch {
+      return [];
+    }
+  };
+  const adopted = [];
+  for (const agent of listLive()) {
+    register(agent);
+    adopted.push(agent);
+  }
   ctx.on("agent/created", (payload = {}) => {
     debug(`created ${keyOf(payload.agent)}`);
     register(payload.agent);
@@ -603,6 +642,16 @@ export function apply(ctx, config) {
     startTurn(key);
     void poll();
   });
+
+  // Adopting live agents is not enough: one that is mid-turn when the plugin
+  // loads would otherwise sit there until its next status event, which for a
+  // long turn never comes. Give those a schedule and read once, so a reload
+  // does not look like a plugin that stopped working.
+  const midTurn = adopted.filter((agent) => agent?.status === "running");
+  for (const agent of midTurn) startTurn(keyOf(agent));
+  if (adopted.length > 0) {
+    log(`adopted ${adopted.length} live agent(s), ${midTurn.length} mid-turn`);
+  }
 
   ctx.effect(() => () => {
     for (const key of [...turnTimers.keys()]) stopTurn(key);
@@ -754,6 +803,10 @@ export function apply(ctx, config) {
     }
   };
   registerStatusRoute();
+
+  // Read once on load for a turn already in flight: adoption alone would leave
+  // the row stale until the next status event, which a long turn never sends.
+  if (midTurn.length > 0) void poll();
 }
 
 /**

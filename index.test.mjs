@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { buildMessage, buildUiPayload, deliver, deliveryTargets, detectRepo, filterUndelivered, formatEvents, matchesWatch, mergeConfig, preferenceNext, repoOf, wakePlan } from "./index.js";
+import { buildMessage, buildUiPayload, deliver, deliveryTargets, detectRepo, filterUndelivered, formatEvents, matchesWatch, mergeConfig, preferenceNext, repoFromInput, repoOf, wakePlan } from "./index.js";
 
 const idle = { status: "idle" };
 const running = { status: "running" };
@@ -401,6 +401,35 @@ test("a status event for the same session reaches the poll schedule", async () =
   }
 });
 
+test("an agent that is mid-turn when the plugin loads polls right away", async () => {
+  const root = mkdtempSync(join(tmpdir(), "inbox-adopt-"));
+  const marker = join(root, "polled.txt");
+  try {
+    // A reload during a long turn: the agent already exists and is running, and
+    // no further status event will arrive, so adoption alone used to leave the
+    // schedule empty and the row stale for as long as the turn ran.
+    const agent = { ...fakeAgent(root), status: "running" };
+    const ctx = fakeContext([agent]);
+    const { apply } = await import("./index.js");
+    apply(ctx, mergeConfig({
+      cwd: root,
+      repo: "owner/name",
+      poll: {
+        command: process.execPath,
+        args: ["-e", `require("node:fs").appendFileSync(${JSON.stringify(marker)}, "x");console.log("{\\"events\\":[]}")`],
+      },
+      ack: { command: process.execPath, args: ["-e", "console.log('{}')"] },
+    }));
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline && !(await import("node:fs")).existsSync(marker)) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal((await import("node:fs")).existsSync(marker), true, "loading mid-turn did not poll");
+  } finally {
+    removeTree(root);
+  }
+});
+
 test("a poll that cannot reach the source says so in the log", async () => {
   const root = mkdtempSync(join(tmpdir(), "inbox-skip-"));
   const logPath = join(root, ".work", "inbox-bridge", "plugin.log");
@@ -604,6 +633,36 @@ test("the page keeps at most twenty open events", () => {
   const payload = buildUiPayload({ options: { label: "外部收件箱" }, queue, now: 0 });
   assert.equal(payload.events.length, 20);
   assert.equal(payload.events[0].key, "a/b#issue:29:author");
+});
+
+test("the cleaning control sets both mechanisms from one choice", () => {
+  const off = preferenceNext({}, "clean", "off", {});
+  assert.equal(off.clear, "off");
+  assert.equal(off.sweep, null);
+  const read = preferenceNext({}, "clean", "read", {});
+  assert.equal(read.clear, "repo");
+  assert.equal(read.sweep, null);
+  const done = preferenceNext({}, "clean", "done", {});
+  assert.equal(done.clear, "repo");
+  assert.equal(done.sweep.args.at(-1), "--json");
+  assert.equal(preferenceNext({}, "clean", "everything", {}), null);
+});
+
+test("a pasted repository URL is understood as a subscription", () => {
+  const options = { repos: [], sessionId: "s1" };
+  for (const input of [
+    "https://github.com/Noema-Harness/noema-agent",
+    "https://github.com/Noema-Harness/noema-agent.git",
+    "https://github.com/Noema-Harness/noema-agent/tree/main/apps",
+    "git@github.com:Noema-Harness/noema-agent.git",
+    "github.com/Noema-Harness/noema-agent",
+    "Noema-Harness/noema-agent",
+  ]) {
+    const next = preferenceNext({}, "subscribe", input, options);
+    assert.deepEqual(next?.sessionRepos?.s1, ["Noema-Harness/noema-agent"], input);
+  }
+  assert.equal(repoFromInput("https://example.com/not-github"), null);
+  assert.equal(repoFromInput(""), null);
 });
 
 test("switching to wakeup brings a usable role, and quiet drops it", () => {

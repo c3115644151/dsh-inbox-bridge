@@ -2,6 +2,13 @@
 
 Format: keep a short entry per released version. Dates are UTC.
 
+## 2.15.0
+
+- 插件在会话进行中装载时立刻接管并轮询：以前只登记不排程，重载后整轮都不取数，面板里的「上次轮询」会停在重载之前。
+- 面板不再自己关闭：指针从胶囊移到面板、或点进输入框时，计时器先复查指针位置；失焦到面板内部也不收起。
+- 消息清理合并成一档三态（关闭 / 已读 / 归档），一个选择同时决定标已读与归档。
+- 订阅支持整条仓库链接：https://github.com/owner/repo、…/repo.git、git@github.com:owner/repo.git 都按 owner/repo 处理；输入框独占一行，不再被仓库名挤掉。
+- 每个按钮加了悬停说明；胶囊图标在有未处理事件时显示蓝点。
 ## 2.14.0
 
 - 归档所用的浏览器在 macOS 与 Linux 上也能找到（Chrome、Edge、Chromium、Brave）；找不到时列出的候选名会写进错误信息。
