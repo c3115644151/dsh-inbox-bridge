@@ -15,12 +15,30 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const DEFAULT_PORT = 9333;
 const NOTIFICATIONS = "https://github.com/notifications";
 const PROFILE_REL = join(".work", "browser-profile");
+
+/** The notification view for one repository, or the whole inbox for `null`. */
+export function inboxUrlFor(repo) {
+  return repo ? `${NOTIFICATIONS}?query=${encodeURIComponent(`repo:${repo}`)}` : NOTIFICATIONS;
+}
+
+/**
+ * Which notification views to archive. The default is the subscription the
+ * plugin watches — never the whole account, because a background poll must not
+ * decide what to do with another repository's mail.
+ */
+export function archiveTargets(options = {}) {
+  if (options.all) return { ok: true, targets: [null] };
+  const repos = options.repos ?? [];
+  if (repos.length === 0) return { ok: false, reason: "no-subscription", targets: [] };
+  return { ok: true, targets: repos };
+}
 
 const WINDOWS_CANDIDATES = [
   "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
@@ -59,14 +77,28 @@ function onPath(command) {
   return dirs.some((dir) => dir && names.some((name) => existsSync(join(dir, name))));
 }
 
-function parseArgs(argv = []) {
-  const options = { json: false, login: false, dryRun: false, port: DEFAULT_PORT, keepOpen: false };
+export function parseArgs(argv = []) {
+  const options = {
+    json: false,
+    login: false,
+    dryRun: false,
+    check: false,
+    all: false,
+    repos: [],
+    port: DEFAULT_PORT,
+    keepOpen: false,
+  };
   for (const argument of argv) {
     if (argument === "--json") options.json = true;
     else if (argument === "--login") options.login = true;
     else if (argument === "--dry-run") options.dryRun = true;
-else if (argument === "--check") options.check = true;
-    else if (argument === "--keep-open") options.keepOpen = true;
+    else if (argument === "--check") options.check = true;
+    else if (argument === "--all") options.all = true;
+    else if (argument === "--repo") options.expectRepo = true;
+    else if (options.expectRepo) {
+      options.repos.push(...argument.split(/[,\s]+/u).filter(Boolean));
+      options.expectRepo = false;
+    } else if (argument === "--keep-open") options.keepOpen = true;
     else if (argument === "--port") options.expectPort = true;
     else if (options.expectPort) {
       options.port = Number(argument);
@@ -75,6 +107,14 @@ else if (argument === "--check") options.check = true;
     else throw new Error(`unknown option: ${argument}`);
   }
   if (options.expectPort) throw new Error("`--port` needs a value");
+  if (options.expectRepo) throw new Error("`--repo` needs a value");
+  // The plugin passes its subscription in INBOX_REPO, so a configured sweep is
+  // scoped without repeating the list in `sweep.args`.
+  const fromEnv = (process.env.INBOX_REPO ?? "").split(/[,\s]+/u).filter(Boolean);
+  const repos = options.repos.length > 0 ? options.repos : fromEnv;
+  options.repos = repos.filter((repo) => /^[\w.-]+\/[\w.-]+$/u.test(repo));
+  const bad = repos.filter((repo) => !/^[\w.-]+\/[\w.-]+$/u.test(repo));
+  if (bad.length > 0) throw new Error(`not an owner/name repository: ${bad.join(", ")}`);
   return options;
 }
 
@@ -169,8 +209,10 @@ async function main(argv) {
   if (options.help) {
     console.log(
       [
-        "clear-inbox — archive every GitHub notification thread, then close the browser",
+        "clear-inbox — archive the GitHub notification threads of the repositories you watch, then close the browser",
         "",
+        "  --repo <owner/name>  archive only this repository's threads (repeatable; defaults to INBOX_REPO)",
+        "  --all        archive the whole notification inbox instead of one repository at a time",
         "  --json       machine-readable summary",
         "  --dry-run    report how many threads would be archived",
         "  --check      only say whether this profile is signed in (exit 2 if not)",
@@ -184,14 +226,36 @@ async function main(argv) {
 
   const root = process.cwd();
   const profileDir = resolve(root, PROFILE_REL);
+  // Chromium keeps cookies under Network/ since v96; older builds used Default/.
+  const cookieFiles = [
+    join(profileDir, "Default", "Network", "Cookies"),
+    join(profileDir, "Default", "Cookies"),
+  ];
   // A profile with no cookie database has never been signed in. Answering that
   // here keeps `--check` from launching a browser just to learn it is useless.
-  if (options.check && !existsSync(join(profileDir, "Default", "Cookies"))) {
+  if (options.check && !cookieFiles.some((file) => existsSync(file))) {
     if (options.json) console.log(JSON.stringify({ ok: false, reason: "sign-in-required" }));
     else console.log("not signed in: archiving cannot run yet");
     return 2;
   }
   mkdirSync(profileDir, { recursive: true });
+  // GitHub's session cookie is a session cookie, and Chromium only keeps those
+  // across restarts when the profile restores its last session. Without this the
+  // sign-in survives exactly one run — which looks like "it forgot me again".
+  try {
+    const file = join(profileDir, "Default", "Preferences");
+    let prefs = {};
+    try {
+      prefs = JSON.parse(readFileSync(file, "utf8"));
+    } catch {
+      prefs = {};
+    }
+    prefs.session = { ...(prefs.session ?? {}), restore_on_startup: 1 };
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify(prefs), "utf8");
+  } catch {
+    // A profile we cannot pre-seed still works for one run.
+  }
   const browser = findBrowser();
   const base = `http://127.0.0.1:${options.port}`;
   const headless = !options.login;
@@ -285,15 +349,6 @@ async function main(argv) {
         }
       }
 
-      if (options.dryRun) {
-        const rows = await read(
-          `document.querySelectorAll('input[type=checkbox][name="notification_ids[]"]').length`,
-        );
-        if (options.json) console.log(JSON.stringify({ ok: true, dryRun: true, rows }));
-        else console.log(`would archive ${rows} thread(s)`);
-        return 0;
-      }
-
       // `--check` answers one question and touches nothing: is this profile
       // signed in? The panel and `doctor` need that without archiving anything.
       if (options.check) {
@@ -305,11 +360,83 @@ async function main(argv) {
         return 0;
       }
 
-      const result = await read(SWEEP);
-      const summary = { ok: true, ...result };
+      // One view per subscribed repository: GitHub's notification search takes
+      // `repo:`, and Done applies to the rows in view — so this archives what
+      // the plugin watches instead of everything the account ever received.
+      const plan = archiveTargets(options);
+      if (!plan.ok) {
+        if (options.json) console.log(JSON.stringify({ ok: false, reason: plan.reason }));
+        else
+          console.error(
+            "nothing archived: pass --repo owner/name (or INBOX_REPO), or --all for the whole inbox",
+          );
+        return 2;
+      }
+      const targets = plan.targets;
+      const urlFor = inboxUrlFor;
+
+      const waitForList = async () => {
+        const deadline = Date.now() + 30_000;
+        let view = null;
+        while (Date.now() < deadline) {
+          view = await read(`(() => ({
+            ready: document.readyState,
+            rows: document.querySelectorAll('input[type=checkbox][name="notification_ids[]"]').length,
+            caughtUp: document.body.innerText.includes('All caught up'),
+            signIn: /\\/login|\\/session/.test(location.pathname),
+          }))()`);
+          if (view.signIn) return view;
+          if (view.ready === "complete" && (view.rows > 0 || view.caughtUp)) return view;
+          await sleep(400);
+        }
+        return view;
+      };
+
+      const unsorted = async () => {
+        if (options.json) console.log(JSON.stringify({ ok: false, reason: "sign-in-required" }));
+        else
+          console.error(
+            "not signed in: run `node scripts/clear-inbox.mjs --login` once, sign in, and it will finish the sweep",
+          );
+        return 2;
+      };
+
+      if (options.dryRun) {
+        const perRepo = [];
+        let total = 0;
+        for (const repo of targets) {
+          await devtools.send("Page.navigate", { url: urlFor(repo) });
+          const view = await waitForList();
+          if (view?.signIn) return await unsorted();
+          perRepo.push({ repo, rows: view?.rows ?? 0 });
+          total += view?.rows ?? 0;
+        }
+        if (options.json) console.log(JSON.stringify({ ok: true, dryRun: true, rows: total, perRepo }));
+        else console.log(`would archive ${total} thread(s) (${perRepo.map((each) => `${each.repo ?? "everything"}: ${each.rows}`).join(", ")})`);
+        return 0;
+      }
+
+      const started = Date.now();
+      const perRepo = [];
+      for (const repo of targets) {
+        await devtools.send("Page.navigate", { url: urlFor(repo) });
+        const view = await waitForList();
+        if (view?.signIn) return await unsorted();
+        const result = await read(SWEEP);
+        perRepo.push({ repo, archived: result.archived ?? 0, before: result.before ?? 0 });
+      }
+      const archived = perRepo.reduce((sum, each) => sum + each.archived, 0);
+      const summary = {
+        ok: true,
+        archived,
+        repos: perRepo.map((each) => each.repo).filter(Boolean),
+        perRepo,
+        ms: Date.now() - started,
+        empty: archived === 0 && perRepo.every((each) => each.before === 0),
+      };
       if (options.json) console.log(JSON.stringify(summary));
-      else if (result.empty) console.log("inbox already empty");
-      else console.log(`archived ${summary.archived} thread(s) in ${Math.round((summary.ms ?? 0) / 100) / 10}s`);
+      else if (summary.empty) console.log("nothing to archive in the repositories you watch");
+      else console.log(`archived ${archived} thread(s) in ${Math.round(summary.ms / 100) / 10}s`);
       return 0;
     } finally {
       devtools.close();
@@ -340,10 +467,13 @@ async function main(argv) {
   }
 }
 
-main(process.argv.slice(2)).then(
-  (code) => process.exit(code ?? 0),
-  (error) => {
-    console.error(`clear-inbox: ${error.message}`);
-    process.exit(1);
-  },
-);
+// Importable for tests; only a direct run drives a browser.
+if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+  main(process.argv.slice(2)).then(
+    (code) => process.exit(code ?? 0),
+    (error) => {
+      console.error(`clear-inbox: ${error.message}`);
+      process.exit(1);
+    },
+  );
+}

@@ -565,21 +565,23 @@ export function describeDoctor(root, options = {}) {
   }
 
   if (runtime?.sweep && runtime.sweep !== "off" && runtime.sweep !== null) {
-    const cookies = join(resolve(root), ".work", "browser-profile", "Default", "Cookies");
+    const profile = join(resolve(root), ".work", "browser-profile", "Default");
+    // Chromium keeps cookies under Network/ since v96; older builds used Default/.
+    const cookies = [join(profile, "Network", "Cookies"), join(profile, "Cookies")];
     const cli = join(dirname(fileURLToPath(import.meta.url)), "clear-inbox.mjs");
-    if (existsSync(cookies)) {
+    if (cookies.some((file) => existsSync(file))) {
       add(
         "sweep",
         "ok",
         "清理收件箱用的浏览器配置里有登录痕迹",
-        "这只是痕迹，不代表会话还有效；真失效时日志会写 sweep needs a one-time sign-in",
+        `这只是痕迹，不代表会话还有效；真失效时插件会自己再开一次登录窗口（node "${cli}" --check 能直接问）`,
       );
     } else {
       add(
         "sweep",
         "warn",
         "清理收件箱还没有登录过",
-        `运行一次 node "${cli}" --login，在那个窗口里登录 GitHub（一次即可，之后无头运行复用这个配置）`,
+        `把面板的「消息清理」切到归档，插件会自己弹出登录窗口；命令行也行：node "${cli}" --login`,
       );
     }
   }

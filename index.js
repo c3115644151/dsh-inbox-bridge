@@ -480,7 +480,17 @@ export function apply(ctx, config) {
     try {
       const child = spawn(process.execPath, [script, "--login", "--json"], {
         cwd: options.cwd,
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+        env: {
+          ...process.env,
+          // The window finishes the sweep after a sign-in; give it the same
+          // subscription the poll uses, or it would not know what to archive.
+          ...(options.repos?.length > 0
+            ? { INBOX_REPO: options.repos.join(",") }
+            : options.repo
+              ? { INBOX_REPO: options.repo }
+              : {}),
+          ELECTRON_RUN_AS_NODE: "1",
+        },
         // Detached so a twenty-minute sign-in never holds a poll open; visible
         // because there has to be a window to sign in.
         detached: true,
