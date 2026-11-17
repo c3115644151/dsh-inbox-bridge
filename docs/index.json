@@ -28,8 +28,8 @@
         "zh": "GitHub 收件箱"
       },
       "description": {
-        "en": "Reads one GitHub repository as one identity and keeps only the events that concern it: my failing PR, reviews requested of me, issues assigned to me, comments that mention me, default-branch CI. Items move through pending / delivered / done and queue by default (quiet) instead of opening a turn. Polls only at turn boundaries — nothing runs while the session is idle. GitHub only, for now.",
-        "zh": "只读一个 GitHub 仓库，按身份判断哪些事件与你有关：我作者的 PR 失败、我被请求评审、分配给我的 issue、@我的评论、默认分支 CI。条目分 pending / delivered / done 三态，默认只排队（quiet），不替你开轮；只在回合边界轮询，空闲时不访问 GitHub。目前仅支持 GitHub。"
+        "en": "Reads the GitHub repositories a session subscribes to and keeps only the events that concern you — failed checks, reviews waiting for you, issues assigned to you, comments that mention you — then injects them at the next turn boundary. A chip in the status row lists them and switches delivery, message clearing and subscriptions. Read-only, no turn on its own, no request while idle.",
+        "zh": "按会话订阅的 GitHub 仓库，只保留与你有关、需要你处理的事件（失败的 CI、待你评审的 PR、指派给你的 issue、@你的评论），在回合边界注入会话上下文。状态行里的胶囊可查看待处理项，并切换提醒方式、消息清理与订阅仓库。只读 GitHub，默认不主动开启对话，空闲时不发请求。"
       },
       "icon": "icon.svg",
       "author": "c3115644151",
@@ -50,12 +50,12 @@
       },
       "versions": [
         {
-          "version": "2.13.1",
-          "publishTimestamp": 1794874515,
+          "version": "2.14.0",
+          "publishTimestamp": 1794875146,
           "source": {
             "type": "git",
             "url": "https://github.com/c3115644151/dsh-inbox-bridge",
-            "commit": "932b3dd18ac4ebbe0d4db7b0031957e75167b8f0"
+            "commit": "e0b5c3396c3dca2da7b5b779f36d94dca11968b2"
           },
           "engines": {
             "dsh": ">=0.1.0"
