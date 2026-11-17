@@ -1,0 +1,30 @@
+name: Feature request
+description: 提出一个改进或新能力
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 现在的问题
+      description: 你在什么场景下觉得它不够用？尽量描述具体的仓库、身份或会话情况。
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 你希望它怎么工作
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: 涉及范围
+      options:
+        - 相关性判断（哪些事件算我的）
+        - 轮询与投递时机
+        - 面板与配置
+        - 通知清理（已读 / 归档）
+        - 其他来源（GitLab、IM、邮件…）
+        - 文档
+    validations:
+      required: false

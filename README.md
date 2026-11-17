@@ -1,6 +1,14 @@
 # GitHub inbox
 
-`dsh-inbox-bridge` 是一个 DSH 插件。它按会话所在的 GitHub 仓库，收集与你相关、需要你处理的 GitHub 事件（失败的 CI、待你评审的 PR、指派给你的 issue、@你的评论），汇总成一条消息，在回合边界注入会话上下文。它只读 GitHub，不代替你操作，也不会主动开启一轮对话。
+[![CI](https://github.com/c3115644151/dsh-inbox-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/c3115644151/dsh-inbox-bridge/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Market index](https://img.shields.io/badge/%E6%8F%92%E4%BB%B6%E5%B8%82%E5%9C%BA-index.json-2f6feb.svg)](https://c3115644151.github.io/dsh-inbox-bridge/index.json)
+
+[English](README.en.md) | 中文
+
+`dsh-inbox-bridge` 是一个 DSH 插件。它按会话订阅的 GitHub 仓库，收集与你相关、需要你处理的事件（失败的 CI、待你评审的 PR、指派给你的 issue、@你的评论），汇总成一条消息，在回合边界注入会话上下文。它只读 GitHub，不代替你操作，也不会主动开启一轮对话。
+
+![](https://c3115644151.github.io/dsh-inbox-bridge/assets/panel.png)
 
 ## 它做什么
 
@@ -27,13 +35,23 @@
 
 - 事件列表：角色、仓库、标题（可点开）、时间。
 - 身份、上次轮询时间。
-- 三组开关：提醒方式（仅注入 / 主动唤醒）、消息清理（已读、归档）、订阅哪些仓库（可输入 `owner/name` 添加，每个会话各有一份）。
+- 三组开关：提醒方式（仅注入 / 主动唤醒）、消息清理（已读、归档）、订阅仓库（可输入 `owner/name` 添加，每个会话各有一份）。
 
-改动立即生效，记录在 `<cwd>/.work/inbox-bridge/prefs.json`，不修改 DSH 的插件配置；重置后回到配置里的值。面板按会话取数：切换会话显示该会话所在仓库的事件；仓库未订阅时直接说明。
+改动立即生效，记录在 `<cwd>/.work/inbox-bridge/prefs.json`，不修改 DSH 的插件配置；重置后回到配置里的值。面板按会话取数：切换会话显示该会话订阅的仓库；仓库未订阅时直接说明。
 
 ## 安装
 
-需要 DSH，以及一个已在本机登录的 `gh`（`gh auth status` 可验证）。
+需要 DSH，以及一个已在本机登录的 `gh`（`gh auth status` 可验证）。支持 Windows、macOS 与 Linux。
+
+**从插件市场**（DSH 内置「插件 → 发现」）：添加索引源，地址填
+
+```text
+https://c3115644151.github.io/dsh-inbox-bridge/index.json
+```
+
+列表里会出现 GitHub inbox，安装后即可用。
+
+**从源码：**
 
 ```powershell
 git clone https://github.com/c3115644151/dsh-inbox-bridge
@@ -59,7 +77,7 @@ dsh plugin add ./dsh-inbox-bridge
 
 - **只读。** 不合并、不评论、不修改仓库。
 - **默认不主动开启对话。** 只有显式设置 `delivery: wakeup` 且命中 `wakeOn` 时才会。
-- **Done 归档依赖一次浏览器登录。** GitHub 没有归档 API，`scripts/clear-inbox.mjs` 通过本机浏览器完成，需要执行一次 `--login`。
+- **Done 归档依赖一次浏览器登录。** GitHub 没有归档 API，`scripts/clear-inbox.mjs` 通过本机浏览器（Edge / Chrome / Chromium）完成，需要执行一次 `--login`。
 - **状态在本机。** 存放在工作目录的 `.work/` 下，不跨机器同步。
 
 ## 更多
@@ -68,3 +86,4 @@ dsh plugin add ./dsh-inbox-bridge
 - 全部配置项、命令行、身份与角色：[配置与命令](docs/configuration.md)
 - 版本变更：[CHANGELOG.md](CHANGELOG.md)
 - 后续计划：[ROADMAP.md](ROADMAP.md)
+- 参与开发：[CONTRIBUTING.md](CONTRIBUTING.md)

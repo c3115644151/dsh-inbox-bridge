@@ -2,6 +2,11 @@
 
 Format: keep a short entry per released version. Dates are UTC.
 
+## 2.14.0
+
+- 归档所用的浏览器在 macOS 与 Linux 上也能找到（Chrome、Edge、Chromium、Brave）；找不到时列出的候选名会写进错误信息。
+- CI 改为三平台矩阵（Ubuntu、Windows、macOS），市场索引的校验单独一个任务。
+- 新增项目主页（`docs/index.html`）与市场详情页（`docs/DETAIL.md`、`docs/DETAIL.zh.md`）；README 补了截图、徽章与市场索引地址。
 ## 2.13.1
 
 - 修复：面板里改完设置后返回的状态漏掉了会话 id，于是订阅列表在刷新前显示为空。

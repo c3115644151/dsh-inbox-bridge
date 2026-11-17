@@ -1,1 +1,36 @@
-![External events flow into a local inbox and are delivered at the start of the next conversation turn](preview.svg)
+# GitHub inbox
+
+`dsh-inbox-bridge` is a DSH plugin. Each session subscribes to its own GitHub repositories; the plugin decides which events there concern you, joins them into one message, and injects it at the next turn boundary. It reads only, never acts on your behalf, and does not start a turn on its own.
+
+![The chip in the status row and the panel it opens](https://c3115644151.github.io/dsh-inbox-bridge/assets/panel.png)
+
+## What it does
+
+- **Relevance comes from your identity.** It queries the repositories as your local `gh` login (or a configured App identity) and keeps only events where you are the author, the reviewer, the assignee, or are mentioned.
+- **It reads repositories, not the notification inbox.** The notification inbox pushes per account and cannot tell sessions or repositories apart; querying repository state keeps two repositories on the same account apart.
+- **Polling follows turns.** Once at the start, every ten minutes while a turn runs, once at the end; an idle session makes no request.
+- **The panel is editable.** The chip in the status row shows the unhandled count; hovering opens the events and three controls: delivery, message clearing (mark read, archive to Done), and which repositories this session subscribes to.
+
+## Install
+
+Add an index source in DSH's Plugins → Discover:
+
+```text
+https://c3115644151.github.io/dsh-inbox-bridge/index.json
+```
+
+Or from source:
+
+```powershell
+git clone https://github.com/c3115644151/dsh-inbox-bridge
+dsh plugin add ./dsh-inbox-bridge
+```
+
+Then give it a working directory (`cwd`); the repository and the identity come from that directory's `git remote` and from `gh`.
+
+## Boundaries
+
+- Read-only: no merging, commenting or changing repositories.
+- No turn by default; only `delivery: wakeup` with a matching `wakeOn` role may start one.
+- Archiving to Done needs one browser sign-in (GitHub has no archive API).
+- State is local, under `<cwd>/.work/`, and is not synced across machines.

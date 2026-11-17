@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GitHub inbox · DSH 插件</title>
+    <meta name="description" content="dsh-inbox-bridge 是一个 DSH 插件：按会话订阅的 GitHub 仓库收集与你相关的事件，在回合边界注入会话上下文。" />
+    <meta property="og:title" content="GitHub inbox · DSH 插件" />
+    <meta property="og:description" content="按会话订阅的 GitHub 仓库，把失败 CI、待评审 PR、指派给你的 issue 与 @你的评论，在回合边界注入会话。" />
+    <meta property="og:image" content="https://c3115644151.github.io/dsh-inbox-bridge/assets/panel.png" />
+    <link rel="icon" href="icon.svg" type="image/svg+xml" />
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #ffffff;
+        --fg: #1b1b1f;
+        --muted: #5c5c66;
+        --line: #e4e4e9;
+        --card: #f7f7f9;
+        --accent: #2f6feb;
+        --radius: 12px;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #16181d;
+          --fg: #e9e9ee;
+          --muted: #a0a0aa;
+          --line: #2a2d34;
+          --card: #1d2026;
+          --accent: #7aa2f7;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font: 15px/1.65 -apple-system, "Segoe UI", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+      main { max-width: 760px; margin: 0 auto; padding: 56px 24px 72px; }
+      header { display: flex; gap: 16px; align-items: center; }
+      header img { width: 44px; height: 44px; }
+      h1 { font-size: 26px; margin: 0; letter-spacing: -0.01em; }
+      .pitch { color: var(--muted); margin: 4px 0 0; }
+      .lede { font-size: 16px; margin: 28px 0 0; }
+      .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; }
+      .button {
+        display: inline-block; padding: 8px 16px; border-radius: 8px;
+        border: 1px solid var(--line); color: var(--fg); text-decoration: none;
+        background: var(--card); font-weight: 500;
+      }
+      .button.primary { background: var(--accent); border-color: transparent; color: #fff; }
+      figure { margin: 36px 0 0; }
+      figure img { width: 100%; max-width: 380px; display: block; margin: 0 auto; border: 1px solid var(--line); border-radius: var(--radius); }
+      figcaption { color: var(--muted); font-size: 13px; text-align: center; margin-top: 12px; }
+      h2 { font-size: 15px; text-transform: none; letter-spacing: 0; margin: 44px 0 10px; }
+      ul { padding-left: 20px; margin: 0; }
+      li { margin: 6px 0; }
+      code, pre { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 13px; }
+      pre { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; overflow-x: auto; }
+      .table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 14px; }
+      .table th, .table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+      .table th { color: var(--muted); font-weight: 500; }
+      footer { margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; display: flex; gap: 16px; flex-wrap: wrap; }
+      footer a { color: inherit; }
+      a { color: var(--accent); }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <img src="icon.svg" alt="" />
+        <div>
+          <h1>GitHub inbox</h1>
+          <p class="pitch">dsh-inbox-bridge · DSH 插件</p>
+        </div>
+      </header>
+
+      <p class="lede">
+        <code>dsh-inbox-bridge</code> 按会话订阅的 GitHub 仓库，收集与你相关、需要你处理的事件——失败的 CI、待你评审的 PR、指派给你的 issue、@你的评论——汇总成一条消息，在回合边界注入会话上下文。
+      </p>
+
+      <div class="actions">
+        <a class="button primary" href="https://github.com/c3115644151/dsh-inbox-bridge">GitHub 仓库</a>
+        <a class="button" href="#install">安装</a>
+        <a class="button" href="https://github.com/c3115644151/dsh-inbox-bridge/blob/main/docs/how-it-works.md">工作原理</a>
+      </div>
+
+      <figure>
+        <img src="assets/panel.png" alt="输入框下方状态行里的胶囊，悬停展开的面板列出待处理事件与三组开关" />
+        <figcaption>状态行里的胶囊与悬停展开的面板：事件、身份、订阅仓库与三组开关。</figcaption>
+      </figure>
+
+      <h2>它做什么</h2>
+      <ul>
+        <li><strong>按身份判断相关性。</strong>用 <code>gh</code> 的登录身份（或配置的 App 身份）查询仓库，只保留以你为作者、评审人、指派对象或提及对象的事件。</li>
+        <li><strong>只看仓库，不看通知箱。</strong>GitHub 的通知箱按账号推送，无法区分会话与仓库；这里直接查仓库状态，同一账号下不同仓库互不干扰。</li>
+        <li><strong>轮询跟随回合。</strong>会话开始时一次、进行中每 10 分钟一次、结束时一次；空闲会话不发请求。</li>
+        <li><strong>注入到上下文。</strong>消息在下一次安全注入点进入会话；送达后标为 <code>delivered</code>，未处理的 6 小时后重新提醒一次。</li>
+      </ul>
+
+      <h2>它不做什么</h2>
+      <ul>
+        <li>不合并、不评论、不修改仓库。</li>
+        <li>默认不主动开启一轮对话。</li>
+        <li>只读一个 GitHub 仓库集，不读账号级通知。</li>
+      </ul>
+
+      <h2 id="install">安装</h2>
+      <p>需要 DSH，以及一个已在本机登录的 <code>gh</code>（<code>gh auth status</code> 可验证）。</p>
+      <p><strong>从插件市场：</strong>在 DSH 的「插件 → 发现」里添加索引源，地址填下面这一行，然后在列表里安装 GitHub inbox。</p>
+      <pre>https://c3115644151.github.io/dsh-inbox-bridge/index.json</pre>
+      <p><strong>从源码：</strong></p>
+      <pre>git clone https://github.com/c3115644151/dsh-inbox-bridge
+dsh plugin add ./dsh-inbox-bridge</pre>
+      <p>安装后在插件配置里指定工作目录 <code>cwd</code>；仓库与身份都从该目录的 <code>git remote</code> 与 <code>gh</code> 读取。</p>
+
+      <h2>配置</h2>
+      <table class="table">
+        <tr><th>键</th><th>默认</th><th>作用</th></tr>
+        <tr><td><code>cwd</code></td><td>DSH 进程工作目录</td><td>状态文件位置；推断仓库的起点</td></tr>
+        <tr><td><code>repo</code> / <code>repos</code></td><td>从 <code>origin</code> 推断</td><td>订阅一个或一组 <code>owner/name</code></td></tr>
+        <tr><td><code>delivery</code></td><td><code>quiet</code></td><td><code>quiet</code> 只入队；<code>wakeup</code> 可在空闲时开启一轮</td></tr>
+        <tr><td><code>clear</code></td><td><code>repo</code></td><td>把订阅仓库里读过的通知标为已读</td></tr>
+        <tr><td><code>sweep</code></td><td>关</td><td>有发现的回合把收件箱归档到 Done，需先登录一次浏览器</td></tr>
+      </table>
+
+      <footer>
+        <a href="https://github.com/c3115644151/dsh-inbox-bridge">源码</a>
+        <a href="https://github.com/c3115644151/dsh-inbox-bridge/blob/main/CHANGELOG.md">版本变更</a>
+        <a href="https://github.com/c3115644151/dsh-inbox-bridge/blob/main/docs/configuration.md">配置与命令</a>
+        <a href="https://github.com/c3115644151/dsh-inbox-bridge/blob/main/LICENSE">MIT</a>
+      </footer>
+    </main>
+  </body>
+</html>

@@ -22,12 +22,42 @@ const DEFAULT_PORT = 9333;
 const NOTIFICATIONS = "https://github.com/notifications";
 const PROFILE_REL = join(".work", "browser-profile");
 
-const EDGE_CANDIDATES = [
+const WINDOWS_CANDIDATES = [
   "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
   "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
   "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
   "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
 ];
+
+const MACOS_CANDIDATES = [
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+  "/Applications/Chromium.app/Contents/MacOS/Chromium",
+  "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+];
+
+const LINUX_COMMANDS = [
+  "google-chrome",
+  "google-chrome-stable",
+  "chromium",
+  "chromium-browser",
+  "microsoft-edge",
+  "microsoft-edge-stable",
+  "brave-browser",
+];
+
+/** Candidates by platform; PATH lookups come last so a known install wins. */
+function browserCandidates() {
+  if (process.platform === "darwin") return MACOS_CANDIDATES;
+  if (process.platform === "win32") return WINDOWS_CANDIDATES;
+  return LINUX_COMMANDS;
+}
+
+function onPath(command) {
+  const dirs = (process.env.PATH ?? "").split(process.platform === "win32" ? ";" : ":");
+  const names = process.platform === "win32" ? [`${command}.exe`] : [command];
+  return dirs.some((dir) => dir && names.some((name) => existsSync(join(dir, name))));
+}
 
 function parseArgs(argv = []) {
   const options = { json: false, login: false, dryRun: false, port: DEFAULT_PORT, keepOpen: false };
@@ -48,8 +78,17 @@ function parseArgs(argv = []) {
 }
 
 function findBrowser() {
-  for (const candidate of EDGE_CANDIDATES) if (existsSync(candidate)) return candidate;
-  throw new Error("no Chromium-based browser found (Edge or Chrome)");
+  const candidates = browserCandidates();
+  if (process.platform === "win32" || process.platform === "darwin") {
+    for (const candidate of candidates) if (existsSync(candidate)) return candidate;
+  } else {
+    for (const candidate of candidates) if (onPath(candidate)) return candidate;
+  }
+  throw new Error(
+    `no Chromium-based browser found (looked for ${candidates
+      .map((candidate) => candidate.split(/[\\/]/u).pop())
+      .join(", ")})`,
+  );
 }
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
