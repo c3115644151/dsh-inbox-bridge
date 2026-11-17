@@ -1,6 +1,7 @@
 # GitHub inbox
 
 [![CI](https://github.com/c3115644151/dsh-inbox-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/c3115644151/dsh-inbox-bridge/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/dsh-inbox-bridge?logo=npm&label=npm)](https://www.npmjs.com/package/dsh-inbox-bridge)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Market index](https://img.shields.io/badge/%E6%8F%92%E4%BB%B6%E5%B8%82%E5%9C%BA-index.json-2f6feb.svg)](https://c3115644151.github.io/dsh-inbox-bridge/index.json)
 
