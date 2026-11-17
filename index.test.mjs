@@ -951,3 +951,44 @@ test("a session subscribes for itself, and the instance follows so it gets polle
 test("an unknown setting is refused instead of silently doing nothing", () => {
   assert.equal(preferenceNext({}, "colour", "blue", {}), null);
 });
+
+test("a repository with two watching sessions wakes none of them until one is responsible", () => {
+  const first = { session: { id: "session-a" } };
+  const second = { session: { id: "session-b" } };
+  const event = (role) => ({ key: "k", role, repo: "owner/one" });
+  const batches = new Map([
+    [first, [event("author")]],
+    [second, [event("author")]],
+  ]);
+  const now = 1_000_000;
+  const base = {
+    delivery: "wakeup",
+    wakeOn: ["author"],
+    wakeAfterIdleMs: 60_000,
+    wakesPerHour: 2,
+    maxConsecutiveWakes: 2,
+  };
+  const quiet = new Map([
+    [first, now - 120_000],
+    [second, now - 120_000],
+  ]);
+
+  // Both sessions watch the same repository, so neither may be chosen for it.
+  const ambiguous = wakePlan(batches, base, { now, lastActive: quiet });
+  assert.equal(ambiguous.agent, null);
+  assert.equal(ambiguous.why, "ambiguous");
+
+  // Claiming the repository names exactly one session.
+  const claimed = wakePlan(batches, base, { now, lastActive: quiet, primary: { "owner/one": "session-b" } });
+  assert.equal(claimed.agent, second);
+  assert.equal(claimed.why, "ok");
+
+  // A claim held by someone else keeps this repository quiet.
+  const foreign = wakePlan(batches, base, { now, lastActive: quiet, primary: { "owner/one": "session-z" } });
+  assert.equal(foreign.agent, null);
+  assert.equal(foreign.why, "not-primary");
+
+  // One session per repository needs no claim at all.
+  const alone = wakePlan(new Map([[first, [event("author")]]]), base, { now, lastActive: quiet });
+  assert.equal(alone.agent, first);
+});

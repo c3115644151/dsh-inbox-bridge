@@ -27,7 +27,7 @@ That is also why it only reads: its job is to make the agent aware. The work hap
 - **It reads repositories, not the notification inbox.** GitHub's notification inbox pushes per account and cannot tell one session or repository from another; querying repository state directly keeps two repositories on the same account apart.
 - **Polling follows turns.** Once when a session starts, every minute while a turn runs, once when it ends; an idle session makes no request. Only with `delivery: wakeup` does it also read on that interval while idle — without that it could never wake you while you are away.
 - **It also watches security and merge state.** Open Dependabot and code-scanning alerts, and a pull request of yours that conflicts with the base branch or is behind it, matter as much as a red check.
-- **It goes into the context, and opens a turn only when it has to.** By default a notice arrives at the next safe injection point and does not interrupt the tool loop; with `delivery: wakeup` it opens a turn only for a listed `wakeOn` role, with the session idle for 15 minutes, at most 3 times in a row per session, and at most 2 times an hour — anything else keeps queueing. A notice is marked `delivered`, and unhandled events come back once after six hours.
+- **It goes into the context, and opens a turn only when it has to.** By default a notice arrives at the next safe injection point and does not interrupt the tool loop; with `delivery: wakeup` it opens a turn only for a listed `wakeOn` role, in the one session responsible for that repository (or the one you named), idle for 15 minutes, at most 3 times in a row per session, and at most 2 times an hour — anything else keeps queueing. A notice is marked `delivered`, and unhandled events come back once after six hours.
 
 ## What you will see
 
@@ -100,7 +100,7 @@ Full configuration, CLI and state files: [configuration](docs/configuration.md).
 ## Boundaries
 
 - **Read-only.** It does not merge, comment, or change anything.
-- **No turn by default.** Only `delivery: wakeup` with a matching `wakeOn` role, enough idle time, and room in both budgets may start one; any gate that fails falls back to queueing.
+- **No turn by default.** Only `delivery: wakeup` with a matching `wakeOn` role, one responsible session for that repository, enough idle time, and room in both budgets may start one; any gate that fails falls back to queueing.
 - **Archiving needs one browser sign-in, but you do not type a command for it.** GitHub has no archive API; `scripts/clear-inbox.mjs` drives a local Chromium-based browser (Edge, Chrome or Chromium). Switching "message clearing" to archive opens the sign-in window by itself, and it opens again if the session expires.
 - **Archiving touches only the repositories you subscribe to.** It opens GitHub's notification search per repository (`repo:owner/name`) and archives what is in that view; with no subscription it archives nothing. The whole inbox needs an explicit `--all`.
 - **State is local.** It lives under `.work/` in the working directory and is not synced across machines.

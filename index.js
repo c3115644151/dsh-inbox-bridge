@@ -115,6 +115,17 @@ export function preferenceNext(current = {}, action = "", value = "", options = 
     }
     return next;
   }
+  if (action === "primary") {
+    // Who may be woken for this repository. An empty value releases the claim.
+    if (!sessionId) return null;
+    const repo = value ? repoFromInput(value) : sessionRepo;
+    if (!repo) return null;
+    const primary = { ...(next.primary ?? {}) };
+    if (value) primary[repo] = sessionId;
+    else delete primary[repo];
+    next.primary = primary;
+    return next;
+  }
   return null;
 }
 
@@ -228,6 +239,13 @@ const DEFAULTS = Object.freeze({
    * leaves the inbox alone. GitHub has no "done" API, so this is read, not done.
    */
   clear: "repo",
+  /**
+   * Which session is responsible for opening a turn on a repository:
+   * `{ "owner/name": "<session id>" }`. Without a claim, a repository whose
+   * events reach more than one session wakes nobody — the plugin may not choose
+   * which conversation starts working.
+   */
+  primary: {},
   poll: { command: process.execPath, args: [CLI, "poll"] },
   ack: { command: process.execPath, args: [CLI, "ack"] },
 });
@@ -601,7 +619,13 @@ export function apply(ctx, config) {
         );
         return;
       }
-      const wake = wakePlan(batches, options, { streak: wakeStreak, lastActive, wakes, now });
+      const wake = wakePlan(batches, options, {
+        streak: wakeStreak,
+        lastActive,
+        wakes,
+        now,
+        primary: prefs.primary ?? {},
+      });
       if (!wake.agent && wake.considered > 0) log(`no wakeup: ${wake.why}`);
       const waking = wake.agent ? new Set([wake.agent]) : new Set();
       const deliveredKeys = new Set();
@@ -978,9 +1002,24 @@ export function wakePlan(batches, options, state = {}) {
   const streak = state.streak ?? new Map();
   const lastActive = state.lastActive ?? new Map();
   const wakes = state.wakes ?? [];
+  const primary = state.primary ?? {};
   const perHour = options?.wakesPerHour ?? DEFAULTS.wakesPerHour;
   const cap = options?.maxConsecutiveWakes ?? DEFAULTS.maxConsecutiveWakes;
   const idleMs = options?.wakeAfterIdleMs ?? DEFAULTS.wakeAfterIdleMs;
+
+  // Opening a turn is expensive and public: whoever gets it suddenly starts
+  // working. Several sessions can share one workspace, and then they all watch
+  // the same repository, so "the session on this repository" is not an answer.
+  // A repository therefore wakes its responsible session — claimed in the page —
+  // and stays silent while more than one session watches it without a claim.
+  const watchers = new Map();
+  for (const [agent, events] of batches ?? []) {
+    for (const event of events) {
+      const repo = event.repo ?? "";
+      if (!watchers.has(repo)) watchers.set(repo, new Set());
+      watchers.get(repo).add(agent);
+    }
+  }
 
   const recentWakes = wakes.filter((at) => now - at < 60 * 60 * 1000).length;
   let considered = 0;
@@ -990,6 +1029,17 @@ export function wakePlan(batches, options, state = {}) {
       const role = event.role ?? "any";
       if (!wakeOn.includes(role)) continue;
       considered += 1;
+      const repo = event.repo ?? "";
+      const owner = primary[repo] ?? null;
+      const key = keyOf(agent);
+      if (owner && key !== owner) {
+        why = "not-primary";
+        continue;
+      }
+      if (!owner && (watchers.get(repo)?.size ?? 0) > 1) {
+        why = "ambiguous";
+        continue;
+      }
       if (recentWakes >= perHour) {
         why = "hourly-budget";
         continue;
@@ -1171,10 +1221,25 @@ export function mergeConfig(config) {
       `inbox-bridge: \`signInCooldownMs\` must be a non-negative integer, got ${JSON.stringify(signInCooldownMs)}`,
     );
   }
+  // Which session opens a turn for a repository. Written by the page, but it is
+  // configuration like any other: a typo here would silently silence wakeups.
+  const primary = given.primary ?? DEFAULTS.primary;
+  if (primary === null || typeof primary !== "object" || Array.isArray(primary)) {
+    throw new Error(`inbox-bridge: \`primary\` must be { "owner/name": sessionId }, got ${JSON.stringify(primary)}`);
+  }
+  for (const [repo, session] of Object.entries(primary)) {
+    if (!/^[\w.-]+\/[\w.-]+$/u.test(repo)) {
+      throw new Error(`inbox-bridge: \`primary\` has a key that is not owner/name: ${JSON.stringify(repo)}`);
+    }
+    if (typeof session !== "string" || session.length === 0) {
+      throw new Error(`inbox-bridge: \`primary.${repo}\` must be a session id, got ${JSON.stringify(session)}`);
+    }
+  }
   return {
     ...DEFAULTS,
     ...given,
     signInCooldownMs,
+    primary,
     repo,
     repos: watched,
     delivery,
@@ -1378,7 +1443,8 @@ function wakeNotice(options, delivery) {
   const idleMinutes = Math.max(1, Math.round((options.wakeAfterIdleMs ?? DEFAULTS.wakeAfterIdleMs) / 60_000));
   const perHour = options.wakesPerHour ?? DEFAULTS.wakesPerHour;
   return (
-    `插件可能替你开一轮：仅限 ${wakeOn.join("/")} 角色，会话空闲满 ${idleMinutes} 分钟后，` +
+    `插件可能替你开一轮：仅限 ${wakeOn.join("/")} 角色，且只有被指定负责该仓库的会话；` +
+        `会话空闲满 ${idleMinutes} 分钟后，` +
     `每小时最多 ${perHour} 次（另有每个会话 ${options.maxConsecutiveWakes ?? DEFAULTS.maxConsecutiveWakes} 次的连续上限）。`
   );
 }
