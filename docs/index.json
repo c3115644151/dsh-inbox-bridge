@@ -28,8 +28,8 @@
         "zh": "GitHub 收件箱"
       },
       "description": {
-        "en": "Lets the agent keep watch over your repository the way a maintainer would: it reads the GitHub repositories a session subscribes to, keeps the events that concern you — failed checks, reviews waiting for you, issues assigned to you, comments that mention you — and puts them in front of the agent in its own turn, opening one by itself when the session is idle and the fact matters, so a broken check gets fixed and a review request gets reviewed without waiting for you. A chip in the status row lists them and switches delivery, message clearing and subscriptions. Read-only; waking is opt-in and gated, and reading while idle happens only in the mode that can wake — the default queue-only mode makes no request while idle.",
-        "zh": "让 agent 像维护者一样盯着你的仓库：按会话订阅的 GitHub 仓库取数，只保留与你有关、需要你处理的事件（失败的 CI、待你评审的 PR、指派给你的 issue、@你的评论），在自己的回合送进上下文——CI 挂了就修，有人请你评审就审，不用等你回来看；会话空闲又遇到要紧的事，它也会主动开一轮。状态行里的胶囊可查看待处理项，并切换提醒方式、消息清理与订阅仓库。只读 GitHub；主动开轮需显式开启且有四道门，为它服务的空闲取数也随模式而定——默认的只注入模式空闲时不发任何请求。"
+        "en": "Lets the agent keep watch over your repository the way a maintainer would: it reads the GitHub repositories a session subscribes to, keeps the events that concern you — failed checks, reviews waiting for you, issues assigned to you, comments that mention you, open security alerts, and pull requests that conflict with the base branch — and puts them in front of the agent in its own turn, opening one by itself when the session is idle and the fact matters, so a broken check gets fixed and a review request gets reviewed without waiting for you. A chip in the status row lists them and switches delivery, message clearing and subscriptions. Read-only; waking is opt-in and gated, and reading while idle happens only in the mode that can wake — the default queue-only mode makes no request while idle.",
+        "zh": "让 agent 像维护者一样盯着你的仓库：按会话订阅的 GitHub 仓库取数，只保留与你有关、需要你处理的事件（失败的 CI、待你评审的 PR、指派给你的 issue、@你的评论、开着的安全告警、与基分支冲突的 PR），在自己的回合送进上下文——CI 挂了就修，有人请你评审就审，不用等你回来看；会话空闲又遇到要紧的事，它也会主动开一轮。状态行里的胶囊可查看待处理项，并切换提醒方式、消息清理与订阅仓库。只读 GitHub；主动开轮需显式开启且有四道门，为它服务的空闲取数也随模式而定——默认的只注入模式空闲时不发任何请求。"
       },
       "icon": "icon.svg",
       "author": "c3115644151",
@@ -50,12 +50,12 @@
       },
       "versions": [
         {
-          "version": "2.16.4",
-          "publishTimestamp": 1794908933,
+          "version": "2.17.0",
+          "publishTimestamp": 1794912854,
           "source": {
             "type": "git",
             "url": "https://github.com/c3115644151/dsh-inbox-bridge",
-            "commit": "2a6d07f75a60e64a67b68cd3179f54861aaebcf6"
+            "commit": "44dc921ec4ad7afbcda547c6907ca6231ba7e351"
           },
           "engines": {
             "dsh": ">=0.1.0"
