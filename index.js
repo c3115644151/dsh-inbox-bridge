@@ -715,7 +715,7 @@ export function apply(ctx, config) {
             }
             log(`preference: ${action} ${value || ""} (session ${sessionId ?? "-"}) → delivery ${options.delivery}, clear ${options.clear}, sweep ${options.sweep?.when ?? "off"}, repos ${(options.repos ?? []).join(",") || "-"}`);
             writeRuntime();
-            return reply(200, { ok: true, status: uiPayload() });
+            return reply(200, { ok: true, status: uiPayload(sessionId) });
           },
         }),
       );
