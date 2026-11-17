@@ -164,6 +164,12 @@ test("an event held while everyone was busy reaches a later poll", () => {
     );
     assert.equal(second.events[0].title, "wakeup test");
     assert.equal(second.events[0].carried, true);
+    // The repository travels with the record. Without it the plugin has nothing
+    // to match a session's subscription against, and a held fact from one
+    // project gets handed to whichever session happened to be idle.
+    assert.equal(second.events[0].repo, "o/r");
+    const held = readState(join(root, ".work", "inbox-bridge", "state.json"));
+    assert.equal(held.events["o/r#issue:5"].repo, "o/r");
 
     // Delivered once, it stops being carried: the agent has been told.
     const queue = readState(join(root, ".work", "inbox-bridge", "state.json"));
@@ -181,6 +187,15 @@ test("an event held while everyone was busy reaches a later poll", () => {
       carriedPending(stale.state, [], { now: Date.parse("2026-11-17T19:00:00Z") }),
       [],
     );
+
+    // A record written before the field existed still names its repository: the
+    // key starts with it, and routing matters more than the round trip.
+    const legacy = carriedPending(
+      { events: { "o/r#issue:9": { status: "pending", attempts: 0, at: "2026-11-17T12:59:00Z", title: "legacy" } } },
+      [],
+      { now: Date.parse("2026-11-17T13:00:00Z") },
+    );
+    assert.equal(legacy[0]?.repo, "o/r");
   } finally {
     rmSync(root, { recursive: true, force: true, maxRetries: 3 });
   }
@@ -466,7 +481,7 @@ test("explain says a role filter is what keeps a fact out of the session", () =>
   });
 });
 
-test("explain names the repository that is not subscribed, and the next resurface", () => {
+test("explain names the repository nobody owns, and the next resurface", () => {
   withWorkspace((root) => {
     writeFileSync(
       join(root, ".work", "inbox-bridge", "runtime.json"),
@@ -495,7 +510,7 @@ test("explain names the repository that is not subscribed, and the next resurfac
       }),
     );
     const unsubscribed = explainKey(root, "owner/two#run:1");
-    assert.ok(unsubscribed.notes.some((note) => /不在这台实例的订阅里/u.test(note)));
+    assert.ok(unsubscribed.notes.some((note) => /没有被任何会话接管/u.test(note)));
     assert.match(unsubscribed.next, /最早重提时间/u);
 
     const twice = explainKey(root, "owner/one#pr:5:reviewer:review-requested");

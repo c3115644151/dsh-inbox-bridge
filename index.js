@@ -62,11 +62,24 @@ export function repoFromInput(value) {
   return null;
 }
 
+/**
+ * The repository a key names, when the key carries one: `owner/name#issue:7…`.
+ *
+ * The collector prefixes every key with the repository it came from, so a fact
+ * whose `repo` field went missing in a round trip can still be routed. This is
+ * the safety net, not the primary source: the field is what the queue stores.
+ */
+export function repoOfKey(key) {
+  if (typeof key !== "string") return null;
+  const cut = key.indexOf("#");
+  if (cut <= 0) return null;
+  const repo = key.slice(0, cut);
+  return /^[\w.-]+\/[\w.-]+$/u.test(repo) ? repo : null;
+}
+
 export function preferenceNext(current = {}, action = "", value = "", options = {}) {
   const next = { ...current };
   const sessionId = options.sessionId ?? null;
-  const polled = () =>
-    options.repos?.length ? options.repos : options.repo ? [options.repo] : [];
 
   if (action === "delivery") {
     next.delivery = value;
@@ -76,58 +89,23 @@ export function preferenceNext(current = {}, action = "", value = "", options = 
     else if (!next.wakeOn?.length) next.wakeOn = ["reviewer"];
     return next;
   }
-  // Cleaning is decided per repository, never per account: the queue only holds
-  // events from repositories this instance reads, so marking anything else read
-  // would be acting outside the operator's stated scope.
-  if (action === "read") {
-    next.clear = value === "off" ? "off" : "repo";
-    return next;
-  }
-  if (action === "archive") {
-    // `null` overrides a profile that configures a sweep; deleting the key would
-    // only fall back to that profile and stay on.
-    next.sweep = value === "on" ? { args: [SWEEP_SCRIPT, "--json"] } : null;
-    return next;
-  }
-  // One control, three levels: the two mechanisms (mark read, move to Done) are
-  // not independent switches a person should have to combine by hand.
-  if (action === "clean") {
-    if (!["off", "read", "done"].includes(value)) return null;
-    next.clear = value === "off" ? "off" : "repo";
-    next.sweep = value === "done" ? { args: [SWEEP_SCRIPT, "--json"] } : null;
-    return next;
-  }
-  if (action === "subscribe" || action === "unsubscribe") {
+  // Cleaning is not a preference. The tier decides: item-tier notices are marked
+  // read, repository-tier notices are archived by whichever session maintains that
+  // repository. Both are side effects of facts we already found, so nobody should
+  // have to pick a level by hand — and the two never contradict each other.
+  if (action === "own" || action === "subscribe" || action === "release" || action === "unsubscribe") {
+    const owning = action === "own" || action === "subscribe";
     const repo = repoFromInput(value);
     if (!repo) return null;
     if (!sessionId) return null;
-    // A session subscribes; the instance follows, because it is the one that
-    // polls. Without this the subscription would never see a fetch.
-    const current_list =
-      next.sessionRepos?.[sessionId] ?? (options.sessionRepo ? [options.sessionRepo] : []);
+    // A subscription belongs to the session that made it; the instance polls the
+    // union of them (see `polledRepos`), so there is no separate list to keep.
+    const current_list = next.sessionRepos?.[sessionId] ?? [];
     const list =
-      action === "subscribe"
+      owning
         ? [...new Set([...current_list, repo])]
         : current_list.filter((entry) => entry !== repo);
     next.sessionRepos = { ...(next.sessionRepos ?? {}), [sessionId]: list };
-    if (action === "subscribe" && !polled().includes(repo)) {
-      next.repos = [...new Set([...polled(), repo])];
-    }
-    return next;
-  }
-  if (action === "primary") {
-    // Who may be woken for this repository. An empty value releases the claim.
-    // The page may name the session it means (`target`), because the person is
-    // choosing among the sessions watching a repository, not necessarily
-    // speaking from the one that should own it.
-    const owner = options.targetSession ?? sessionId;
-    if (!owner) return null;
-    const repo = value ? repoFromInput(value) : (options.sessionRepo ?? null);
-    if (!repo) return null;
-    const primary = { ...(next.primary ?? {}) };
-    if (value) primary[repo] = owner;
-    else delete primary[repo];
-    next.primary = primary;
     return next;
   }
   if (action === "idle") {
@@ -233,11 +211,12 @@ const DEFAULTS = Object.freeze({
   /** wakeups one agent may take before its next human message, then it only queues */
   maxConsecutiveWakes: 3,
   /**
-   * Optional command that archives the notification inbox after a poll. GitHub
-   * has no API for "Done", so this is a browser action (`scripts/clear-inbox.mjs`).
-   * `when: "events"` (default) only runs it on a turn that found something.
+   * Archiving the repository-tier threads we just read. GitHub has no API for
+   * "Done", so this is a browser action (`scripts/clear-inbox.mjs`); it runs on a
+   * turn that found something, and `null` here would mean the maintainer's own
+   * bookkeeping silently stops — so it is on, not a switch.
    */
-  sweep: null,
+  sweep: { args: [SWEEP_SCRIPT, "--json"], when: "events" },
   /**
    * How long to wait before the sign-in window may open again after it was left
    * unsigned. Six hours: long enough not to interrupt, short enough that
@@ -258,13 +237,6 @@ const DEFAULTS = Object.freeze({
    * leaves the inbox alone. GitHub has no "done" API, so this is read, not done.
    */
   clear: "repo",
-  /**
-   * Which session is responsible for opening a turn on a repository:
-   * `{ "owner/name": "<session id>" }`. Without a claim, a repository whose
-   * events reach more than one session wakes nobody — the plugin may not choose
-   * which conversation starts working.
-   */
-  primary: {},
   poll: { command: process.execPath, args: [CLI, "poll"] },
   ack: { command: process.execPath, args: [CLI, "ack"] },
 });
@@ -302,14 +274,16 @@ export function apply(ctx, config) {
     return merged;
   };
   /**
-   * What one session watches. A session chooses for itself; until it does, it
-   * watches the repository it lives in rather than everything the instance
-   * polls — that is what keeps two sessions on one machine apart.
+   * What one session watches: exactly what it subscribed to, nothing inherited.
+   * The first session in a workspace takes its repository as a default (recorded
+   * in `prefs.sessionRepos` by `claimSubscription`); every later session starts
+   * with nothing and takes a repository from the page. Subscribing is the same
+   * act as "this session is concerned with this repository", which is why there
+   * is no second setting for it.
    */
-  const sessionReposOf = (sessionId, repo) => {
+  const sessionReposOf = (sessionId) => {
     const explicit = sessionId ? prefs.sessionRepos?.[sessionId] : null;
-    if (Array.isArray(explicit)) return explicit;
-    return repo ? [repo] : [];
+    return Array.isArray(explicit) ? explicit : [];
   };
   if (Object.keys(prefs).length > 0) {
     try {
@@ -337,6 +311,25 @@ export function apply(ctx, config) {
   /** Wakeup timestamps inside the last hour, for `wakesPerHour`. */
   const wakes = [];
   let lastOfflineNoticeAt = 0;
+  /** Said once per process, so "nothing is subscribed" is visible but not noisy. */
+  let warnedNoSubscription = false;
+
+  /**
+   * Everything worth reading: the repositories the live sessions subscribe to,
+   * plus any the profile names explicitly. Nobody watching a repository means
+   * nobody wants its events, so the poller stops reading it — polling a
+   * repository no session is concerned with only produces work for the ignore
+   * pile and makes "the plugin keeps running" false in the way that matters.
+   */
+  const polledRepos = () => {
+    const union = new Set();
+    for (const entry of options.repos ?? []) union.add(String(entry));
+    for (const [id, list] of Object.entries(prefs.sessionRepos ?? {})) {
+      if (!agents.has(id)) continue;
+      for (const entry of list ?? []) union.add(String(entry));
+    }
+    return [...union];
+  };
 
   const log = (line) => {
     try {
@@ -389,9 +382,9 @@ export function apply(ctx, config) {
   const uiPayload = (sessionId = null) => {
     const agent = sessionId ? agents.get(sessionId) : null;
     const repo = agent ? repoOf(agent) : null;
-    // What this session watches: its own choice if it made one, otherwise the
-    // repository it lives in. The instance polls the union of these.
-    const watched = sessionId ? sessionReposOf(sessionId, repo) : [];
+    // What this session watches: only what it subscribed to. The instance polls
+    // the union of those subscriptions.
+    const watched = sessionId ? sessionReposOf(sessionId) : [];
     const session = agent
       ? {
           id: sessionId,
@@ -400,24 +393,6 @@ export function apply(ctx, config) {
           roles: options.roles ?? [],
         }
       : null;
-    // A repository can be watched by several sessions in the same directory, and
-    // a wakeup has to reach the one the person means. Two sessions in one
-    // workspace have the same title and the same folder, so each name carries the
-    // last four characters of its id — the only thing that really tells them
-    // apart — and the page marks which one is asking and which one would take a
-    // wakeup right now.
-    const viewers = repo
-      ? [...agents.entries()]
-          .map(([id, each]) => ({
-            id,
-            label: sessionLabel(each),
-            tag: sessionTag(each),
-            repo: repoOf(each),
-            recent: lastActive.get(each) ?? 0,
-            current: id === sessionId,
-          }))
-          .filter((entry) => entry.repo && entry.repo.toLowerCase() === repo.toLowerCase())
-      : [];
     return {
       ...buildUiPayload({
         options,
@@ -425,7 +400,7 @@ export function apply(ctx, config) {
         source: readJson(join(options.cwd, SOURCE_STATE_REL)),
         recent,
         session,
-        viewers,
+        polled: polledRepos(),
       }),
       // The page proves it is this process's page before it may change anything,
       // and shows which choices came from it rather than from the profile.
@@ -453,13 +428,12 @@ export function apply(ctx, config) {
             at: new Date().toISOString(),
             cwd: options.cwd,
             repo: options.repo,
-            repos: options.repos,
+            repos: polledRepos(),
             intervalMs: options.intervalMs,
             delivery: options.delivery,
             clear: options.clear,
             sweep: options.sweep ? options.sweep.when : null,
             wakeOn: options.wakeOn,
-            primary: options.primary ?? {},
             wakeAfterIdleMs: options.wakeAfterIdleMs,
             wakesPerHour: options.wakesPerHour,
             maxConsecutiveWakes: options.maxConsecutiveWakes,
@@ -541,11 +515,7 @@ export function apply(ctx, config) {
           ...process.env,
           // The window finishes the sweep after a sign-in; give it the same
           // subscription the poll uses, or it would not know what to archive.
-          ...(options.repos?.length > 0
-            ? { INBOX_REPO: options.repos.join(",") }
-            : options.repo
-              ? { INBOX_REPO: options.repo }
-              : {}),
+          ...(polledRepos().length > 0 ? { INBOX_REPO: polledRepos().join(",") } : {}),
           ELECTRON_RUN_AS_NODE: "1",
         },
         // Detached so a twenty-minute sign-in never holds a poll open; visible
@@ -578,14 +548,25 @@ export function apply(ctx, config) {
     }
   };
 
-  const sweepInbox = async (freshCount) => {
+  // A sweep that fails is retried on a slower clock. Launching a browser every
+  // minute to fail the same way costs a process each time and teaches whoever
+  // reads the log to ignore the line that is supposed to mean "this is broken".
+  const SWEEP_RETRY_MS = 30 * 60 * 1000;
+  let sweepFailure = { at: 0, why: "" };
+
+  const sweepInbox = async (freshCount, runAs = options) => {
     if (!options.sweep) return;
+    // The bundled archiver drives a browser, which a headless host or a test run
+    // does not have. A profile that brings its own command is left alone.
+    if (process.env.INBOX_NO_BROWSER === "1" && (options.sweep.args ?? []).includes(SWEEP_SCRIPT)) return;
     if (options.sweep.when === "events" && freshCount === 0) return;
+    if (sweepFailure.at && Date.now() - sweepFailure.at < SWEEP_RETRY_MS) return;
     const began = Date.now();
     try {
-      const stdout = await runCommand(options.sweep, options);
+      const stdout = await runCommand(options.sweep, runAs);
       const line = String(stdout ?? "").trim().split(/\r?\n/u).pop() ?? "";
       signIn.signedIn = true;
+      sweepFailure = { at: 0, why: "" };
       log(`swept the notification inbox: ${line || "done"} (${Date.now() - began}ms)`);
     } catch (error) {
       // The command's own answer outranks its exit code. `--json` prints
@@ -595,6 +576,7 @@ export function apply(ctx, config) {
       const answer = parseJsonAnswer(error?.stdout);
       if (answer?.ok === true) {
         signIn.signedIn = true;
+        sweepFailure = { at: 0, why: "" };
         const archived = Number.isFinite(answer.archived) ? `${answer.archived} thread(s)` : "done";
         log(`swept the notification inbox: ${archived} (${Date.now() - began}ms)`);
         return;
@@ -606,7 +588,10 @@ export function apply(ctx, config) {
         log("the archive needs a browser sign-in");
         openSignIn("the archive found no sign-in");
       } else {
-        log(`sweep failed: ${describe(error)}`);
+        const why = answer?.reason ? `${answer.reason} (${describe(error)})` : describe(error);
+        const repeat = sweepFailure.why === why;
+        sweepFailure = { at: Date.now(), why };
+        if (!repeat) log(`sweep failed: ${why}; not retrying for 30 分钟`);
       }
     }
   };
@@ -617,13 +602,26 @@ export function apply(ctx, config) {
     debug(`poll: enter (polling=${polling}, agents=${agents.size}, since=${Date.now() - startedAt}ms)`);
     if (!routeReady) registerStatusRoute();
     if (polling || agents.size === 0) return;
+    // Nothing is subscribed to anything: there is nothing to read. Polling the
+    // workspace repository instead would be a subscription nobody made — the
+    // exact reason a session that never asked for GitHub traffic was being told
+    // about it — so the poller stands down and says why, once.
+    const repos = polledRepos();
+    if (repos.length === 0) {
+      if (!warnedNoSubscription) {
+        warnedNoSubscription = true;
+        log("no repositories owned: nothing to poll until a session takes one");
+      }
+      return;
+    }
     // Turn start fires both a status change and a session event; one poll is
     // enough for both, and a duplicate would only spend a second `gh` call.
     if (Date.now() - startedAt < 3_000) return;
     startedAt = Date.now();
     polling = true;
+    const scoped = { ...options, repos, repo: repos.length === 1 ? repos[0] : options.repo };
     try {
-      const payload = await pollEvents(options);
+      const payload = await pollEvents(scoped);
       debug(`poll: payload skipped=${payload.skipped ?? "no"} events=${payload.events?.length ?? 0}`);
       if (payload.cleared > 0) log(`marked ${payload.cleared} notification(s) read`);
       for (const entry of payload.clearFailed ?? []) {
@@ -634,29 +632,74 @@ export function apply(ctx, config) {
         // how a broken install looks exactly like an empty inbox.
         log(`poll skipped: ${payload.skipped}`);
         // No source at all: tell the user once in a while instead of failing silently.
-        if ((options.repos?.length ?? 0) === 0) announceOffline(payload.skipped);
+        if ((scoped.repos?.length ?? 0) === 0) announceOffline(payload.skipped);
         return;
       }
       const now = Date.now();
-      const freshCount = payload.events?.length ?? 0;
+      // Only facts the source just reported count as "found something": a held
+      // fact comes back in `payload.events` on every poll, and sweeping for it
+      // would open a browser once a minute for news nobody new has seen.
+      const freshCount = (payload.events ?? []).filter((event) => !event?.carried).length;
+      // A fact that lost its repository in a round trip still carries one in its
+      // key. Restore it before any routing decision: without it the gates below
+      // have nothing to compare and would hand the news to the wrong session.
       const { events, suppressed } = filterUndelivered(
         payload.events,
         recentlyDelivered,
         now,
         options.resurfaceMs,
       );
+      for (const event of events) {
+        if (event && !event.repo) {
+          const fromKey = repoOfKey(event.key);
+          if (fromKey) event.repo = fromKey;
+        }
+      }
       if (suppressed > 0) log(`suppressed ${suppressed} event(s) already delivered; waiting for ack`);
       if (events.length === 0) return;
       rememberEvents(events);
       // Archiving runs alongside delivery: the browser takes seconds, and the
       // notice must not wait for it.
-      void sweepInbox(freshCount);
-      const { ready, deferred } = deliveryTargets([...agents.values()], options);
-      // Each session gets only the events its own repository and role match: one
-      // repository's failures must never reach a session working elsewhere.
+      void sweepInbox(freshCount, scoped);
+      // Each session gets the facts that belong to it, and the tier decides who that is.
+      const { ready, deferred } = deliveryTargets([...agents.values()], scoped);
+      // Repository-tier facts (a red default branch, an advisory, a recovery) are the
+      // maintainer's ledger: only the sessions that took the repository over see them.
+      // Item-tier facts hang on one PR or issue; they go to whoever is working in that
+      // repository, because that is the session whose own action is being answered —
+      // and if nobody works there, to the maintainers, and if nobody maintains it, to
+      // the session that spoke last.
+      const audiences = new Map();
+      const audienceOf = (event) => {
+        const repo = event?.repo ?? repoOfKey(event?.key) ?? scoped.repo ?? null;
+        const tier = eventTier(event);
+        const cacheKey = `${tier}|${String(repo ?? "").toLowerCase()}`;
+        if (!audiences.has(cacheKey)) {
+          audiences.set(
+            cacheKey,
+            new Set(
+              audienceFor(tier, repo, ready, {
+                owns: (agent) => {
+                  const wanted = String(repo ?? "").toLowerCase();
+                  return sessionReposOf(keyOf(agent)).some((entry) => String(entry).toLowerCase() === wanted);
+                },
+                repoNames,
+                recent: lastActive,
+              }),
+            ),
+          );
+        }
+        return audiences.get(cacheKey);
+      };
+      const roleAllows = (agent, event) => {
+        const roles = options.roles?.length ? options.roles : [];
+        if (roles.length === 0) return true;
+        const role = event?.role ?? "any";
+        return role === "any" || roles.includes(role);
+      };
       const batches = new Map();
       for (const agent of ready) {
-        const mine = events.filter((event) => matchesWatch(agent, event, options, repoNames));
+        const mine = events.filter((event) => audienceOf(event).has(keyOf(agent)) && roleAllows(agent, event));
         if (mine.length > 0) batches.set(agent, mine);
       }
       const unassociated = ready.length - batches.size;
@@ -665,7 +708,7 @@ export function apply(ctx, config) {
         // (no ack) and deliver them when the run goes idle.
         log(
           `held ${events.length} event(s): ${deferred.length} agent(s) running` +
-            (unassociated > 0 ? `, ${unassociated} not on ${sourceLabel(options)}` : ""),
+            (unassociated > 0 ? `, ${unassociated} not on ${sourceLabel(scoped)}` : ""),
         );
         return;
       }
@@ -674,7 +717,6 @@ export function apply(ctx, config) {
         lastActive,
         wakes,
         now,
-        primary: prefs.primary ?? {},
       });
       if (!wake.agent && wake.considered > 0) log(`no wakeup: ${wake.why}`);
       // A wakeup that is only waiting for the idle window must not spend the
@@ -693,7 +735,7 @@ export function apply(ctx, config) {
       let delivered = 0;
       for (const [agent, mine] of batches) {
         try {
-          const message = buildMessage(mine.length, formatEvents(mine, options), options.label);
+          const message = buildMessage(mine.length, formatEvents(mine, scoped), options.label);
           deliver(agent, message, waking);
           for (const event of mine) deliveredKeys.add(event.key);
           delivered += 1;
@@ -709,7 +751,11 @@ export function apply(ctx, config) {
         if (wake.agent && deliveredKeys.has(wake.event.key)) {
           wakeStreak.set(wake.agent, (wakeStreak.get(wake.agent) ?? 0) + 1);
           wakes.push(now);
-          log(`woke ${sessionLabel(wake.agent)} because ${wake.event.role}:${wake.event.key}`);
+          // The tag tells two sessions in one workspace apart in the log: they
+          // share a title, so the title alone would not say which one woke.
+          log(
+            `woke ${sessionLabel(wake.agent)}·${sessionTag(wake.agent)} because ${wake.event.role}:${wake.event.key}`,
+          );
         }
         log(
           `injected ${deliveredEvents.length} event(s) into ${delivered} agent(s) [${options.delivery}]` +
@@ -717,14 +763,14 @@ export function apply(ctx, config) {
               ? `; ${events.length - deliveredEvents.length} held for another session`
               : "") +
             (deferred.length > 0 ? `; ${deferred.length} running agent(s) skipped` : "") +
-            (unassociated > 0 ? `; ${unassociated} not on ${sourceLabel(options)}` : ""),
+            (unassociated > 0 ? `; ${unassociated} not on ${sourceLabel(scoped)}` : ""),
         );
         // Only what was actually handed to a session is marked delivered; leaving
         // the rest pending is what lets the next poll deliver them.
-        await ackEvents(options, deliveredEvents, "delivered");
+        await ackEvents(scoped, deliveredEvents, "delivered");
         // Infrastructure failures cannot be fixed by a code change: report once.
         const infra = deliveredEvents.filter((event) => event.kind === "infra");
-        if (infra.length > 0) await ackEvents(options, infra, "done");
+        if (infra.length > 0) await ackEvents(scoped, infra, "done");
       }
     } catch (error) {
       log(`poll skipped: ${describe(error)}`);
@@ -748,6 +794,36 @@ export function apply(ctx, config) {
     turnTimers.set(key, timer);
   };
 
+  /**
+   * The first session in a workspace speaks for its repository.
+   *
+   * Recorded on the spot as that session's subscription, so the second session
+   * opened in the same folder starts with nothing. Inheriting "whatever the
+   * folder points at" is how every new session ended up subscribed to a
+   * repository nobody asked about; taking one from the page is one click.
+   */
+  const claimSubscription = (agent) => {
+    const id = keyOf(agent);
+    if (!id || prefs.sessionRepos?.[id]) return;
+    const repo = repoOf(agent, options, repoNames);
+    if (!repo) return;
+    const wanted = repo.toLowerCase();
+    const claimed = Object.values(prefs.sessionRepos ?? {}).some((list) =>
+      (list ?? []).some((entry) => String(entry).toLowerCase() === wanted),
+    );
+    if (claimed) return;
+    try {
+      applyPrefs({ ...prefs, sessionRepos: { ...(prefs.sessionRepos ?? {}), [id]: [repo] } });
+    } catch (error) {
+      log(`could not subscribe to ${repo}: ${describe(error)}`);
+      return;
+    }
+    log(
+      `took ${repo} for ${sessionLabel(agent)}·${sessionTag(agent)} (the first session in this workspace)`,
+    );
+    writeRuntime();
+  };
+
   const register = (agent) => {
     const key = keyOf(agent);
     if (!key || agents.has(key)) return;
@@ -758,7 +834,20 @@ export function apply(ctx, config) {
       agents.delete(key);
       lastActive.delete(agent);
       wakeStreak.delete(agent);
+      // A subscription belongs to the session that made it. Closing the session
+      // takes it away again, so a repository whose last subscriber left stops
+      // being polled instead of being kept alive by a row nobody owns.
+      if (prefs.sessionRepos?.[key]) {
+        const sessionRepos = { ...(prefs.sessionRepos ?? {}) };
+        delete sessionRepos[key];
+        try {
+          applyPrefs({ ...prefs, sessionRepos });
+        } catch {
+          // Teardown must not fail because an overlay cannot be re-merged.
+        }
+      }
     });
+    claimSubscription(agent);
   };
 
   writeRuntime();
@@ -778,10 +867,11 @@ export function apply(ctx, config) {
     debug(`created ${keyOf(payload.agent)}`);
     register(payload.agent);
   });
+  const subscribedNow = polledRepos();
   log(
     `started: ${agents.size} agent(s), poll every ${pollLabel(options.intervalMs)} ` +
-      `while a turn runs, delivery ${options.delivery}, clear ${options.clear}` +
-      `${options.sweep ? `, sweep ${options.sweep.when}` : ""}${options.repos?.length ? `, repos ${options.repos.join(", ")}` : ""}`,
+      `while a turn runs, delivery ${options.delivery}, cleaning ${options.clear}/${options.sweep ? "archive" : "read only"}` +
+      `${subscribedNow.length ? `, polling ${subscribedNow.join(", ")}` : ", nothing owned yet"}`,
   );
   if (options.wakeOnIdle) {
     log(
@@ -933,10 +1023,6 @@ export function apply(ctx, config) {
             const action = url.searchParams.get("set") ?? "";
             const value = url.searchParams.get("value") ?? "";
             const sessionId = url.searchParams.get("session") || null;
-            // A claim names the session that should own a repository, which is
-            // not always the session the page is drawn for.
-            const named = url.searchParams.get("target") || null;
-            const targetSession = named && agents.has(named) ? named : null;
             // Which repository the session lives in, so "subscribe my repo" and
             // "unsubscribe the last one" know what the default is.
             const sessionRepo = sessionId ? repoOf(agents.get(sessionId)) : null;
@@ -954,7 +1040,6 @@ export function apply(ctx, config) {
                 ...options,
                 sessionId,
                 sessionRepo,
-                targetSession,
               });
               if (action === "signin") {
                 // Not a setting: open the window that archiving needs.
@@ -965,15 +1050,10 @@ export function apply(ctx, config) {
                 return reply(400, { ok: false, error: `unknown setting: ${action || "-"}` });
               }
               applyPrefs(next);
-              // Choosing the archive mode is also the request for a sign-in when
-              // there is none: the mode does nothing without one.
-              const wantsArchive =
-                (action === "clean" && value === "done") || (action === "archive" && value === "on");
-              if (wantsArchive && signIn.signedIn !== true) openSignIn("archive was turned on");
             } catch (error) {
               return reply(400, { ok: false, error: describe(error) });
             }
-            log(`preference: ${action} ${value || ""} (session ${sessionId ?? "-"}) → delivery ${options.delivery}, clear ${options.clear}, sweep ${options.sweep?.when ?? "off"}, repos ${(options.repos ?? []).join(",") || "-"}`);
+            log(`preference: ${action} ${value || ""} (session ${sessionId ?? "-"}) → delivery ${options.delivery}, repos ${(options.repos ?? []).join(",") || "-"}`);
             writeRuntime();
             return reply(200, { ok: true, status: uiPayload(sessionId) });
           },
@@ -1068,17 +1148,16 @@ export function wakePlan(batches, options, state = {}) {
   const streak = state.streak ?? new Map();
   const lastActive = state.lastActive ?? new Map();
   const wakes = state.wakes ?? [];
-  const primary = state.primary ?? {};
   const perHour = options?.wakesPerHour ?? DEFAULTS.wakesPerHour;
   const cap = options?.maxConsecutiveWakes ?? DEFAULTS.maxConsecutiveWakes;
   const idleMs = options?.wakeAfterIdleMs ?? DEFAULTS.wakeAfterIdleMs;
 
   // Opening a turn is expensive and public: whoever gets it suddenly starts
-  // working. Several sessions can share one workspace, and then they all watch
-  // the same repository, so "the session on this repository" is not an answer.
-  // Every repository therefore has exactly one owner: the one you claimed in the
-  // page, or — when nothing is claimed — the session you spoke to most recently,
-  // which is the one you were working in when you walked away.
+  // working. Several sessions can subscribe to one repository, so "the session
+  // on this repository" is not an answer by itself. The one you spoke to last
+  // takes it — the wakeup only fires once every session has been quiet for
+  // `wakeAfterIdleMs`, so that session is the one you were working in when you
+  // walked away, not an arbitrary choice.
   const watchers = new Map();
   for (const [agent, events] of batches ?? []) {
     for (const event of events) {
@@ -1089,8 +1168,6 @@ export function wakePlan(batches, options, state = {}) {
   }
 
   const ownerOf = (repo) => {
-    const claimed = primary[repo] ?? null;
-    if (claimed) return claimed;
     let best = null;
     let bestAt = -1;
     for (const watcher of watchers.get(repo) ?? []) {
@@ -1116,10 +1193,9 @@ export function wakePlan(batches, options, state = {}) {
       const key = keyOf(agent);
       const owner = ownerOf(repo);
       if (owner && key !== owner) {
-        // An explicit claim is a decision the operator made; falling back to
-        // "most recent" silently would break it. The default is not a decision,
-        // so it is allowed to move as you move between sessions.
-        why = primary[repo] ? "not-primary" : "not-recent";
+        // One turn per repository per poll: the other subscribers of the same
+        // repository stay queued, and the event is not spent on them.
+        why = "not-recent";
         continue;
       }
       if (recentWakes >= perHour) {
@@ -1178,6 +1254,34 @@ export function repoOf(agent, options, cache = new Map(), now = Date.now()) {
  * host accepts the event's role. `role: "any"` always passes the role check —
  * the source could not attribute it to an identity relationship.
  */
+// Which audience a fact belongs to. Repository-tier facts are the maintainer's
+// ledger; item-tier facts answer whoever is working in that repository.
+export function eventTier(event = {}) {
+  const kind = event?.kind ?? "";
+  return kind === "ci" || kind === "security" || kind === "recovered" ? "repo" : "item";
+}
+
+export function audienceFor(tier, repo, agents = [], { owns = () => false, repoNames = new Map(), recent = new Map() } = {}) {
+  const key = (agent) => keyOf(agent);
+  const wanted = String(repo ?? "").toLowerCase();
+  // A source that names no repository (a custom poll command) is instance-wide:
+  // there is nothing to compare, so every session is a legitimate reader.
+  if (!wanted) return agents.map(key);
+  if (tier === "repo") return agents.filter((agent) => owns(agent)).map(key);
+  const working = agents.filter(
+    (agent) => String(repoNames.get(key(agent)) ?? "").toLowerCase() === wanted,
+  );
+  if (working.length > 0) return working.map(key);
+  const owners = agents.filter((agent) => owns(agent));
+  if (owners.length > 0) return owners.map(key);
+  // Nobody works there and nobody maintains it: the session that spoke last is the
+  // person who was doing something, so their own event reaches them.
+  const latest = agents
+    .slice()
+    .sort((a, b) => (recent.get(key(b)) ?? 0) - (recent.get(key(a)) ?? 0))[0];
+  return latest ? [key(latest)] : [];
+}
+
 export function matchesWatch(agent, event, options, cache) {
   const eventRepo = event?.repo ?? options?.repo ?? null;
   if (eventRepo) {
@@ -1287,7 +1391,7 @@ export function mergeConfig(config) {
       `inbox-bridge: \`clear\` must be "off" or "repo", got ${JSON.stringify(requested)}`,
     );
   }
-  const sweep = given.sweep ?? DEFAULTS.sweep;
+  const sweep = "sweep" in given ? given.sweep : DEFAULTS.sweep;
   let sweepSpec = null;
   if (sweep !== null && sweep !== undefined) {
     if (typeof sweep !== "object" || Array.isArray(sweep)) {
@@ -1314,25 +1418,15 @@ export function mergeConfig(config) {
       `inbox-bridge: \`signInCooldownMs\` must be a non-negative integer, got ${JSON.stringify(signInCooldownMs)}`,
     );
   }
-  // Which session opens a turn for a repository. Written by the page, but it is
-  // configuration like any other: a typo here would silently silence wakeups.
-  const primary = given.primary ?? DEFAULTS.primary;
-  if (primary === null || typeof primary !== "object" || Array.isArray(primary)) {
-    throw new Error(`inbox-bridge: \`primary\` must be { "owner/name": sessionId }, got ${JSON.stringify(primary)}`);
-  }
-  for (const [repo, session] of Object.entries(primary)) {
-    if (!/^[\w.-]+\/[\w.-]+$/u.test(repo)) {
-      throw new Error(`inbox-bridge: \`primary\` has a key that is not owner/name: ${JSON.stringify(repo)}`);
-    }
-    if (typeof session !== "string" || session.length === 0) {
-      throw new Error(`inbox-bridge: \`primary.${repo}\` must be a session id, got ${JSON.stringify(session)}`);
-    }
-  }
+  // A profile written by an older version may still name `primary`. It no longer
+  // means anything — the session you spoke to last takes a wakeup — and refusing
+  // the whole config over a dead key would be worse than ignoring it, so it is
+  // dropped rather than validated.
+  if (given.primary !== undefined) delete given.primary;
   return {
     ...DEFAULTS,
     ...given,
     signInCooldownMs,
-    primary,
     repo,
     repos: watched,
     delivery,
@@ -1523,7 +1617,7 @@ export function formatEvents(events, options = DEFAULTS) {
     wakeNotice(options, delivery),
     `只在回合边界轮询：回合开始一次、进行中每 ${intervalLabel}一次、结束一次；${idleRead}`,
     ...(options.repos?.length
-      ? [`只播报 ${options.repos.join(", ")} 的事件，其它仓库的会话不会收到它。`]
+      ? [`只访问 ${options.repos.join(", ")} 这些仓库；没人接管的仓库不会被轮询。`]
       : []),
   ].join("\n");
 }
@@ -1540,7 +1634,7 @@ function wakeNotice(options, delivery) {
   const idleMinutes = Math.max(1, Math.round((options.wakeAfterIdleMs ?? DEFAULTS.wakeAfterIdleMs) / 60_000));
   const perHour = options.wakesPerHour ?? DEFAULTS.wakesPerHour;
   return (
-    `插件可能替你开一轮：仅限 ${wakeOn.join("/")} 角色，且只有被指定负责该仓库的会话；` +
+    `插件可能替你开一轮：仅限 ${wakeOn.join("/")} 角色，且只有你最近在用的那个会话；` +
         `会话空闲满 ${idleMinutes} 分钟后，` +
     `每小时最多 ${perHour} 次（另有每个会话 ${options.maxConsecutiveWakes ?? DEFAULTS.maxConsecutiveWakes} 次的连续上限）。`
   );
@@ -1559,7 +1653,7 @@ export function buildUiPayload({
   now = Date.now(),
   session = null,
   signIn = null,
-  viewers = null,
+  polled = null,
 }) {
   const configured = options.repos?.length > 0 ? options.repos : options.repo ? [options.repo] : [];
   // A session sees exactly what a poll would deliver to it: the repositories it
@@ -1597,27 +1691,6 @@ export function buildUiPayload({
     .sort((left, right) => String(right.at ?? "").localeCompare(String(left.at ?? "")))
     .slice(0, 20);
   const identity = options.identity ?? DEFAULTS.identity;
-  // How a wakeup may happen, in the terms the page can change: which roles, how
-  // quiet a session must be, how many an hour, and which session owns the
-  // repository this page is looking at.
-  const claims = options.primary ?? {};
-  const ownerOf = (name) => {
-    if (!name) return null;
-    const wanted = String(name).toLowerCase();
-    const hit = Object.keys(claims).find((key) => key.toLowerCase() === wanted);
-    return hit ? claims[hit] : null;
-  };
-  const sessionRepo = scoped ? (session.repo ?? repos[0] ?? null) : null;
-  // The session that would receive a wakeup for this repository right now: the
-  // claimed one, or — with nothing claimed — the one you spoke to most recently.
-  // The page shows both facts so "nobody is woken" is never a mystery.
-  const watchers = (viewers ?? []).filter((entry) => entry?.id);
-  const claimed = ownerOf(sessionRepo);
-  const recentViewer = watchers.reduce(
-    (best, entry) => ((entry.recent ?? 0) > (best?.recent ?? -1) ? entry : best),
-    null,
-  );
-  const effectiveOwner = claimed ?? recentViewer?.id ?? null;
   return {
     at: new Date(now).toISOString(),
     label: options.label ?? DEFAULTS.label,
@@ -1626,9 +1699,9 @@ export function buildUiPayload({
       ? { id: session.id ?? null, repo: session.repo ?? null, repos, roles }
       : null,
     repos,
-    // What this instance polls at all, so a session can tell "nothing for me"
-    // from "nobody watches my repository".
-    watched: configured,
+    // What this instance polls at all — the union of session subscriptions — so a
+    // session can tell "nothing for me" from "nobody watches my repository".
+    watched: polled ?? configured,
     identity: {
       kind: identity.kind,
       login: identity.login,
@@ -1643,15 +1716,6 @@ export function buildUiPayload({
       on: options.wakeOn ?? [],
       idleMs: options.wakeAfterIdleMs ?? DEFAULTS.wakeAfterIdleMs,
       perHour: options.wakesPerHour ?? DEFAULTS.wakesPerHour,
-      primary: claimed,
-      owner: effectiveOwner,
-      // Who is watching this repository, which of them would take a wakeup, and
-      // which one is asking the question.
-      viewers: watchers.map((entry) => ({
-        ...entry,
-        primary: claimed === entry.id,
-        owner: effectiveOwner === entry.id,
-      })),
     },
     queue: counts,
     events: events.slice(0, 20),
@@ -1678,7 +1742,16 @@ function describeEvent(event) {
 }
 
 function describe(error) {
-  return error instanceof Error ? error.message : String(error);
+  const message = error instanceof Error ? (error.message ?? "") : String(error ?? "");
+  // A child that died without a message (a rejected socket, a DOM error) leaves
+  // `Uncaught` behind, which says nothing. Its own last words are better.
+  if (message && message !== "Uncaught" && message !== "undefined") return message;
+  const spoken = String(error?.stderr ?? "")
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("at ") && !line.startsWith("Node.js"));
+  const printed = String(error?.stdout ?? "").trim().split(/\r?\n/u).pop()?.trim() ?? "";
+  return spoken[0] ?? printed ?? message ?? "no answer";
 }
 
 /**

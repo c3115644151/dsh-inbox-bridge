@@ -17,6 +17,7 @@ import {
   extractNotificationEvents,
   extractPrEvents,
   extractRunEvents,
+  extractMineEvents,
   extractReviewCommentEvents,
   extractSecurityEvents,
   filterRuns,
@@ -1077,4 +1078,25 @@ test("a repository without Dependabot still polls the rest", () => {
   assert.equal(result.skipped, undefined);
   assert.equal(result.fresh.length, 1);
   assert.match(result.securityNotes[0], /dependabot unavailable/u);
+});
+
+test("my own items collapse into one fact each, wherever they live", () => {
+  const events = extractMineEvents([
+    { repo: "owner/one", number: 7, kind: "pr", role: "mention", title: "old", updated: "t1" },
+    { repo: "owner/one", number: 7, kind: "pr", role: "author", title: "new", updated: "t2" },
+    { repo: "owner/two", number: 3, kind: "issue", role: "assignee", title: "an issue", updated: "t2" },
+    { repo: null, number: 9, kind: "issue", role: "author" },
+  ]);
+
+  assert.deepEqual(
+    events.map((event) => event.key),
+    ["owner/one#pr:7:mine", "owner/two#issue:3:mine"],
+  );
+  // The strongest relation wins: the account wrote this pull request, so the fact
+  // says "author" even though a mention search found it first.
+  assert.equal(events[0].role, "author");
+  assert.equal(events[0].title, "new");
+  assert.equal(events[0].repo, "owner/one");
+  assert.equal(events[1].kind, "issue");
+  assert.equal(events[1].url, "https://github.com/owner/two/issues/3");
 });

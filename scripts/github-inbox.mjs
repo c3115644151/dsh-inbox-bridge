@@ -678,6 +678,96 @@ export function extractSecurityEvents(alerts = []) {
   return events;
 }
 
+/**
+ * The items this identity is involved in, wherever they live. A session keeps
+ * working in one repository, but the person behind the account does not: a pull
+ * request opened elsewhere still deserves an answer when it gets one. These are
+ * item-tier facts, so they are routed to whoever works in that repository.
+ *
+ * `role` says why the account is involved (author beats assignee beats mention);
+ * the key carries the item number alone, so three searches for one pull request
+ * collapse into one fact instead of three.
+ */
+export function extractMineEvents(items = []) {
+  const order = { author: 0, reviewer: 1, assignee: 2, mention: 3 };
+  const byKey = new Map();
+  for (const item of Array.isArray(items) ? items : []) {
+    const repo = item?.repo ?? null;
+    const number = Number(item?.number);
+    if (!repo || !Number.isInteger(number)) continue;
+    const kind = item?.kind === "pr" ? "pr" : "issue";
+    const key = `${repo}#${kind}:${number}:mine`;
+    const role = item?.role ?? "mention";
+    const previous = byKey.get(key);
+    if (previous && (order[previous.role] ?? 9) <= (order[role] ?? 9)) continue;
+    byKey.set(key, {
+      key,
+      repo,
+      role,
+      kind,
+      label: kind === "pr" ? "Pull request" : "Issue",
+      title: item?.title ?? "",
+      url:
+        item?.url ??
+        `https://github.com/${repo}/${kind === "pr" ? "pull" : "issues"}/${number}`,
+      at: item?.updated ?? null,
+    });
+  }
+  return [...byKey.values()];
+}
+
+const MINE_SEARCHES = [
+  { q: "is:pr author:@me archived:false", role: "author", kind: "pr" },
+  { q: "is:pr review-requested:@me archived:false", role: "reviewer", kind: "pr" },
+  { q: "is:issue assignee:@me archived:false", role: "assignee", kind: "issue" },
+  { q: "mentions:@me archived:false", role: "mention", kind: "item" },
+];
+
+/** Search for the account's own items across every repository it can read. */
+export function fetchMyItems(cwd, { me = null } = {}) {
+  const login = me ?? null;
+  if (!login) return { ok: true, value: [], notes: [] };
+  const items = [];
+  const notes = [];
+  for (const search of MINE_SEARCHES) {
+    // `@me` does not expand in search, so the login has to be spelled out.
+    const query = search.q.replace(/@me\b/u, login.replace(/\[bot\]$/u, ""));
+    const result = ghJson(
+      [
+        "api",
+        "-X",
+        "GET",
+        `search/issues?q=${encodeURIComponent(query)}&per_page=20&sort=updated`,
+        "--jq",
+        ".items[] | {number, title, html_url, updated_at, repository_url, pull_request}",
+      ],
+      { cwd },
+    );
+    if (!result?.ok) {
+      // Search is the one feed that may be rate limited; it must never make a
+      // whole poll fail, because repository feeds are the primary facts.
+      notes.push(`search "${search.q}" unavailable (${result?.reason ?? "unknown"})`);
+      continue;
+    }
+    for (const row of Array.isArray(result.value) ? result.value : []) {
+      const repo = String(row?.repository_url ?? "")
+        .split("/repos/")[1]
+        ?.trim();
+      if (!repo) continue;
+      items.push({
+        repo,
+        number: row.number,
+        title: row.title,
+        url: row.html_url,
+        updated: row.updated_at,
+        role: search.role,
+        kind: row?.pull_request ? "pr" : search.kind === "pr" ? "pr" : "issue",
+      });
+    }
+  }
+  return { ok: true, value: items, notes };
+}
+
 export function extractEvents(
   {
     runs = [],
@@ -687,6 +777,7 @@ export function extractEvents(
     issues = [],
     security = [],
     reviews = [],
+    mine = [],
   } = {},
   state = {},
   { me = null } = {},
@@ -699,12 +790,15 @@ export function extractEvents(
     ...extractCommentEvents(comments, { me }),
     ...extractIssueEvents(issues, state, { me }),
     ...extractSecurityEvents(security),
+    ...extractMineEvents(mine),
   ];
-  // Every event names the repository it came from and how this identity is
-  // involved, so delivery never has to guess either from the session's cwd.
+  // Every event names the repository it came from, how this identity is involved,
+  // and whether it is about the repository itself or about one item — delivery
+  // never has to guess any of the three.
   return events.map((event) => ({
     repo: activeRepo,
     role: event.kind === "ci" || event.kind === "recovered" ? "ci" : "any",
+    tier: ["ci", "recovered", "security"].includes(event.kind) ? "repo" : "item",
     ...event,
   }));
 }
@@ -785,6 +879,7 @@ export function pollOnce({
   fetchIssues,
   fetchSecurity,
   fetchReviews,
+  fetchMine,
   markRead,
 } = {}) {
   const runsResult =
@@ -829,6 +924,12 @@ export function pollOnce({
     reviewsResult && reviewsResult.ok === true && Array.isArray(reviewsResult.value)
       ? reviewsResult.value
       : [];
+  // The account's own items, wherever they live. Search may be rate limited, so a
+  // failure is reported as a note and never stops the poll.
+  const mineResult = typeof fetchMine === "function" ? fetchMine() : { ok: true, value: [], notes: [] };
+  const mine =
+    mineResult && mineResult.ok === true && Array.isArray(mineResult.value) ? mineResult.value : [];
+  const mineNotes = Array.isArray(mineResult?.notes) ? mineResult.notes : [];
   const payload = {
     // The default branch always counts; a feature branch counts only while this
     // identity has an open PR from it.
@@ -843,6 +944,7 @@ export function pollOnce({
     issues,
     security,
     reviews,
+    mine,
   };
   const events = extractEvents(payload, state, { me });
   const fresh = sortEvents(repeat ? events : diffEvents(events, state));
@@ -864,6 +966,7 @@ export function pollOnce({
     feedSkipped:
       feedResult && feedResult.ok === false ? (feedResult.reason ?? "feed failed") : null,
     securityNotes,
+    mineNotes,
   };
 }
 
@@ -1406,6 +1509,9 @@ function runPoll({ repoRoot, stateFile, pendingFile, state, options, now, me, re
       fetchFeed: (currentState) => fetchFeed(currentState, repoRoot),
       fetchSecurity: () => fetchSecurityAlerts(repoRoot),
       fetchReviews: () => fetchReviewComments(repoRoot),
+      // Item facts are not per repository: one search answers for the whole account,
+      // so they are collected once in `runPoll` and folded in after the loop.
+      fetchMine: () => ({ ok: true, value: [], notes: [] }),
     });
     if (result.skipped) {
       skipped.push({ repo, reason: result.skipped });
@@ -1432,6 +1538,32 @@ function runPoll({ repoRoot, stateFile, pendingFile, state, options, now, me, re
         events: result.fresh.length,
       },
     };
+  }
+
+  // The account's own items can live in repositories this instance does not poll:
+  // a pull request opened elsewhere still deserves its answer here. One search
+  // answers for the whole account, so it runs once and its facts are attributed to
+  // the repository each item belongs to — including slices for repositories that
+  // are only watched through these items.
+  const mineResult = fetchMyItems(repoRoot, { me });
+  for (const note of mineResult.notes ?? []) notices.push(`items: ${note}`);
+  const mineEvents = extractMineEvents(mineResult.value ?? []);
+  if (mineEvents.length > 0) {
+    const byRepo = new Map();
+    for (const event of mineEvents) {
+      if (!byRepo.has(event.repo)) byRepo.set(event.repo, []);
+      byRepo.get(event.repo).push(event);
+    }
+    for (const [repo, events] of byRepo) {
+      const slice = nextRepos[repo] ?? normalizeState({});
+      const known = slice.seen ?? {};
+      const stillNew = events.filter((event) => !known[event.key]);
+      if (stillNew.length === 0) continue;
+      const seen = { ...known };
+      for (const event of stillNew) seen[event.key] = toIso(now);
+      nextRepos[repo] = { ...slice, seen };
+      fresh.push(...stillNew);
+    }
   }
 
   if (Object.keys(nextRepos).length === 0) {

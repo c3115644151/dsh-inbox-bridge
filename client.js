@@ -103,9 +103,9 @@ window.__ModuleLoader__.load({
         clear: "已标为已读",
         sweep: "已归档到 Done",
         quiet: "不会主动开启对话",
-        unwatched: (repo) => `此会话的 ${repo} 不在订阅列表`,
+        unwatched: (repo) => `还没有会话接管 ${repo}，插件不轮询它`,
         scopeRead: "身份",
-        scopeWatch: "订阅仓库",
+        scopeWatch: "接管的仓库",
         scopeSync: "上次轮询",
         none: "未配置仓库",
         open: "打开收件箱",
@@ -120,24 +120,10 @@ window.__ModuleLoader__.load({
           quietTip: "只排队，等你下次发消息时随该轮进入上下文。",
           wakeup: "主动唤醒",
           wakeupTip: "会话空闲时，插件可以替你开启一轮来处理这些事件。",
-          clean: "消息清理",
-          cleanTip: "处理完通知后，GitHub 侧留下什么。只作用于订阅的仓库。",
-          cleanOff: "关闭",
-          cleanOffTip: "保留未读圆点，什么都不做。",
-          read: "已读",
-          readTip: "把通知标为已读，清掉圆点；不进 Done。",
-          done: "归档",
-          doneTip: "标为已读并移入 Done。归档需要一次浏览器登录。",
-          signInNeeded: "归档还没登录 GitHub，事件不会进 Done。",
+          signInNeeded: "归档还没登录 GitHub，仓库的事件不会进 Done。",
           signInWaiting: "已打开登录窗口，登录后自动生效。",
           signInOpen: "打开登录窗口",
           signInTip: "在插件自己的浏览器配置里登录一次；之后归档会自动运行，失效时会再打开这个窗口。",
-          owner: "谁来接",
-          ownerTip: "已指定：这个仓库的唤醒只落到这一个会话。再点一次交回默认。",
-          ownerAutoTip: "没有指定：由最近跟你说话的那个会话接；点一下可以固定成别的会话。",
-          ownerReleaseTip: "再点一次取消指定",
-          ownerTakesTip: "现在由它接",
-          ownerCurrent: "你正在这个会话里",
           idle: "空闲多久",
           idleTip: "会话安静满这么长时间，才允许唤醒；否则只把事件留下等下一轮。",
           minute1: "1 分钟",
@@ -145,14 +131,14 @@ window.__ModuleLoader__.load({
           minute15: "15 分钟",
           budget: "每小时",
           budgetTip: "这个实例每小时最多唤醒几次，用完后只排队。",
-          subscribe: "订阅仓库",
-          subscribeTip: "此会话关注的 GitHub 仓库；事件只按这里的仓库投递。",
+          subscribe: "接管的仓库",
+          subscribeTip: "本会话接管这些仓库：整仓信号投到这里，仓库的事件也由这里归档。条目级的回音不属于这一行。",
           typeRepo: "owner/repo 或链接",
           typeRepoTip: "可以粘贴 https://github.com/owner/repo，也可以直接写 owner/repo。",
           add: "添加",
-          addTip: "订阅输入框里的仓库。",
-          addHere: "订阅当前仓库",
-          remove: "取消订阅",
+          addTip: "接管输入框里的仓库。",
+          addHere: "接管当前仓库",
+          remove: "释放",
           reset: "恢复配置",
         },
       },
@@ -172,7 +158,7 @@ window.__ModuleLoader__.load({
         clear: "marked read",
         sweep: "archived to done",
         quiet: "never starts a turn",
-        unwatched: (repo) => `${repo} is not watched by this instance`,
+        unwatched: (repo) => `${repo} is not owned by any session, so it is not polled`,
         scopeRead: "identity",
         scopeWatch: "repositories",
         scopeSync: "last poll",
@@ -189,24 +175,10 @@ window.__ModuleLoader__.load({
           quietTip: "Wait for your next message; the notice rides along with that turn.",
           wakeup: "may wake it",
           wakeupTip: "When the session is idle, the plugin may start a turn to handle it.",
-          clean: "cleaning",
-          cleanTip: "What is left in GitHub after a notice is handled. Subscribed repositories only.",
-          cleanOff: "off",
-          cleanOffTip: "Keep the unread dot; do nothing on GitHub.",
-          read: "read",
-          readTip: "Clear the unread dot without moving the thread to Done.",
-          done: "done",
-          doneTip: "Mark read and move the thread to Done. Archiving needs a one-time browser sign-in.",
-          signInNeeded: "Archiving is not signed in yet, so nothing reaches Done.",
+          signInNeeded: "Archiving is not signed in yet, so repository events do not reach Done.",
           signInWaiting: "The sign-in window is open; archiving resumes when you finish.",
           signInOpen: "open sign-in",
           signInTip: "Sign in once in this plugin's own browser profile; afterwards archiving runs on its own and reopens this window if the session expires.",
-          owner: "who takes it",
-          ownerTip: "Pinned: a wakeup for this repository reaches only this session. Click again to hand it back.",
-          ownerAutoTip: "Not pinned: the session you spoke to most recently takes it. Click to fix another one.",
-          ownerReleaseTip: "click again to clear",
-          ownerTakesTip: "takes it now",
-          ownerCurrent: "this is the session you are in",
           idle: "quiet for",
           idleTip: "A session must be this quiet before a wakeup may open a turn; otherwise the event waits for a later poll.",
           minute1: "1 min",
@@ -214,14 +186,14 @@ window.__ModuleLoader__.load({
           minute15: "15 min",
           budget: "per hour",
           budgetTip: "How many wakeups this instance may spend each hour; past that, events only queue.",
-          subscribe: "repositories",
-          subscribeTip: "The repositories this session follows; events are delivered only for them.",
+          subscribe: "repositories owned",
+          subscribeTip: "This session maintains these repositories: repository-wide signals arrive here, and their threads are archived from here. Item-level replies are separate.",
           typeRepo: "owner/repo or link",
           typeRepoTip: "Paste https://github.com/owner/repo, or type owner/repo.",
           add: "add",
-          addTip: "Subscribe to the repository in the field.",
-          addHere: "watch this repo",
-          remove: "unwatch",
+          addTip: "Take over the repository in the field.",
+          addHere: "own this repo",
+          remove: "release",
           reset: "reset",
         },
       },
@@ -468,14 +440,6 @@ window.__ModuleLoader__.load({
         textOverflow: "ellipsis",
         whiteSpace: "nowrap",
       },
-      ownerList: {
-        display: "flex",
-        alignItems: "center",
-        flexWrap: "wrap",
-        gap: "4px",
-        minWidth: 0,
-        justifyContent: "flex-end",
-      },
       metaValue: {
         color: "var(--dsw-alias-label-secondary)",
         textAlign: "right",
@@ -533,13 +497,6 @@ window.__ModuleLoader__.load({
       segOn: {
         background: "var(--dsw-specific-menu, var(--dsw-alias-interactive-bg-hover))",
         color: "var(--dsw-alias-label-primary)",
-      },
-      // A pinned owner is a decision, not a default: say so with a weight the
-      // hover-only background cannot express.
-      segPinned: {
-        fontWeight: 600,
-        textDecoration: "underline",
-        textUnderlineOffset: "3px",
       },
       repos: {
         display: "flex",
@@ -729,18 +686,15 @@ window.__ModuleLoader__.load({
      * One change at a time, through the host's own route. The token is the one
      * this process handed out with the status, so another page cannot do this.
      */
-    async function change(status, set, value, target) {
+    async function change(status, set, value) {
       const token = status?.token;
       if (!token) return { ok: false, error: "no token" };
       const session = status?.sessionId
         ? `&session=${encodeURIComponent(status.sessionId)}`
         : "";
-      // A claim names the session that should own a repository, which need not be
-      // the session this page belongs to.
-      const named = target ? `&target=${encodeURIComponent(target)}` : "";
       const url = `/inbox-bridge/prefs?token=${encodeURIComponent(token)}&set=${encodeURIComponent(
         set,
-      )}&value=${encodeURIComponent(value)}${session}${named}`;
+      )}&value=${encodeURIComponent(value)}${session}`;
       try {
         const response = await fetch(url, { cache: "no-store" });
         return await response.json();
@@ -761,11 +715,11 @@ window.__ModuleLoader__.load({
       const [error, setError] = React.useState(null);
       const [draft, setDraft] = React.useState("");
       const pick = text.pick;
-      const send = async (set, value, target) => {
+      const send = async (set, value) => {
         if (busy) return;
         setBusy(true);
         setError(null);
-        const result = await change(status, set, value, target);
+        const result = await change(status, set, value);
         setBusy(false);
         if (!result.ok) {
           setError(result.error ?? "failed");
@@ -795,13 +749,12 @@ window.__ModuleLoader__.load({
         );
       const repos = status.session?.repos ?? status.repos ?? [];
       const sessionRepo = status.scope === "session" ? (status.session?.repo ?? null) : null;
-      // Two mechanisms, one decision: what happens to the notice after this poll.
-      const cleanLevel = status.sweepOn ? "done" : status.clear === "off" ? "off" : "read";
+      
       const addDraft = () => {
         const value = draft.trim();
         if (!value) return;
         setDraft("");
-        void send("subscribe", value);
+        void send("own", value);
       };
       return h(
         "div",
@@ -821,56 +774,6 @@ window.__ModuleLoader__.load({
             "mode",
           ),
         ),
-        // A wakeup has to reach one session. Two sessions in the same workspace look
-        // alike — same title, same folder — so every name carries the four
-        // characters of its id that differ, and the one that would take the wakeup
-        // right now is marked. Clicking pins a different one; clicking the pinned
-        // one hands the choice back to "whoever you spoke to last".
-        status.delivery === "wakeup" && sessionRepo && (status.wake?.viewers?.length ?? 0) > 0
-          ? h(
-              "div",
-              { style: styles.controlRow },
-              h(
-                "span",
-                {
-                  style: styles.controlLabel,
-                  title: status.wake?.primary ? pick.ownerTip : pick.ownerAutoTip,
-                },
-                pick.owner,
-              ),
-              h(
-                "div",
-                { style: styles.ownerList },
-                status.wake.viewers.map((viewer) =>
-                  h(
-                    "button",
-                    {
-                      key: viewer.id,
-                      type: "button",
-                      disabled: busy,
-                      "aria-pressed": Boolean(viewer.primary),
-                      title: [
-                        `${viewer.label} · ${viewer.tag}`,
-                        viewer.current ? pick.ownerCurrent : "",
-                        viewer.primary ? pick.ownerReleaseTip : "",
-                        viewer.owner ? pick.ownerTakesTip : "",
-                      ]
-                        .filter(Boolean)
-                        .join(" — "),
-                      onClick: () =>
-                        void send("primary", viewer.primary ? "" : sessionRepo, viewer.id),
-                      style: {
-                        ...styles.seg,
-                        ...(viewer.owner ? styles.segOn : {}),
-                        ...(viewer.primary ? styles.segPinned : {}),
-                      },
-                    },
-                    `${viewer.label} · ${viewer.tag}`,
-                  ),
-                ),
-              ),
-            )
-          : null,
         // How patient the wakeup is: quiet at least this long, at most this many
         // times an hour. Both were file-only settings until a session could ask
         // for them from here.
@@ -910,26 +813,12 @@ window.__ModuleLoader__.load({
               ),
             )
           : null,
-        h(
-          "div",
-          { style: styles.controlRow },
-          h("span", { style: styles.controlLabel, title: pick.cleanTip }, pick.clean),
-          seg(
-            pick.clean,
-            [
-              ["off", pick.cleanOff, pick.cleanOffTip],
-              ["read", pick.read, pick.readTip],
-              ["done", pick.done, pick.doneTip],
-            ],
-            cleanLevel,
-            "clean",
-            "clean",
-          ),
-        ),
-        // Archiving is a page action in GitHub, so it needs a browser session in
-        // the plugin's own profile. Say that here, and open the window from here —
-        // the operator should not have to run a command to make the mode work.
-        cleanLevel === "done" && status.signIn?.signedIn !== true
+        // Cleaning has no switch any more: the tier decides. Item-tier notices are
+        // marked read; repository-tier notices are archived by the session that
+        // maintains that repository. Archiving is a page action in GitHub, so it
+        // needs a browser session in the plugin's own profile — say that here and
+        // open the window from here, because the name of the game is "no command".
+        status.sweepOn && status.signIn?.signedIn !== true
           ? h(
               "div",
               { style: styles.signInRow },
@@ -974,7 +863,7 @@ window.__ModuleLoader__.load({
                         disabled: busy,
                         "aria-label": `${pick.remove} ${entry}`,
                         title: `${pick.remove} ${entry}`,
-                        onClick: () => void send("unsubscribe", entry),
+                        onClick: () => void send("release", entry),
                         style: styles.iconBtn,
                       },
                       "×",
@@ -987,7 +876,7 @@ window.__ModuleLoader__.load({
                   {
                     type: "button",
                     disabled: busy,
-                    onClick: () => void send("subscribe", sessionRepo),
+                    onClick: () => void send("own", sessionRepo),
                     style: styles.addBtn,
                     title: `${pick.addHere}：${sessionRepo}`,
                   },

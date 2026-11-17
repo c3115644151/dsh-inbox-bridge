@@ -88,6 +88,20 @@ export function transition(state, items, status, at) {
 }
 
 /**
+ * The repository a key belongs to, when the key carries one.
+ *
+ * Keys from the GitHub collector look like `owner/name#issue:7:author:…`. A
+ * fact that lost its repository in a round trip is still routed by its key.
+ */
+export function repoFromKey(key) {
+  if (typeof key !== "string") return null;
+  const cut = key.indexOf("#");
+  if (cut <= 0) return null;
+  const repo = key.slice(0, cut);
+  return /^[\w.-]+\/[\w.-]+$/u.test(repo) ? repo : null;
+}
+
+/**
  * Remember the events nobody has been told about yet.
  *
  * Some facts are reported once: an issue is opened, a comment is posted. If the
@@ -95,6 +109,10 @@ export function transition(state, items, status, at) {
  * a later turn — but the next poll has nothing to report, so without a record
  * the news would simply be gone, and a wakeup could never happen. Entries use
  * `attempts: 0` to say "recorded, never delivered".
+ *
+ * The repository travels with the record: it is how the plugin decides whose
+ * news this is, and a held fact without one would be handed to whichever
+ * session happened to be idle.
  */
 export function recordPending(state, events, at) {
   const out = { ...(state?.events ?? {}) };
@@ -102,10 +120,12 @@ export function recordPending(state, events, at) {
   for (const event of Array.isArray(events) ? events : []) {
     if (!event || typeof event.key !== "string") continue;
     if (out[event.key]) continue;
+    const repo = event.repo ?? repoFromKey(event.key);
     out[event.key] = {
       status: "pending",
       at,
       attempts: 0,
+      ...(repo ? { repo } : {}),
       ...(event.kind ? { kind: event.kind } : {}),
       ...(event.role ? { role: event.role } : {}),
       ...(event.group ? { group: event.group } : {}),
@@ -140,8 +160,12 @@ export function carriedPending(state, events, options = {}) {
     if (live.has(key)) continue;
     const at = Number.isFinite(Date.parse(entry.at)) ? Date.parse(entry.at) : now;
     if (now - at >= resurfaceMs) continue;
+    // A record written before this field existed still knows its repository: the
+    // key starts with it, and routing the fact matters more than the round trip.
+    const repo = entry.repo ?? repoFromKey(key);
     out.push({
       key,
+      ...(repo ? { repo } : {}),
       ...(entry.kind ? { kind: entry.kind } : {}),
       ...(entry.role ? { role: entry.role } : {}),
       ...(entry.group ? { group: entry.group } : {}),
@@ -595,7 +619,7 @@ export function describeDoctor(root, options = {}) {
   }
 
   if (repos.length === 0) {
-    add("repos", "fail", "没有订阅任何仓库", "在面板里添加仓库，或给 profile 写 repos: ['owner/name']");
+    add("repos", "fail", "没有任何仓库被接管", "在面板里接管一个仓库，或给 profile 写 repos: ['owner/name']");
   }
   for (const repo of repos) {
     const result = gh(["api", `repos/${repo}`, "--jq", ".full_name"]);
@@ -630,7 +654,7 @@ export function describeDoctor(root, options = {}) {
         `poll:${repo}`,
         "warn",
         `${repo} 上次轮询在 ${minutes} 分钟前（间隔 ${Math.round(intervalMs / 60_000)} 分钟）`,
-        "插件可能停了，或这个仓库刚被加进订阅",
+        "插件可能停了，或这个仓库刚被接管",
       );
     } else {
       add(`poll:${repo}`, "ok", `${repo} 上次轮询在 ${minutes} 分钟前`);
@@ -742,7 +766,7 @@ export function explainKey(root, key, options = {}) {
   const notes = [];
   if (repo && subscribed === false) {
     notes.push(
-      `这个仓库不在这台实例的订阅里（repos: ${runtime.repos.join(", ") || "空"}），所以它永远不会被投递`,
+      `这个仓库没有被任何会话接管（实例轮询：${runtime.repos.join(", ") || "空"}），所以它永远不会被投递`,
     );
   }
   if (role && roleFilter.length > 0 && role !== "any" && !roleFilter.includes(role)) {

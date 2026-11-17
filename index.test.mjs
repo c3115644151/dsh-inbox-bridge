@@ -1,11 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+
+// Archiving is on by default, and it opens a browser. A test run has no browser
+// to spare (and a leaked one locks its profile directory), so switch it off here;
+// the sweep path itself is covered by tests that pass their own command.
+process.env.INBOX_NO_BROWSER = "1";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { buildMessage, buildUiPayload, deliver, deliveryTargets, detectRepo, filterUndelivered, formatEvents, matchesWatch, mergeConfig, pollLabel, preferenceNext, repoFromInput, repoOf, sessionLabel, sessionTag, wakePlan } from "./index.js";
+import { audienceFor, buildMessage, buildUiPayload, deliver, deliveryTargets, detectRepo, eventTier, filterUndelivered, formatEvents, matchesWatch, mergeConfig, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, sessionLabel, sessionTag, wakePlan } from "./index.js";
 
 const idle = { status: "idle" };
 const running = { status: "running" };
@@ -719,7 +724,7 @@ test("the poll child is told which threads to clear", () => {
 });
 
 test("a sweep command is validated, and defaults to running only after a real finding", () => {
-  assert.equal(mergeConfig({}).sweep, null);
+  assert.equal(mergeConfig({}).sweep.when, "events");
   const sweep = mergeConfig({ sweep: { args: ["scripts/clear-inbox.mjs"] } });
   assert.deepEqual(sweep.sweep, { command: "node", args: ["scripts/clear-inbox.mjs"], when: "events" });
   assert.equal(mergeConfig({ sweep: { command: "node", args: [], when: "always" } }).sweep.when, "always");
@@ -956,17 +961,12 @@ test("the page keeps at most twenty open events", () => {
   assert.equal(payload.events[0].key, "a/b#issue:29:author");
 });
 
-test("the cleaning control sets both mechanisms from one choice", () => {
-  const off = preferenceNext({}, "clean", "off", {});
-  assert.equal(off.clear, "off");
-  assert.equal(off.sweep, null);
-  const read = preferenceNext({}, "clean", "read", {});
-  assert.equal(read.clear, "repo");
-  assert.equal(read.sweep, null);
-  const done = preferenceNext({}, "clean", "done", {});
-  assert.equal(done.clear, "repo");
-  assert.equal(done.sweep.args.at(-1), "--json");
-  assert.equal(preferenceNext({}, "clean", "everything", {}), null);
+test("cleaning is not a setting: the tier decides, and the old switches are gone", () => {
+  // The panel no longer offers a level to pick, so the Host must refuse the old
+  // actions instead of half-applying them to a state nobody can see.
+  assert.equal(preferenceNext({}, "clean", "done", {}), null);
+  assert.equal(preferenceNext({}, "read", "off", {}), null);
+  assert.equal(preferenceNext({}, "archive", "on", {}), null);
 });
 
 test("the sign-in window is a setting: six hours between tries, by default", () => {
@@ -1016,60 +1016,44 @@ test("switching to wakeup brings a usable role, and quiet drops it", () => {
   assert.equal("wakeOn" in quiet, false);
 });
 
-test("turning the sweep off overrides a profile that configures one", () => {
-  const off = preferenceNext({}, "archive", "off", {});
-  assert.equal(off.sweep, null);
-  // A null has to survive the merge: deleting the key falls back to the profile.
-  assert.equal(mergeConfig({ cwd: process.cwd(), sweep: off.sweep }).sweep, null);
-  const on = preferenceNext({}, "archive", "on", {});
-  assert.equal(on.sweep.args.at(-1), "--json");
-  assert.equal(mergeConfig({ cwd: process.cwd(), sweep: on.sweep }).sweep.when, "events");
+test("archiving is on by default, because a maintainer's bookkeeping is not optional", () => {
+  const merged = mergeConfig({ cwd: process.cwd() });
+  assert.equal(merged.sweep.when, "events");
+  assert.equal(merged.sweep.args.at(-1), "--json");
+  // A profile can still turn it off for an instance nobody maintains, but that is
+  // a file-level decision, not a button.
+  assert.equal(mergeConfig({ cwd: process.cwd(), sweep: null }).sweep, null);
 });
 
-test("a session subscribes for itself, and the instance follows so it gets polled", () => {
-  const options = { repos: ["a/b"], sessionId: "s1", sessionRepo: "a/b" };
+test("a subscription belongs to the session that made it", () => {
+  const options = { sessionId: "s1", sessionRepo: "a/b" };
   const added = preferenceNext({}, "subscribe", "c/d", options);
-  assert.deepEqual(added.sessionRepos.s1, ["a/b", "c/d"]);
-  // The instance polls, so a subscription it does not poll would never arrive.
-  assert.deepEqual(added.repos, ["a/b", "c/d"]);
+  assert.deepEqual(added.sessionRepos.s1, ["c/d"]);
+  // The instance polls the union of subscriptions (`polledRepos`), so there is no
+  // second list to keep in step: writing `repos` here is what used to leave a
+  // repository polled long after its last subscriber left.
+  assert.equal(added.repos, undefined);
   const again = preferenceNext(added, "subscribe", "c/d", options);
-  assert.deepEqual(again.sessionRepos.s1, ["a/b", "c/d"]);
-  const removed = preferenceNext(added, "unsubscribe", "a/b", {
-    ...options,
-    repos: ["a/b", "c/d"],
-  });
-  assert.deepEqual(removed.sessionRepos.s1, ["c/d"]);
+  assert.deepEqual(again.sessionRepos.s1, ["c/d"]);
+  const removed = preferenceNext(added, "unsubscribe", "c/d", options);
+  assert.deepEqual(removed.sessionRepos.s1, []);
   // Two sessions keep separate lists, which is the point of scoping them.
-  const other = preferenceNext(removed, "subscribe", "e/f", {
-    ...options,
-    sessionId: "s2",
-    sessionRepo: "e/f",
-    repos: ["a/b", "c/d"],
-  });
-  assert.deepEqual(other.sessionRepos.s1, ["c/d"]);
+  const other = preferenceNext(removed, "subscribe", "e/f", { ...options, sessionId: "s2" });
+  assert.deepEqual(other.sessionRepos.s1, []);
   assert.deepEqual(other.sessionRepos.s2, ["e/f"]);
   // Without a session there is nobody to subscribe for.
-  assert.equal(preferenceNext({}, "subscribe", "c/d", { repos: ["a/b"] }), null);
+  assert.equal(preferenceNext({}, "subscribe", "c/d", {}), null);
   assert.equal(preferenceNext({}, "subscribe", "not a repo", options), null);
 });
 
 test("an unknown setting is refused instead of silently doing nothing", () => {
   assert.equal(preferenceNext({}, "colour", "blue", {}), null);
+  // `primary` is gone: a repository has no owner to pin, and a stale click from a
+  // page left open in a browser must not resurrect it.
+  assert.equal(preferenceNext({}, "primary", "owner/one", { sessionId: "s1" }), null);
 });
 
-test("the page can name the session that owns a repository, and tune the wakeup", () => {
-  const options = { sessionId: "session-a", sessionRepo: "owner/one" };
-
-  // A claim may name another session: the person is choosing among the ones
-  // watching the repository, not necessarily from the one that should own it.
-  const claimed = preferenceNext({}, "primary", "owner/one", { ...options, targetSession: "session-b" });
-  assert.deepEqual(claimed.primary, { "owner/one": "session-b" });
-
-  // Without a target it claims for the session the page belongs to, and an
-  // empty value releases the repository again.
-  assert.deepEqual(preferenceNext({}, "primary", "owner/one", options).primary, { "owner/one": "session-a" });
-  assert.deepEqual(preferenceNext(claimed, "primary", "", options).primary, {});
-
+test("the page can tune how patient a wakeup is", () => {
   // Minutes in, milliseconds out — including zero, which means "as soon as
   // nobody is busy".
   assert.equal(preferenceNext({}, "idle", "5", {}).wakeAfterIdleMs, 300_000);
@@ -1082,53 +1066,36 @@ test("the page can name the session that owns a repository, and tune the wakeup"
   assert.equal(preferenceNext({}, "budget", "2.5", {}), null);
 });
 
-test("the page is told who watches the repository and who takes it", () => {
+test("the page is told what this instance polls, and what would reach this session", () => {
+  const one = { repo: "owner/one", lastPoll: { at: "2026-11-17T10:00:00.000Z" } };
   const payload = buildUiPayload({
-    options: mergeConfig({
-      repos: ["owner/one"],
-      delivery: "wakeup",
-      wakeOn: ["author"],
-      primary: { "owner/one": "session-b" },
-    }),
-    session: { id: "session-a", repo: "owner/one", repos: ["owner/one"], roles: [] },
-    viewers: [
-      { id: "session-a", label: "noema", tag: "aaaa", recent: 500, current: true },
-      { id: "session-b", label: "noema", tag: "bbbb", recent: 900, current: false },
-    ],
-  });
-  assert.deepEqual(payload.wake.on, ["author"]);
-  assert.equal(payload.wake.idleMs, 900_000);
-  assert.equal(payload.wake.perHour, 2);
-  // A pin is both the claim and the effective owner.
-  assert.equal(payload.wake.primary, "session-b");
-  assert.equal(payload.wake.owner, "session-b");
-  assert.deepEqual(payload.wake.viewers, [
-    { id: "session-a", label: "noema", tag: "aaaa", recent: 500, current: true, primary: false, owner: false },
-    { id: "session-b", label: "noema", tag: "bbbb", recent: 900, current: false, primary: true, owner: true },
-  ]);
-
-  // Without a pin the most recently used session takes it — and the page can say
-  // so instead of leaving "who is woken" unanswered.
-  const auto = buildUiPayload({
     options: mergeConfig({ repos: ["owner/one"], delivery: "wakeup", wakeOn: ["author"] }),
     session: { id: "session-a", repo: "owner/one", repos: ["owner/one"], roles: [] },
-    viewers: [
-      { id: "session-a", label: "noema", tag: "aaaa", recent: 500, current: true },
-      { id: "session-b", label: "noema", tag: "bbbb", recent: 900, current: false },
-    ],
+    // The union of subscriptions, which is what the poller actually reads.
+    polled: ["owner/one", "owner/two"],
+    source: { repos: { "owner/one": one } },
   });
-  assert.equal(auto.wake.primary, null);
-  assert.equal(auto.wake.owner, "session-b");
-  assert.deepEqual(
-    auto.wake.viewers.map((viewer) => viewer.owner),
-    [false, true],
-  );
+  assert.deepEqual(payload.wake, { on: ["author"], idleMs: 900_000, perHour: 2 });
+  assert.deepEqual(payload.watched, ["owner/one", "owner/two"]);
+  assert.equal(payload.scope, "session");
+  assert.deepEqual(payload.repos, ["owner/one"]);
 
-  // Nobody watching means nothing to choose between, and no owner.
-  const alone = buildUiPayload({ options: mergeConfig({ repo: "owner/one" }), viewers: [] });
-  assert.equal(alone.wake.primary, null);
-  assert.equal(alone.wake.owner, null);
-  assert.deepEqual(alone.wake.viewers, []);
+  // Without a session the payload describes the instance: what it polls, and the
+  // queue across every repository it watches.
+  const instance = buildUiPayload({ options: mergeConfig({ repo: "owner/one" }) });
+  assert.deepEqual(instance.watched, ["owner/one"]);
+  assert.equal(instance.scope, "instance");
+  assert.equal(instance.session, null);
+
+  // A session that subscribed nothing sees nothing, even in a repository the
+  // instance polls: subscribing is the act that makes events belong to it.
+  const unbound = buildUiPayload({
+    options: mergeConfig({ repo: "owner/one" }),
+    session: { id: "session-b", repo: "owner/one", repos: [], roles: [] },
+    queue: { "owner/one#k": { status: "pending", at: "2026-11-17T10:00:00.000Z" } },
+  });
+  assert.equal(unbound.scope, "unbound");
+  assert.deepEqual(unbound.events, []);
 });
 
 test("the session you spoke to last takes a shared repository, unless you pin another", () => {
@@ -1180,27 +1147,76 @@ test("the session you spoke to last takes a shared repository, unless you pin an
   assert.equal(looked.agent, null);
   assert.equal(looked.why, "not-recent");
 
-  // Pinning a session overrides recency in both directions.
-  const claimed = wakePlan(batches, base, {
+  // Pinning is gone: there is no stored owner to override recency with, so a
+  // stale `primary` in a config file changes nothing.
+  const ignored = wakePlan(batches, base, {
     now,
     lastActive: mirrored,
     primary: { "owner/one": "session-b" },
   });
-  assert.equal(claimed.agent, second);
-  assert.equal(claimed.why, "ok");
+  assert.equal(ignored.agent, first);
+  assert.equal(ignored.why, "ok");
 
-  // A pin held by someone else keeps this repository quiet for everyone else.
-  const foreign = wakePlan(batches, base, {
-    now,
-    lastActive: mirrored,
-    primary: { "owner/one": "session-z" },
-  });
-  assert.equal(foreign.agent, null);
-  assert.equal(foreign.why, "not-primary");
-
-  // One session per repository needs no claim at all.
+  // One session per repository needs no ownership at all: it is simply the one.
   const alone = wakePlan(new Map([[first, [event("author")]]]), base, { now, lastActive: quiet });
   assert.equal(alone.agent, first);
+});
+
+test("the first session in a workspace takes its repository; a later one starts empty", async () => {
+  const root = mkdtempSync(join(tmpdir(), "inbox-claim-"));
+  const work = join(root, "work");
+  try {
+    git(root, ["init", "--quiet", work]);
+    git(work, ["remote", "add", "origin", "https://github.com/owner/one.git"]);
+    const first = fakeAgent(work, "session-first");
+    const second = fakeAgent(work, "session-second");
+    const ctx = fakeContext([first, second]);
+    const { apply } = await import("./index.js");
+    apply(ctx, mergeConfig({
+      cwd: work,
+      intervalMs: 600_000,
+      poll: { command: process.execPath, args: ["-e", "console.log('{\"events\":[]}')"] },
+      ack: { command: process.execPath, args: ["-e", "console.log('{}')"] },
+    }));
+    const prefs = JSON.parse(readFileSync(join(work, ".work", "inbox-bridge", "prefs.json"), "utf8"));
+    // Opening a project is the act of subscribing: the first session speaks for
+    // the repository, so nobody has to configure anything to get started.
+    assert.deepEqual(prefs.sessionRepos, { "session-first": ["owner/one"] });
+    // The second session is not a second subscriber — which is what used to make
+    // one repository look like it needed an owner.
+    const log = readFileSync(join(work, ".work", "inbox-bridge", "plugin.log"), "utf8");
+    assert.equal(log.split("the first session in this workspace").length - 1, 1);
+  } finally {
+    removeTree(root);
+  }
+});
+
+test("nothing owned means nothing is polled", async () => {
+  const root = mkdtempSync(join(tmpdir(), "inbox-nosub-"));
+  const marker = join(root, "polled.txt");
+  try {
+    // A workspace that is not a GitHub checkout cannot subscribe anything.
+    const bare = fakeAgent(root, "session-bare");
+    const ctx = fakeContext([bare]);
+    const { apply } = await import("./index.js");
+    apply(ctx, mergeConfig({
+      cwd: root,
+      poll: {
+        command: process.execPath,
+        args: ["-e", `require("node:fs").appendFileSync(${JSON.stringify(marker)}, "x");console.log('{\"events\":[]}')`],
+      },
+      ack: { command: process.execPath, args: ["-e", "console.log('{}')"] },
+    }));
+    ctx.emit("agent/status", { agent: { session: { id: "session-bare" } }, status: "running" });
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    // Polling a repository nobody asked about is wasted work, so it does not run
+    // at all — and the log says why instead of looking busy.
+    assert.equal(existsSync(marker), false);
+    const log = readFileSync(join(root, ".work", "inbox-bridge", "plugin.log"), "utf8");
+    assert.match(log, /no repositories owned: nothing to poll/u);
+  } finally {
+    removeTree(root);
+  }
 });
 
 test("sessions in one workspace are told apart by a short id", () => {
@@ -1215,4 +1231,142 @@ test("sessions in one workspace are told apart by a short id", () => {
   assert.equal(sessionTag(twin), "aaaa");
   assert.equal(sessionTag(other), "bbbb");
   assert.notEqual(`${sessionLabel(twin)} · ${sessionTag(twin)}`, `${sessionLabel(other)} · ${sessionTag(other)}`);
+});
+
+test("a fact that lost its repository is still routed by its key", async () => {
+  const root = mkdtempSync(join(tmpdir(), "inbox-norepo-"));
+  const one = join(root, "one");
+  const two = join(root, "two");
+  try {
+    git(root, ["init", "--quiet", "one"]);
+    git(one, ["remote", "add", "origin", "https://github.com/owner/one.git"]);
+    git(root, ["init", "--quiet", "two"]);
+    git(two, ["remote", "add", "origin", "https://github.com/owner/two.git"]);
+
+    // A held fact comes back from the queue with whatever fields were stored. If
+    // `repo` went missing, every gate that compares repositories has nothing to
+    // compare and a notice from one project lands in the other project's session.
+    // The key still names the repository, so routing has to fall back to it.
+    const heard = { a: [], b: [] };
+    const agentOn = (cwd, id) => ({
+      ...fakeAgent(cwd, id),
+      inject: (text) => heard[id].push(text),
+      followup: () => heard[id].push("woke"),
+    });
+    const ctx = fakeContext([agentOn(one, "a"), agentOn(two, "b")]);
+    const { apply } = await import("./index.js");
+    apply(ctx, mergeConfig({
+      cwd: root,
+      delivery: "quiet",
+      intervalMs: 600_000,
+      poll: {
+        command: process.execPath,
+        args: [
+          "-e",
+          `console.log(JSON.stringify({ events: [
+            { key: "owner/one#issue:1", role: "author", kind: "issue", title: "mine", url: "u1" },
+            { key: "owner/two#issue:2", role: "author", kind: "issue", title: "theirs", url: "u2" }
+          ] }))`,
+        ],
+      },
+      ack: { command: process.execPath, args: ["-e", "console.log('{}')"] },
+      // The default sweep would launch a browser here; this test is about routing.
+      sweep: null,
+    }));
+    ctx.emit("session/event", { id: "a" }, { type: "user/message", data: { source: { kind: "user" } } });
+
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline && heard.a.length === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    const textFor = (id) => heard[id].map((entry) => JSON.stringify(entry)).join("\n");
+    assert.match(textFor("a"), /mine/u, "the session on owner/one hears its own fact");
+    assert.doesNotMatch(textFor("a"), /theirs/u, "and not the other repository's");
+    assert.match(textFor("b"), /theirs/u, "the session on owner/two hears its own fact");
+    assert.doesNotMatch(textFor("b"), /mine/u, "and not owner/one's");
+    // The key alone is enough to name the repository.
+    assert.equal(repoOfKey("owner/one#issue:1"), "owner/one");
+    assert.equal(repoOfKey("ci:1"), null);
+  } finally {
+    removeTree(root);
+  }
+});
+
+test("a held fact does not sweep the inbox, because nothing new was found", async () => {
+  const root = mkdtempSync(join(tmpdir(), "inbox-sweep-held-"));
+
+  const marker = join(root, "swept");
+  try {
+    const agent = {
+      ...fakeAgent(root, "a"),
+      inject: () => {},
+      followup: () => {},
+    };
+    const ctx = fakeContext([agent]);
+    const { apply } = await import("./index.js");
+    apply(ctx, mergeConfig({
+      cwd: root,
+      delivery: "quiet",
+      intervalMs: 600_000,
+      poll: {
+        command: process.execPath,
+        args: [
+          "-e",
+          `console.log(JSON.stringify({ events: [{ key: "o/r#issue:1", role: "author", kind: "issue", title: "held", carried: true }] }))`,
+        ],
+      },
+      ack: { command: process.execPath, args: ["-e", "console.log('{}')"] },
+      sweep: {
+        command: process.execPath,
+        args: ["-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`],
+        when: "events",
+      },
+    }));
+    ctx.emit("agent/status", { agent: fakeAgent(root, "a") }, running);
+
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    // The queue re-reports a held fact on every poll. Sweeping for it would open
+    // a browser once a minute for news nobody new has seen.
+    assert.equal(existsSync(marker), false, "a carried fact does not sweep");
+  } finally {
+    removeTree(root);
+  }
+});
+
+test("a repository fact belongs to its owner, an item fact to whoever works there", () => {
+  const agents = [{ session: { id: "a" } }, { session: { id: "b" } }];
+  const owns = (agent) => agent.session.id === "a";
+  const repoNames = new Map([
+    ["a", "owner/one"],
+    ["b", "owner/two"],
+  ]);
+
+  assert.equal(eventTier({ kind: "ci" }), "repo");
+  assert.equal(eventTier({ kind: "security" }), "repo");
+  assert.equal(eventTier({ kind: "pr" }), "item");
+  assert.equal(eventTier({ kind: "review" }), "item");
+  assert.equal(eventTier({ kind: "issue" }), "item");
+
+  // A red default branch is the maintainer's ledger, and only theirs.
+  assert.deepEqual(audienceFor("repo", "owner/one", agents, { owns, repoNames }), ["a"]);
+  // My own pull request in a repository I do not maintain reaches me, because I
+  // am the one working there.
+  assert.deepEqual(audienceFor("item", "owner/two", agents, { owns, repoNames }), ["b"]);
+  // Nobody works there and nobody owns it: the session that spoke last gets it,
+  // rather than all of them or none.
+  assert.deepEqual(
+    audienceFor("item", "owner/three", agents, {
+      // Nobody owns this one: `owns` is bound to the event's repository by the
+      // caller, so an owner of another repository is not an owner here.
+      owns: () => false,
+      repoNames,
+      recent: new Map([
+        ["a", 1],
+        ["b", 2],
+      ]),
+    }),
+    ["b"],
+  );
+  // A source that names no repository is instance-wide: there is nothing to match.
+  assert.deepEqual(audienceFor("item", null, agents, { owns }), ["a", "b"]);
 });

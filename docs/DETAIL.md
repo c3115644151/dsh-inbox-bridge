@@ -1,12 +1,12 @@
 # GitHub inbox
 
-`dsh-inbox-bridge` is a DSH plugin. Each session subscribes to its own GitHub repositories; the plugin decides which events there concern you, joins them into one message, and injects it at the next turn boundary. It reads only, never acts on your behalf, and does not start a turn on its own.
+`dsh-inbox-bridge` is a DSH plugin. It does not show you what is in your GitHub account; it watches whether the work **this session** did on GitHub got an answer: did the pull request I opened get reviewed, which CI run broke, did anyone reply on the issue assigned to me. What it finds becomes one message, injected at the next turn boundary — and when the timing is right, it can open a turn on its own. It reads GitHub; it never changes your repositories.
 
 ## Why it exists
 
 When an agent writes the code, the repository does not move in step with the conversation. A CI run takes minutes to half an hour; the agent is editing something else when it fails. A pull request waits for review, an issue waits for an answer, and nobody picks them up. By the time anyone looks, the cheapest moment to fix it has passed.
 
-Installing it into a session is how the agent keeps watch like a maintainer: once per turn it reads the repository, fixes what broke, reviews what waits, and takes what is assigned. Product work and repository upkeep stop interrupting each other.
+Installing it into a session gives every session its own notifier: it looks with that session's identity and ownership, so the answer goes to whoever did the work. Product work and repository upkeep stop interrupting each other.
 
 That is also why it only reads: its job is to make the agent aware. The work happens in a turn you can watch.
 
@@ -15,9 +15,12 @@ That is also why it only reads: its job is to make the agent aware. The work hap
 ## What it does
 
 - **Relevance comes from your identity.** It queries the repositories as your local `gh` login (or a configured App identity) and keeps only events where you are the author, the reviewer, the assignee, or are mentioned.
-- **It reads repositories, not the notification inbox.** The notification inbox pushes per account and cannot tell sessions or repositories apart; querying repository state keeps two repositories on the same account apart.
-- **Polling follows turns.** Once at the start, every minute while a turn runs, once at the end; an idle session makes no request.
-- **The panel is editable.** The chip shows a blue dot and a count when something waits; hovering opens the events and a few controls: delivery, who takes a wakeup (when several sessions watch one repository), the rhythm (how idle is idle, wakes per hour), message clearing (off / mark read / archive to Done — one choice), and which repositories this session subscribes to (paste a link or type `owner/name`).
+- **Your own work follows you.** Beyond the repositories you own, it searches everything the account can read for your own items: pull requests you opened elsewhere, issues assigned to you, comments that mention you. Those find you too.
+- **You own a repository.** The first session in a workspace automatically takes the repository it sits in; later sessions start without one, and the panel can add or release. An owner receives the repository-wide signals: default-branch CI, security alerts, releases.
+- **Two tiers of ownership.** Repository-level facts go to the owner; item-level facts (checks, reviews, assignments, mentions on one pull request or issue) go to whoever works in that repository. One fact wakes one session.
+- **Polling follows turns.** Once at the start, every minute while a turn runs, once at the end; under `wakeup` it also reads while idle, because otherwise it could never reach you when you are away.
+- **Clearing, without asking.** Threads it read are marked read; repository-level facts are archived to Done by their owner — two ledgers, each kept by whoever owns it.
+- **The panel is editable.** The chip shows a blue dot and a count when something waits; hovering opens the events and two groups of controls — delivery, the rhythm (how idle is idle, wakes per hour) — plus the list of repositories this session owns (paste a link or type `owner/name`).
 
 ## Install
 
@@ -39,6 +42,7 @@ Then give it a working directory (`cwd`); the repository and the identity come f
 ## Boundaries
 
 - Read-only: no merging, commenting or changing repositories.
-- No turn by default; only `delivery: wakeup` with a matching `wakeOn` role, one responsible session for that repository, enough idle time, and room in both budgets may start one; any gate that fails falls back to queueing.
-- Archiving to Done needs one browser sign-in (GitHub has no archive API).
+- No turn by default; only `delivery: wakeup` with a matching `wakeOn` role, this fact belonging to this session, enough idle time, and room in both budgets may start one; any gate that fails falls back to queueing.
+- One fact wakes one session, but it cannot arbitrate between two agents that already started working.
+- Archiving to Done needs one browser sign-in (GitHub has no archive API); the plugin opens that window for you.
 - State is local, under `<cwd>/.work/`, and is not synced across machines.

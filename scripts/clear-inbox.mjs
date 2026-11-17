@@ -217,13 +217,24 @@ export const sweepScript = (repo) => `(async () => {
     if (paths.length === 0) return false;
     return !paths.some((path) => path.startsWith('/' + owner + '/'));
   };
+  // Archiving is the maintainer's bookkeeping of the repository itself: red runs,
+  // security advisories, releases. Anything that hangs on one pull request or issue
+  // is the ticket of whoever received it and is left unread-but-read (same as
+  // MarkThreadsRead does), because the maintainer is not the only reader of it.
+  const repoTier = (box) => {
+    const row = rowOf(box);
+    if (!row) return false;
+    const paths = repoPaths(row);
+    if (paths.length === 0) return false;
+    return paths.every((path) => /^\\/[^/]+\\/[^/]+\\/(actions\\/runs|security|releases|commit)\\b/.test(path));
+  };
   const started = Date.now();
   const all = boxes();
   const before = all.length;
   if (before === 0) {
     return { archived: 0, before: 0, after: 0, skipped: 0, empty: true };
   }
-  const mine = all.filter((box) => !foreign(box));
+  const mine = all.filter((box) => !foreign(box) && repoTier(box));
   const skipped = before - mine.length;
   if (mine.length === 0) {
     return { archived: 0, before, after: before, skipped, unscoped: true };

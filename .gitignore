@@ -1,5 +1,8 @@
-﻿node_modules/
+node_modules/
 .work/
 *.log
 
 .work-*
+
+# Diagram generator scratch space: the deliverables are docs/assets/architecture.*
+.archify/
