@@ -1,6 +1,6 @@
 {
   "name": "dsh-inbox-bridge",
-  "version": "2.18.2",
+  "version": "2.18.3",
   "displayName": "GitHub inbox",
   "description": "DSH 插件：让 agent 像维护者一样盯着你的仓库——按会话订阅仓库，取回与你有关、需要你处理的事件（失败的 CI、待评审的 PR、指派给你的 issue、@你的评论、开着的安全告警），在自己的回合送进上下文；会话空闲又遇到要紧的事时也能主动开一轮，让 agent 自己去修、去审、去接。",
   "type": "module",

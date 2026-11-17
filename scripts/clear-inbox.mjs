@@ -312,8 +312,28 @@ async function main(argv) {
     "about:blank",
   ];
   const child = spawn(browser, args, { detached: false, stdio: "ignore" });
-  const cleanup = () => {
+  // Chromium writes the cookie database on the way out. Killing it mid-run loses
+  // the GitHub session, which is what made every archive look like it had been
+  // signed out again. So the browser is asked to close and given time to finish;
+  // only a browser that refuses to go is killed, and that case is reported.
+  const stillRunning = () => child.exitCode === null && child.signalCode === null;
+  // The child process is not the browser itself — Edge/Chrome hand off to a new
+  // process — so the honest signal that the browser is gone is the DevTools
+  // endpoint no longer answering.
+  const browserGone = async () => {
+    try {
+      await fetch(`${base}/json/version`, { signal: AbortSignal.timeout(1000) });
+      return false;
+    } catch {
+      return true;
+    }
+  };
+  const cleanup = async () => {
     if (options.keepOpen) return;
+    for (let waited = 0; waited < 40; waited += 1) {
+      if (await browserGone()) return;
+      await sleep(250);
+    }
     try {
       child.kill();
     } catch {
@@ -503,7 +523,7 @@ async function main(argv) {
       }
       await sleep(1500);
     }
-    cleanup();
+    await cleanup();
     if (!options.keepOpen) {
       // A graceful close removes the lock; a kill can leave it behind.
       try {
