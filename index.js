@@ -628,6 +628,17 @@ export function apply(ctx, config) {
         primary: prefs.primary ?? {},
       });
       if (!wake.agent && wake.considered > 0) log(`no wakeup: ${wake.why}`);
+      // A wakeup that is only waiting for the idle window must not spend the
+      // event by injecting it: that would fill the next turn and leave nothing
+      // for the wake it existed for. The event stays pending and the next poll
+      // carries it (see `carriedPending`), so the wake still happens once the
+      // session has been quiet long enough.
+      if (!wake.agent && wake.why === "not-idle" && options.delivery === "wakeup") {
+        log(
+          `held ${events.length} event(s): the session has not been idle for ${pollLabel(options.wakeAfterIdleMs)} yet`,
+        );
+        return;
+      }
       const waking = wake.agent ? new Set([wake.agent]) : new Set();
       const deliveredKeys = new Set();
       let delivered = 0;

@@ -471,6 +471,55 @@ test("a wakeup opens a turn for the session on that repository, and only that se
   }
 });
 
+test("a wakeup that is not idle yet holds the event instead of spending it", async () => {
+  const root = mkdtempSync(join(tmpdir(), "inbox-notidle-"));
+  const watched = join(root, "watched");
+  try {
+    git(root, ["init", "--quiet", "watched"]);
+    git(watched, ["remote", "add", "origin", "https://github.com/owner/watched.git"]);
+    const woke = [];
+    const told = [];
+    const agent = {
+      ...fakeAgent(watched, "a"),
+      inject: () => told.push("a"),
+      followup: () => woke.push("a"),
+    };
+    const ctx = fakeContext([agent]);
+    const { apply } = await import("./index.js");
+    apply(ctx, mergeConfig({
+      cwd: root,
+      delivery: "wakeup",
+      wakeOn: ["reviewer"],
+      // Ten minutes of quiet is required, and the session just spoke.
+      wakeAfterIdleMs: 600_000,
+      intervalMs: 600_000,
+      poll: {
+        command: process.execPath,
+        args: [
+          "-e",
+          `console.log(JSON.stringify({ events: [{ key: "k1", repo: "owner/watched", role: "reviewer", kind: "pr", title: "t", url: "u" }] }))`,
+        ],
+      },
+      ack: { command: process.execPath, args: ["-e", "console.log('{}')"] },
+    }));
+    ctx.emit("session/event", { id: "a" }, { type: "user/message", data: { source: { kind: "user" } } });
+
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline && told.length === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    // Injecting here would fill the next turn with a notice the wake existed to
+    // open. The event has to stay pending instead.
+    assert.deepEqual(told, [], "a held wakeup does not inject the event");
+    assert.deepEqual(woke, [], "and it does not open a turn yet either");
+    const log = readFileSync(join(root, ".work", "inbox-bridge", "plugin.log"), "utf8");
+    assert.match(log, /no wakeup: not-idle/u);
+    assert.match(log, /held 1 event\(s\): the session has not been idle for/u);
+  } finally {
+    removeTree(root);
+  }
+});
+
 test("an overlay that disagrees about delivery keeps the repositories it names", async () => {
   const root = mkdtempSync(join(tmpdir(), "inbox-overlay-"));
   const marker = join(root, "repos.txt");
