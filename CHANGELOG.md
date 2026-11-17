@@ -1,3 +1,6 @@
+## 2.16.0
+
+- 回合进行中的轮询间隔默认值从 10 分钟改为 1 分钟：CI 跑完一两分钟内就能进上下文，赶在 agent 还没走远时返工。仍只在回合内轮询，空闲不发请求；需要更快可以改 intervalMs（下限 5 秒）。
 # Changelog
 
 Format: keep a short entry per released version. Dates are UTC.

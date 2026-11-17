@@ -3,6 +3,6 @@
       name: dsh-inbox-bridge
       config:
         label: 外部收件箱
-        intervalMs: 600000
+        intervalMs: 60000
         timeoutMs: 45000
         maxEvents: 6

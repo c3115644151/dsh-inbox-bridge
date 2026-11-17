@@ -170,7 +170,7 @@ const DEFAULTS = Object.freeze({
    * turn start polls once, a long turn re-polls on this interval, and the turn
    * end polls once (see `apply`). Idle sessions cost nothing.
    */
-  intervalMs: 10 * 60 * 1000,
+  intervalMs: 60 * 1000,
   timeoutMs: 45_000,
   maxEvents: 6,
   /** command the notice tells the agent to run; set it to your project's wrapper */

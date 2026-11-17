@@ -24,7 +24,7 @@ That is also why it only reads: its job is to make the agent aware. The work hap
 
 - **Relevance comes from your identity.** It queries the repositories as your `gh` login (or a configured App identity) and keeps only events where you are the author, the reviewer, the assignee, or are mentioned. Failed checks on someone else's PR, and unrelated repositories, never enter the queue.
 - **It reads repositories, not the notification inbox.** GitHub's notification inbox pushes per account and cannot tell one session or repository from another; querying repository state directly keeps two repositories on the same account apart.
-- **Polling follows turns.** Once when a session starts, every ten minutes while a turn runs, once when it ends. An idle session makes no request.
+- **Polling follows turns.** Once when a session starts, every minute while a turn runs, once when it ends. An idle session makes no request.
 - **It is injected into the context and does not interrupt the tool loop.** A notice arrives at the next safe injection point, is marked `delivered`, and unhandled events come back once after six hours.
 
 ## What you will see

@@ -41,7 +41,7 @@ DSH 的插件配置里，一个 `dsh-inbox-bridge` 条目即可；等价写法�
 | `cwd` | DSH 进程工作目录 | 状态文件放在哪个工作区的 `.work/`；也是推断仓库的起点 |
 | `repo` | 从 `origin` 推断 | 只盯这一个 `owner/name`；`INBOX_REPO` 环境变量可覆盖 |
 | `repos` | `[]` | 盯一组仓库：`["owner/one", "owner/two"]`；非空时优先于 `repo`，状态按仓库分片 |
-| `intervalMs` | `600000`（10 分钟） | **回合进行中**的轮询间隔；空闲时不轮询 |
+| `intervalMs` | `60000`（1 分钟） | **回合进行中**的轮询间隔；空闲时不轮询。CI 需要更快的返工就调小它（下限 5000），代价是每次轮询三个 `gh` 只读请求 |
 | `timeoutMs` | `45000` | 单次轮询命令的超时 |
 | `maxEvents` | `6` | 一条通知里最多列几条，其余指向 `list` |
 | `ackHint` | `node "<插件路径>/scripts/inbox-bridge.mjs" ack --done -- <key>` | 通知里让 agent 执行的那句命令 |

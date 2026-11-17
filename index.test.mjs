@@ -290,8 +290,8 @@ test("wake settings are validated and only mean something in wakeup mode", () =>
   assert.deepEqual(waking.wakeOn, ["reviewer", "assignee"]);
   assert.equal(waking.wakeAfterIdleMs, 15 * 60 * 1000);
   assert.equal(waking.wakesPerHour, 2);
-  // Idle polling is gone: the interval is the in-turn cadence, ten minutes.
-  assert.equal(mergeConfig({}).intervalMs, 10 * 60 * 1000);
+  // Idle polling is gone: the interval is the in-turn cadence, one minute by default.
+  assert.equal(mergeConfig({}).intervalMs, 60 * 1000);
   assert.deepEqual(mergeConfig({}).wakeOn, []);
 });
 
@@ -299,7 +299,7 @@ test("the notice states the wake rules it actually enforces", () => {
   const event = { key: "k", kind: "pr", role: "reviewer", title: "t", url: "u" };
   const quiet = formatEvents([event], mergeConfig({}));
   assert.match(quiet, /只会?在你发消息时随该轮进入上下文|不会替你另开一轮/u);
-  assert.match(quiet, /只在回合边界轮询：回合开始一次、进行中每 10 分钟一次、结束一次/u);
+  assert.match(quiet, /只在回合边界轮询：回合开始一次、进行中每 1 分钟一次、结束一次/u);
 
   const empty = formatEvents([event], mergeConfig({ delivery: "wakeup" }));
   assert.match(empty, /`wakeOn` 为空：仍是只排队/u);
