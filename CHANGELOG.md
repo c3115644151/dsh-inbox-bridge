@@ -2,6 +2,9 @@
 
 Format: keep a short entry per released version. Dates are UTC.
 
+## 2.15.3
+
+- 为插件市场准备：新增 screenshots.json（指向 docs/assets/panel.png）与 180px 方形图标 docs/assets/icon-180.png，便于目录与商店类市场展示卡片与截图。
 ## 2.15.2
 
 - 修掉「几小时前的旧条目一直挂在待处理里」：每次轮询都对比上一次的结果，某个 key 这次不再被报出来（检查变绿、PR 合了、issue 关了），说明这条事实已经不成立，直接收口。队列里只留此刻仍然成立的事。
