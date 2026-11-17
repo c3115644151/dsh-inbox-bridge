@@ -7,6 +7,7 @@ import { test } from "node:test";
 import {
   STATUSES,
   autoDone,
+  carriedPending,
   classify,
   closeResolved,
   describeDoctor,
@@ -16,7 +17,9 @@ import {
   formatDoctor,
   formatExplanation,
   formatStatus,
+  pollOnce,
   readState,
+  recordPending,
   transition,
 } from "./inbox-bridge.mjs";
 
@@ -126,6 +129,61 @@ test("a fact nobody was told about is not closed by the source going quiet", () 
     closed.state.events["o/r#issue:4:author:2026-11-17T12:25:51Z"].status,
     "pending",
   );
+});
+
+test("an event held while everyone was busy reaches a later poll", () => {
+  // The fact a wakeup waits for is often reported once. Poll 1 sees the issue;
+  // the plugin holds it because every session is busy. Poll 2 has nothing new to
+  // report — the issue was never reopened — so the event has to be carried over
+  // from the queue, or it is simply gone.
+  const root = mkdtempSync(join(tmpdir(), "inbox-held-"));
+  const answer = (payload) => () => JSON.stringify(payload);
+  try {
+    const issue = {
+      key: "o/r#issue:5",
+      kind: "issue",
+      role: "author",
+      title: "wakeup test",
+      url: "https://example.test/issues/5",
+    };
+    const first = pollOnce(root, {
+      at: "2026-11-17T12:40:00Z",
+      execFile: answer({ fresh: [issue], repos: ["o/r"] }),
+    });
+    assert.deepEqual(
+      first.pending.map((event) => event.key),
+      ["o/r#issue:5"],
+    );
+    const second = pollOnce(root, {
+      at: "2026-11-17T12:41:00Z",
+      execFile: answer({ fresh: [], repos: ["o/r"] }),
+    });
+    assert.deepEqual(
+      second.events.map((event) => event.key),
+      ["o/r#issue:5"],
+    );
+    assert.equal(second.events[0].title, "wakeup test");
+    assert.equal(second.events[0].carried, true);
+
+    // Delivered once, it stops being carried: the agent has been told.
+    const queue = readState(join(root, ".work", "inbox-bridge", "state.json"));
+    const delivered = transition(queue, ["o/r#issue:5"], "delivered", "2026-11-17T12:42:00Z");
+    const carried = carriedPending(delivered.state, [], { now: Date.parse("2026-11-17T12:43:00Z") });
+    assert.deepEqual(carried, []);
+
+    // Past the window a notice nobody received is no longer news.
+    const stale = recordPending(
+      { events: {} },
+      [issue],
+      "2026-11-17T12:40:00Z",
+    );
+    assert.deepEqual(
+      carriedPending(stale.state, [], { now: Date.parse("2026-11-17T19:00:00Z") }),
+      [],
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true, maxRetries: 3 });
+  }
 });
 
 test("classify splits events by the state they carry", () => {

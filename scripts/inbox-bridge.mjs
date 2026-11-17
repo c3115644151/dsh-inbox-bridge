@@ -88,6 +88,76 @@ export function transition(state, items, status, at) {
 }
 
 /**
+ * Remember the events nobody has been told about yet.
+ *
+ * Some facts are reported once: an issue is opened, a comment is posted. If the
+ * poll finds every session busy, the plugin holds the event and delivers it on
+ * a later turn — but the next poll has nothing to report, so without a record
+ * the news would simply be gone, and a wakeup could never happen. Entries use
+ * `attempts: 0` to say "recorded, never delivered".
+ */
+export function recordPending(state, events, at) {
+  const out = { ...(state?.events ?? {}) };
+  const marked = [];
+  for (const event of Array.isArray(events) ? events : []) {
+    if (!event || typeof event.key !== "string") continue;
+    if (out[event.key]) continue;
+    out[event.key] = {
+      status: "pending",
+      at,
+      attempts: 0,
+      ...(event.kind ? { kind: event.kind } : {}),
+      ...(event.role ? { role: event.role } : {}),
+      ...(event.group ? { group: event.group } : {}),
+      ...(event.title ? { title: event.title } : {}),
+      ...(event.url ? { url: event.url } : {}),
+      ...(event.label ? { label: event.label } : {}),
+      ...(event.ref ? { ref: event.ref } : {}),
+      ...(event.event ? { event: event.event } : {}),
+      ...(event.at ? { eventAt: event.at } : {}),
+    };
+    marked.push(event.key);
+  }
+  return { state: { events: out }, marked };
+}
+
+/**
+ * Rebuild the events a previous poll recorded but never delivered, so a turn
+ * that starts later still learns about them. Facts are forgotten after
+ * `resurfaceMs`: a notice nobody received for six hours is no longer news.
+ */
+export function carriedPending(state, events, options = {}) {
+  const now = options.now ?? Date.now();
+  const resurfaceMs = options.resurfaceMs ?? RESURFACE_MS;
+  const live = new Set(
+    (Array.isArray(events) ? events : [])
+      .filter((event) => event && typeof event.key === "string")
+      .map((event) => event.key),
+  );
+  const out = [];
+  for (const [key, entry] of Object.entries(state?.events ?? {})) {
+    if (!entry || entry.status !== "pending" || (entry.attempts ?? 0) !== 0) continue;
+    if (live.has(key)) continue;
+    const at = Number.isFinite(Date.parse(entry.at)) ? Date.parse(entry.at) : now;
+    if (now - at >= resurfaceMs) continue;
+    out.push({
+      key,
+      ...(entry.kind ? { kind: entry.kind } : {}),
+      ...(entry.role ? { role: entry.role } : {}),
+      ...(entry.group ? { group: entry.group } : {}),
+      ...(entry.title ? { title: entry.title } : {}),
+      ...(entry.url ? { url: entry.url } : {}),
+      ...(entry.label ? { label: entry.label } : {}),
+      ...(entry.ref ? { ref: entry.ref } : {}),
+      ...(entry.event ? { event: entry.event } : {}),
+      ...(entry.eventAt ? { at: entry.eventAt } : {}),
+      carried: true,
+    });
+  }
+  return out;
+}
+
+/**
  * Split the poller's events into the ones still worth injecting and the rest.
  * A delivered event that nobody marked done comes back after `resurfaceMs`;
  * a delivered infrastructure event never does.
@@ -158,7 +228,9 @@ export function autoDone(state, events, at) {
  * this, a notice nobody explicitly acks comes back every `resurfaceMs`
  * forever, which is how a five-hour-old item ends up back on the line.
  */
-export function closeResolved(state, events, { at, repos = [] } = {}) {
+export function closeResolved(state, events, { at, repos = [], now, resurfaceMs } = {}) {
+  const nowMs = Number.isFinite(now) ? now : Date.parse(at ?? "") || Date.now();
+  const window = resurfaceMs ?? RESURFACE_MS;
   const events_ = { ...(state?.events ?? {}) };
   const covered = new Set(
     (Array.isArray(repos) ? repos : []).map((repo) => String(repo).toLowerCase()),
@@ -176,11 +248,14 @@ export function closeResolved(state, events, { at, repos = [] } = {}) {
     const repo = hash > 0 ? key.slice(0, hash).toLowerCase() : null;
     if (!repo || !covered.has(repo)) continue;
     if (live.has(key)) continue;
-    // Never told anyone about it: a fact we have not reported yet is not
-    // settled by the source going quiet. Issues and comments are reported once,
-    // so closing a held one would drop exactly the news a wakeup was waiting
-    // for.
-    if (entry.status === "pending" && (entry.attempts ?? 0) === 0) continue;
+    // Never told anyone about it, and still recent: a fact we have not reported
+    // yet is not settled by the source going quiet. Issues and comments are
+    // reported once, so closing a held one would drop exactly the news a wakeup
+    // was waiting for. Past the resurface window it stops being news.
+    if (entry.status === "pending" && (entry.attempts ?? 0) === 0) {
+      const seenAt = Number.isFinite(Date.parse(entry.at)) ? Date.parse(entry.at) : nowMs;
+      if (nowMs - seenAt < window) continue;
+    }
     events_[key] = { ...entry, status: "done", at };
     marked.push(key);
   }
@@ -266,8 +341,29 @@ export function pollOnce(root, options = {}) {
   // `classify` also settles events that stop asking; that decision has to be
   // written back, or the next poll reads them as delivered again.
   const quiet = groups.done.length > 0 ? transition(closed.state, groups.done, "done", at) : closed;
-  if (quiet.marked.length > 0 || settled.marked.length > 0 || !existsSync(file)) writeState(file, quiet.state);
-  return { ...groups, skipped: null, closed: settled.marked, state: quiet.state };
+  // Write down what nobody has been told yet, so a held event survives the poll
+  // that can no longer see it, and pick up whatever an earlier poll held back.
+  const recorded =
+    groups.pending.length > 0
+      ? recordPending(quiet.state, groups.pending, at)
+      : { state: quiet.state, marked: [] };
+  const carried = carriedPending(recorded.state, events, options);
+  if (
+    recorded.marked.length > 0 ||
+    quiet.marked.length > 0 ||
+    settled.marked.length > 0 ||
+    !existsSync(file)
+  ) {
+    writeState(file, recorded.state);
+  }
+  return {
+    ...groups,
+    pending: [...groups.pending, ...carried],
+    events: [...events, ...carried],
+    skipped: null,
+    closed: settled.marked,
+    state: recorded.state,
+  };
 }
 
 /**
