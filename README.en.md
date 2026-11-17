@@ -12,6 +12,14 @@ English | [中文](README.md)
   <img src="https://c3115644151.github.io/dsh-inbox-bridge/assets/panel.png" width="300" alt="The chip in the status row and the panel it opens">
 </p>
 
+## Why it exists
+
+When an agent writes the code, the repository does not move in step with the conversation. A CI run takes minutes to half an hour; meanwhile the agent is editing something else and does not see the failure happen. A pull request waits for review, an issue waits for an answer, and nobody picks them up. By the time anyone looks, the cheapest moment to fix it has passed.
+
+This plugin hands that loop to the agent: once per turn it reads the repository and puts the facts that need action into the context — a failing check gets fixed, a review request gets reviewed, an assigned issue gets taken. Product work and repository upkeep stop interrupting each other, and the agent keeps the repository in shape the way a maintainer does instead of waiting for you to check.
+
+That is also why it only reads: its job is to make the agent aware. The work happens in a turn you can watch, not in the background on your behalf.
+
 ## What it does
 
 - **Relevance comes from your identity.** It queries the repositories as your `gh` login (or a configured App identity) and keeps only events where you are the author, the reviewer, the assignee, or are mentioned. Failed checks on someone else's PR, and unrelated repositories, never enter the queue.

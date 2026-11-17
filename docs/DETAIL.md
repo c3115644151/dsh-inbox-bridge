@@ -2,6 +2,14 @@
 
 `dsh-inbox-bridge` is a DSH plugin. Each session subscribes to its own GitHub repositories; the plugin decides which events there concern you, joins them into one message, and injects it at the next turn boundary. It reads only, never acts on your behalf, and does not start a turn on its own.
 
+## Why it exists
+
+When an agent writes the code, the repository does not move in step with the conversation. A CI run takes minutes to half an hour; the agent is editing something else when it fails. A pull request waits for review, an issue waits for an answer, and nobody picks them up. By the time anyone looks, the cheapest moment to fix it has passed.
+
+Installing it into a session is how the agent keeps watch like a maintainer: once per turn it reads the repository, fixes what broke, reviews what waits, and takes what is assigned. Product work and repository upkeep stop interrupting each other.
+
+That is also why it only reads: its job is to make the agent aware. The work happens in a turn you can watch.
+
 ![The chip in the status row and the panel it opens](https://c3115644151.github.io/dsh-inbox-bridge/assets/panel.png)
 
 ## What it does

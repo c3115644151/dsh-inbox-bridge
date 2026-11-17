@@ -28,8 +28,8 @@
         "zh": "GitHub 收件箱"
       },
       "description": {
-        "en": "Reads the GitHub repositories a session subscribes to and keeps only the events that concern you — failed checks, reviews waiting for you, issues assigned to you, comments that mention you — then injects them at the next turn boundary. A chip in the status row lists them and switches delivery, message clearing and subscriptions. Read-only, no turn on its own, no request while idle.",
-        "zh": "按会话订阅的 GitHub 仓库，只保留与你有关、需要你处理的事件（失败的 CI、待你评审的 PR、指派给你的 issue、@你的评论），在回合边界注入会话上下文。状态行里的胶囊可查看待处理项，并切换提醒方式、消息清理与订阅仓库。只读 GitHub，默认不主动开启对话，空闲时不发请求。"
+        "en": "Lets the agent keep watch over your repository the way a maintainer would: it reads the GitHub repositories a session subscribes to, keeps only the events that concern you — failed checks, reviews waiting for you, issues assigned to you, comments that mention you — and injects them at the next turn boundary, so a broken check gets fixed and a review request gets reviewed without waiting for you. A chip in the status row lists them and switches delivery, message clearing and subscriptions. Read-only, no turn on its own, no request while idle.",
+        "zh": "让 agent 像维护者一样盯着你的仓库：按会话订阅的 GitHub 仓库取数，只保留与你有关、需要你处理的事件（失败的 CI、待你评审的 PR、指派给你的 issue、@你的评论），在回合边界注入会话上下文——CI 挂了就修，有人请你评审就审，不用等你回来看。状态行里的胶囊可查看待处理项，并切换提醒方式、消息清理与订阅仓库。只读 GitHub，默认不主动开启对话，空闲时不发请求。"
       },
       "icon": "icon.svg",
       "author": "c3115644151",
@@ -50,12 +50,12 @@
       },
       "versions": [
         {
-          "version": "2.15.0",
-          "publishTimestamp": 1794877782,
+          "version": "2.15.1",
+          "publishTimestamp": 1794877783,
           "source": {
             "type": "git",
             "url": "https://github.com/c3115644151/dsh-inbox-bridge",
-            "commit": "e496c84a9f4a5eda5e8d0a2916ee8e273129e540"
+            "commit": "b5f19bc8ab25cebdc899d2f2e4090ccc7ed9c7e5"
           },
           "engines": {
             "dsh": ">=0.1.0"

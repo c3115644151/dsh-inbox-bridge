@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "GitHub inbox",
-    "description": "Reads the GitHub repositories a session subscribes to and keeps only the events that concern you — failed checks, reviews waiting for you, issues assigned to you, comments that mention you — then injects them at the next turn boundary. A chip in the status row lists them and switches delivery, message clearing and subscriptions. Read-only, no turn on its own, no request while idle.",
+    "description": "Lets the agent keep watch over your repository the way a maintainer would: it reads the GitHub repositories a session subscribes to, keeps only the events that concern you — failed checks, reviews waiting for you, issues assigned to you, comments that mention you — and injects them at the next turn boundary, so a broken check gets fixed and a review request gets reviewed without waiting for you. A chip in the status row lists them and switches delivery, message clearing and subscriptions. Read-only, no turn on its own, no request while idle.",
     "detail": "docs/DETAIL.md"
   }
 }
