@@ -17,7 +17,7 @@
  * run goes idle. Does not own: fetching the source (the configured poller does)
  * or the meaning of "handled" (the ack command decides).
  */
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -209,6 +209,12 @@ const DEFAULTS = Object.freeze({
    */
   sweep: null,
   /**
+   * How long to wait before the sign-in window may open again after it was left
+   * unsigned. Six hours: long enough not to interrupt, short enough that
+   * archiving comes back on the next event after a session expires.
+   */
+  signInCooldownMs: 6 * 60 * 60 * 1000,
+  /**
    * Which GitHub identity the poller reads as. `kind: "user"` uses the ambient
    * `gh` login; `kind: "app"` needs a token (`token` or `tokenEnv`) and has no
    * notification stream — the poller then reads repository feeds only.
@@ -369,6 +375,11 @@ export function apply(ctx, config) {
       // and shows which choices came from it rather than from the profile.
       token: uiToken,
       overlay: Object.keys(prefs),
+      signIn: {
+        signedIn: signIn.signedIn,
+        open: signIn.open,
+        attemptedAt: signIn.attemptedAt ? new Date(signIn.attemptedAt).toISOString() : null,
+      },
       sweepOn: Boolean(options.sweep),
       sessionId,
     };
@@ -436,6 +447,70 @@ export function apply(ctx, config) {
   // Archiving the notification inbox ("Done") has no API: it is a page action.
   // A configured sweep command does it through a browser, and this is where the
   // plugin calls it. `when: "events"` keeps a quiet turn at zero extra cost.
+  // Archiving needs a browser session, and a browser session expires. The
+  // operator should never have to run a command in a terminal to fix that:
+  // choosing the archive mode — or the archive finding no sign-in on its own —
+  // opens the window that asks for it.
+  const signIn = { signedIn: null, open: false, attemptedAt: 0 };
+
+  const sweepScript = () => {
+    const args = options.sweep?.args ?? [];
+    const script = args.find((arg) => String(arg).endsWith(".mjs"));
+    return typeof script === "string" ? script : null;
+  };
+
+  const minutesSince = (at) => Math.max(1, Math.round((Date.now() - at) / 60_000));
+
+  const openSignIn = (reason) => {
+    const script = sweepScript();
+    if (!script) return false;
+    if (signIn.open) {
+      log("sign-in window is already open");
+      return false;
+    }
+    if (signIn.attemptedAt && Date.now() - signIn.attemptedAt < options.signInCooldownMs) {
+      log(
+        `sign-in window not reopened: one was opened ${minutesSince(signIn.attemptedAt)} minutes ago`,
+      );
+      return false;
+    }
+    signIn.attemptedAt = Date.now();
+    signIn.open = true;
+    signIn.signedIn = false;
+    try {
+      const child = spawn(process.execPath, [script, "--login", "--json"], {
+        cwd: options.cwd,
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+        // Detached so a twenty-minute sign-in never holds a poll open; visible
+        // because there has to be a window to sign in.
+        detached: true,
+        windowsHide: false,
+        stdio: "ignore",
+      });
+      child.once("exit", () => {
+        signIn.open = false;
+      });
+      child.unref?.();
+    } catch (error) {
+      signIn.open = false;
+      log(`could not open the sign-in window: ${describe(error)}`);
+      return false;
+    }
+    log(`opened the sign-in window (${reason}); archiving resumes once you sign in`);
+    return true;
+  };
+
+  const checkSignIn = async () => {
+    const script = sweepScript();
+    if (!script) return;
+    try {
+      await runCommand({ command: "node", args: [script, "--check", "--json"] }, options);
+      signIn.signedIn = true;
+    } catch (error) {
+      if (error?.exitCode === 2) signIn.signedIn = false;
+    }
+  };
+
   const sweepInbox = async (freshCount) => {
     if (!options.sweep) return;
     if (options.sweep.when === "events" && freshCount === 0) return;
@@ -443,13 +518,15 @@ export function apply(ctx, config) {
     try {
       const stdout = await runCommand(options.sweep, options);
       const line = String(stdout ?? "").trim().split(/\r?\n/u).pop() ?? "";
+      signIn.signedIn = true;
       log(`swept the notification inbox: ${line || "done"} (${Date.now() - began}ms)`);
     } catch (error) {
       if (error?.exitCode === 2) {
-        const script = (options.sweep.args ?? []).find((arg) => String(arg).endsWith(".mjs"));
-        log(
-          `sweep needs a one-time sign-in: node "${script ?? "scripts/clear-inbox.mjs"}" --login`,
-        );
+        // The command says "sign-in required"; raise the window rather than
+        // asking the operator to copy a command out of the log.
+        signIn.signedIn = false;
+        log("the archive needs a browser sign-in");
+        openSignIn("the archive found no sign-in");
       } else {
         log(`sweep failed: ${describe(error)}`);
       }
@@ -616,6 +693,9 @@ export function apply(ctx, config) {
       `wakeOn ${options.wakeOn.join(",")} is idle: delivery is ${options.delivery}, so those roles only queue`,
     );
   }
+  // Archiving only works with a browser session; find out once at start whether
+  // there is one, so the panel can say so before the first event arrives.
+  if (options.sweep) void checkSignIn();
 
   // A turn is the only thing that makes the inbox worth reading: poll when one
   // starts, re-poll while a long one runs, poll once more when it ends. An idle
@@ -776,10 +856,20 @@ export function apply(ctx, config) {
                 sessionId,
                 sessionRepo,
               });
+              if (action === "signin") {
+                // Not a setting: open the window that archiving needs.
+                const opened = openSignIn("you asked for it in the panel");
+                return reply(200, { ok: true, opened, status: uiPayload(sessionId) });
+              }
               if (next === null) {
                 return reply(400, { ok: false, error: `unknown setting: ${action || "-"}` });
               }
               applyPrefs(next);
+              // Choosing the archive mode is also the request for a sign-in when
+              // there is none: the mode does nothing without one.
+              const wantsArchive =
+                (action === "clean" && value === "done") || (action === "archive" && value === "on");
+              if (wantsArchive && signIn.signedIn !== true) openSignIn("archive was turned on");
             } catch (error) {
               return reply(400, { ok: false, error: describe(error) });
             }
@@ -1065,9 +1155,16 @@ export function mergeConfig(config) {
     }
     sweepSpec = { command: sweep.command ?? "node", args: sweep.args ?? [], when };
   }
+  const signInCooldownMs = given.signInCooldownMs ?? DEFAULTS.signInCooldownMs;
+  if (!Number.isInteger(signInCooldownMs) || signInCooldownMs < 0) {
+    throw new Error(
+      `inbox-bridge: \`signInCooldownMs\` must be a non-negative integer, got ${JSON.stringify(signInCooldownMs)}`,
+    );
+  }
   return {
     ...DEFAULTS,
     ...given,
+    signInCooldownMs,
     repo,
     repos: watched,
     delivery,
@@ -1288,6 +1385,7 @@ export function buildUiPayload({
   recent = new Map(),
   now = Date.now(),
   session = null,
+  signIn = null,
 }) {
   const configured = options.repos?.length > 0 ? options.repos : options.repo ? [options.repo] : [];
   // A session sees exactly what a poll would deliver to it: the repositories it
@@ -1344,6 +1442,7 @@ export function buildUiPayload({
     delivery: options.delivery ?? DEFAULTS.delivery,
     clear: options.clear ?? DEFAULTS.clear,
     sweep: options.sweep?.when ?? null,
+    signIn: signIn ?? { signedIn: null, open: false, attemptedAt: null },
     intervalMs: options.intervalMs ?? DEFAULTS.intervalMs,
     queue: counts,
     events: events.slice(0, 20),

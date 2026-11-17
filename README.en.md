@@ -91,7 +91,7 @@ To see what it can actually see: `node scripts/inbox-bridge.mjs doctor` walks th
 | `delivery` | `quiet` | `quiet` queues only; `wakeup` may start a turn while the session is idle |
 | `wakeOn` | empty | roles allowed to wake under `wakeup`; empty never wakes |
 | `clear` | `repo` | mark read after a poll: `repo` / `off`. Only the subscribed repositories, never the whole account |
-| `sweep` | off | archive the inbox into Done on turns that found something; needs a one-time browser sign-in |
+| `sweep` | off | archive the inbox into Done on turns that found something; the plugin opens a sign-in window when one is missing |
 
 The panel's "message clearing" choice sets both: **off** (neither), **read** (clear the blue dot), **archive** (mark read and move to Done).
 
@@ -101,7 +101,7 @@ Full configuration, CLI and state files: [configuration](docs/configuration.md).
 
 - **Read-only.** It does not merge, comment, or change anything.
 - **No turn by default.** Only `delivery: wakeup` with a matching `wakeOn` role, enough idle time, and room in both budgets may start one; any gate that fails falls back to queueing.
-- **Done archiving needs one browser sign-in.** GitHub has no archive API; `scripts/clear-inbox.mjs` drives a local Chromium-based browser (Edge, Chrome or Chromium) and needs a single `--login`.
+- **Done archiving needs one browser sign-in, but you do not type a command for it.** GitHub has no archive API; `scripts/clear-inbox.mjs` drives a local Chromium-based browser (Edge, Chrome or Chromium). Switching "message clearing" to archive opens the sign-in window by itself, and it opens again if the session expires.
 - **State is local.** It lives under `.work/` in the working directory and is not synced across machines.
 
 ## Further reading

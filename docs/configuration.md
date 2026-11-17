@@ -34,6 +34,16 @@ DSH 的插件配置里，一个 `dsh-inbox-bridge` 条目即可；等价写法�
 { "delivery": "wakeup", "wakeOn": ["reviewer"], "repos": ["owner/one", "owner/two"] }
 ```
 
+### 归档需要一次登录
+
+GitHub 的 Done 只有网页端点，所以归档要用插件自己的浏览器配置（`.work/browser-profile`）登录一次。这件事不用你去终端敲命令：
+
+- 在卡片上把「消息清理」切到 **归档**，插件立刻弹出一个登录窗口；登录完它就自己归档。
+- 之后会话失效，而选项还停在归档上——下一次归档失败时，插件自己再弹一次窗口（两次之间至少隔 `signInCooldownMs`）。
+- 还没登录时卡片里会写着一行「归档还没登录 GitHub」，旁边有「打开登录窗口」按钮。
+
+窗口是独立进程，宿主的轮询不会被它挡住。命令行里 `scripts/clear-inbox.mjs --check` 只回答「登录了没」（没登录时退出码 2），`--login` 打开窗口等你登录，`--dry-run` 只报数量。
+
 ## 全部配置项
 
 | 键 | 默认 | 作用 |
@@ -56,7 +66,8 @@ DSH 的插件配置里，一个 `dsh-inbox-bridge` 条目即可；等价写法�
 | `identity` | `{ kind: "user" }` | 用哪个身份读 GitHub，见下 |
 | `roles` | `[]` | 只接收这些角色的事件；空 = 全收 |
 | `clear` | `"repo"` | 把这一轮读过的通知线程标为已读：`repo` 只清订阅的仓库，`off` 不碰收件箱。整个账号不在范围内——清别人的仓库属于人的决定，不是后台轮询的决定。旧配置里的 `"all"` 按 `"repo"` 载入。GitHub 没有「完成」API，所以清的是未读角标，历史仍在收件箱里 |
-| `sweep` | `null` | 抓到东西后把收件箱归档进 Done：`{ args: ["scripts/clear-inbox.mjs"], when: "events" }`。`when: "events"` 只在有发现的回合跑，`"always"` 每轮都跑。需要先 `scripts/clear-inbox.mjs --login` 登录一次 |
+| `sweep` | `null` | 抓到东西后把收件箱归档进 Done：`{ args: ["scripts/clear-inbox.mjs"], when: "events" }`。`when: "events"` 只在有发现的回合跑，`"always"` 每轮都跑。归档要有插件的浏览器配置里的一次登录；没有就让面板替你打开窗口，见下 |
+| `signInCooldownMs` | `21600000`（6 小时） | 归档缺登录时，两次「替你打开登录窗口」之间至少隔多久。长到不打扰，短到会话失效后的下一个事件还能恢复 |
 | `debug` | `false` | 把每个边界事件写进 `plugin.log`，用来排查「没轮询」还是「轮询了没结果」 |
 | `poll` | 插件自带 CLI 的 `poll` | 换掉抓取命令：`{ command, args }`，只要能输出约定的 JSON，来源可以不是 GitHub |
 | `ack` | 插件自带 CLI 的 `ack` | 同上，换掉收口命令 |
@@ -94,7 +105,7 @@ node scripts/inbox-bridge.mjs poll              # 立刻抓一次
 node scripts/inbox-bridge.mjs ack --done -- <key>   # 划掉一条，并停止提醒
 node scripts/inbox-bridge.mjs ack --all-delivered --done   # 把所有 delivered 一次划掉
 node scripts/inbox-bridge.mjs doctor            # 逐项自检：身份、仓库可读性、上次轮询、队列、归档登录
-node scripts/inbox-bridge.mjs explain <key>     # 某件事走到哪一步了，为什么没到你眼前   # 把所有 delivered 一次划掉
+node scripts/inbox-bridge.mjs explain <key>     # 某件事走到哪一步了，为什么没到你眼前
 ```
 
 `ack` 不带 `--done` 只把它们标成 delivered，意思是「给过了但还没处理」——6 小时后会再提。经 `npm run` 转发时，`--done` 必须写在 `--` 之后，否则被 npm 吞掉。

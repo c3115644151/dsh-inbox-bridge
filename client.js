@@ -128,6 +128,10 @@ window.__ModuleLoader__.load({
           readTip: "把通知标为已读，清掉圆点；不进 Done。",
           done: "归档",
           doneTip: "标为已读并移入 Done。归档需要一次浏览器登录。",
+          signInNeeded: "归档还没登录 GitHub，事件不会进 Done。",
+          signInWaiting: "已打开登录窗口，登录后自动生效。",
+          signInOpen: "打开登录窗口",
+          signInTip: "在插件自己的浏览器配置里登录一次；之后归档会自动运行，失效时会再打开这个窗口。",
           subscribe: "订阅仓库",
           subscribeTip: "此会话关注的 GitHub 仓库；事件只按这里的仓库投递。",
           typeRepo: "owner/repo 或链接",
@@ -180,6 +184,10 @@ window.__ModuleLoader__.load({
           readTip: "Clear the unread dot without moving the thread to Done.",
           done: "done",
           doneTip: "Mark read and move the thread to Done. Archiving needs a one-time browser sign-in.",
+          signInNeeded: "Archiving is not signed in yet, so nothing reaches Done.",
+          signInWaiting: "The sign-in window is open; archiving resumes when you finish.",
+          signInOpen: "open sign-in",
+          signInTip: "Sign in once in this plugin's own browser profile; afterwards archiving runs on its own and reopens this window if the session expires.",
           subscribe: "repositories",
           subscribeTip: "The repositories this session follows; events are delivered only for them.",
           typeRepo: "owner/repo or link",
@@ -416,6 +424,23 @@ window.__ModuleLoader__.load({
       },
       warnValue: {
         color: "var(--dsw-alias-label-warning, var(--dsw-alias-label-secondary))",
+      },
+      signInRow: {
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: "8px",
+        marginTop: "2px",
+        paddingLeft: "2px",
+      },
+      signInText: {
+        color: "var(--dsw-alias-label-warning, var(--dsw-alias-label-secondary))",
+        fontSize: "11px",
+        lineHeight: "18px",
+        minWidth: 0,
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap",
       },
       metaValue: {
         color: "var(--dsw-alias-label-secondary)",
@@ -768,6 +793,33 @@ window.__ModuleLoader__.load({
             "clean",
           ),
         ),
+        // Archiving is a page action in GitHub, so it needs a browser session in
+        // the plugin's own profile. Say that here, and open the window from here —
+        // the operator should not have to run a command to make the mode work.
+        cleanLevel === "done" && status.signIn?.signedIn !== true
+          ? h(
+              "div",
+              { style: styles.signInRow },
+              h(
+                "span",
+                { style: styles.signInText },
+                status.signIn?.open ? pick.signInWaiting : pick.signInNeeded,
+              ),
+              status.signIn?.open
+                ? null
+                : h(
+                    "button",
+                    {
+                      type: "button",
+                      disabled: busy,
+                      title: pick.signInTip,
+                      onClick: () => void send("signin", "1"),
+                      style: styles.seg,
+                    },
+                    pick.signInOpen,
+                  ),
+            )
+          : null,
         h(
           "div",
           { style: styles.controlRow },

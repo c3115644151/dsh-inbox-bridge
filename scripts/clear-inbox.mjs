@@ -65,6 +65,7 @@ function parseArgs(argv = []) {
     if (argument === "--json") options.json = true;
     else if (argument === "--login") options.login = true;
     else if (argument === "--dry-run") options.dryRun = true;
+else if (argument === "--check") options.check = true;
     else if (argument === "--keep-open") options.keepOpen = true;
     else if (argument === "--port") options.expectPort = true;
     else if (options.expectPort) {
@@ -172,6 +173,7 @@ async function main(argv) {
         "",
         "  --json       machine-readable summary",
         "  --dry-run    report how many threads would be archived",
+        "  --check      only say whether this profile is signed in (exit 2 if not)",
         "  --login      open a visible window so you can sign in once",
         "  --keep-open  leave the browser running after the sweep",
         "  --port N     DevTools port (default 9333)",
@@ -182,6 +184,13 @@ async function main(argv) {
 
   const root = process.cwd();
   const profileDir = resolve(root, PROFILE_REL);
+  // A profile with no cookie database has never been signed in. Answering that
+  // here keeps `--check` from launching a browser just to learn it is useless.
+  if (options.check && !existsSync(join(profileDir, "Default", "Cookies"))) {
+    if (options.json) console.log(JSON.stringify({ ok: false, reason: "sign-in-required" }));
+    else console.log("not signed in: archiving cannot run yet");
+    return 2;
+  }
   mkdirSync(profileDir, { recursive: true });
   const browser = findBrowser();
   const base = `http://127.0.0.1:${options.port}`;
@@ -282,6 +291,17 @@ async function main(argv) {
         );
         if (options.json) console.log(JSON.stringify({ ok: true, dryRun: true, rows }));
         else console.log(`would archive ${rows} thread(s)`);
+        return 0;
+      }
+
+      // `--check` answers one question and touches nothing: is this profile
+      // signed in? The panel and `doctor` need that without archiving anything.
+      if (options.check) {
+        const rows = await read(
+          `document.querySelectorAll('input[type=checkbox][name="notification_ids[]"]').length`,
+        );
+        if (options.json) console.log(JSON.stringify({ ok: true, signedIn: true, rows }));
+        else console.log("signed in: archiving can run");
         return 0;
       }
 

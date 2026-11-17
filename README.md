@@ -91,7 +91,7 @@ dsh plugin add dsh-inbox-bridge
 | `delivery` | `quiet` | `quiet` 只入队；`wakeup` 可在会话空闲时主动开启一轮 |
 | `wakeOn` | 空 | `wakeup` 下允许唤醒的角色白名单；为空则永不唤醒 |
 | `clear` | `repo` | 将订阅仓库里读过的通知标为已读：`repo` / `off`。只清订阅的仓库，不动整个账号 |
-| `sweep` | 关 | 有发现的回合把收件箱归档到 Done，需要先登录一次浏览器 |
+| `sweep` | 关 | 有发现的回合把收件箱归档到 Done；缺登录时插件自己弹窗口让你登录一次 |
 
 面板里的「消息清理」一档同时管这两件事：**关闭**（都不做）、**已读**（清蓝点）、**归档**（标已读并存进 Done）。
 
@@ -101,7 +101,7 @@ dsh plugin add dsh-inbox-bridge
 
 - **只读。** 不合并、不评论、不修改仓库。
 - **默认不主动开启对话。** 只有显式设置 `delivery: wakeup` 且命中 `wakeOn`、会话足够空闲、两个预算都还有余额时才会；任何一道门不过，就退回只排队。
-- **Done 归档依赖一次浏览器登录。** GitHub 没有归档 API，`scripts/clear-inbox.mjs` 通过本机浏览器（Edge / Chrome / Chromium）完成，需要执行一次 `--login`。
+- **Done 归档依赖一次浏览器登录，但不用你敲命令。** GitHub 没有归档 API，`scripts/clear-inbox.mjs` 通过本机浏览器（Edge / Chrome / Chromium）完成。把「消息清理」切到归档，插件会自己弹出登录窗口；会话失效时会再弹一次。
 - **状态在本机。** 存放在工作目录的 `.work/` 下，不跨机器同步。
 
 ## 更多

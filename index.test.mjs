@@ -766,24 +766,26 @@ test("a sweep that needs a person says so, instead of looking like a crash", asy
       ack: { command: process.execPath, args: ["-e", "console.log('{}')"] },
       sweep: {
         command: process.execPath,
-        args: ["-e", "console.error('not signed in');process.exit(2)"],
+        // A sweeper that is not signed in: `node -e …` exits 2, and the file name
+        // in the tail is what tells the plugin which script to reopen for a sign-in.
+        args: ["-e", "console.error('not signed in');process.exit(2)", "sweeper.mjs"],
       },
     }));
     ctx.emit("agent/status", { agent: { session: { id: "session-1" } }, status: "running" });
     const fs = await import("node:fs");
     const deadline = Date.now() + 6_000;
-    const logged = () =>
-      fs.existsSync(logPath) &&
-      fs.readFileSync(logPath, "utf8").includes("sweep needs a one-time sign-in");
+    const read = () => (fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf8") : "");
+    const logged = () => read().includes("the archive needs a browser sign-in");
     while (Date.now() < deadline && !logged()) {
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     assert.equal(logged(), true, "exit code 2 was not explained");
-    assert.equal(
-      fs.readFileSync(logPath, "utf8").includes("sweep failed"),
-      false,
-      "a sign-in prompt was reported as a failure",
-    );
+    assert.equal(read().includes("sweep failed"), false, "a sign-in prompt was reported as a failure");
+    const opened = () => read().includes("opened the sign-in window");
+    while (Date.now() < deadline && !opened()) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(opened(), true, "the archive did not offer to sign in by itself");
   } finally {
     removeTree(root);
   }
@@ -860,6 +862,27 @@ test("the cleaning control sets both mechanisms from one choice", () => {
   assert.equal(done.clear, "repo");
   assert.equal(done.sweep.args.at(-1), "--json");
   assert.equal(preferenceNext({}, "clean", "everything", {}), null);
+});
+
+test("the sign-in window is a setting: six hours between tries, by default", () => {
+  assert.equal(mergeConfig({}).signInCooldownMs, 6 * 60 * 60 * 1000);
+  assert.equal(mergeConfig({ signInCooldownMs: 1_000 }).signInCooldownMs, 1_000);
+  assert.throws(() => mergeConfig({ signInCooldownMs: -1 }), /non-negative integer/u);
+  assert.throws(() => mergeConfig({ signInCooldownMs: "soon" }), /non-negative integer/u);
+});
+
+test("the page is told whether archiving can sign in yet", () => {
+  const waiting = buildUiPayload({
+    options: mergeConfig({ repo: "owner/name" }),
+    signIn: { signedIn: null, open: false, attemptedAt: null },
+  });
+  assert.deepEqual(waiting.signIn, { signedIn: null, open: false, attemptedAt: null });
+  const open = buildUiPayload({
+    options: mergeConfig({ repo: "owner/name" }),
+    signIn: { signedIn: false, open: true, attemptedAt: null },
+  });
+  assert.equal(open.signIn.open, true);
+  assert.equal(buildUiPayload({ options: mergeConfig({ repo: "owner/name" }) }).signIn.signedIn, null);
 });
 
 test("a pasted repository URL is understood as a subscription", () => {
