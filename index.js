@@ -421,6 +421,7 @@ export function apply(ctx, config) {
             clear: options.clear,
             sweep: options.sweep ? options.sweep.when : null,
             wakeOn: options.wakeOn,
+            primary: options.primary ?? {},
             wakeAfterIdleMs: options.wakeAfterIdleMs,
             wakesPerHour: options.wakesPerHour,
             maxConsecutiveWakes: options.maxConsecutiveWakes,

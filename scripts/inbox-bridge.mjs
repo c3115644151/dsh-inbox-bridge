@@ -176,6 +176,11 @@ export function closeResolved(state, events, { at, repos = [] } = {}) {
     const repo = hash > 0 ? key.slice(0, hash).toLowerCase() : null;
     if (!repo || !covered.has(repo)) continue;
     if (live.has(key)) continue;
+    // Never told anyone about it: a fact we have not reported yet is not
+    // settled by the source going quiet. Issues and comments are reported once,
+    // so closing a held one would drop exactly the news a wakeup was waiting
+    // for.
+    if (entry.status === "pending" && (entry.attempts ?? 0) === 0) continue;
     events_[key] = { ...entry, status: "done", at };
     marked.push(key);
   }

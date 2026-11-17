@@ -100,6 +100,34 @@ test("a fact the repository no longer reports is closed", () => {
   assert.equal(closed.state.events["other/r#run:3"].status, "delivered");
 });
 
+test("a fact nobody was told about is not closed by the source going quiet", () => {
+  // An issue is reported once. If a poll finds a session busy, the event is
+  // held; the next poll has nothing to report, and closing it there would drop
+  // the very news a wakeup was waiting on.
+  const state = {
+    events: {
+      "o/r#issue:4:author:2026-11-17T12:25:51Z": {
+        status: "pending",
+        at: AT,
+        kind: "issue",
+        attempts: 0,
+      },
+      "o/r#issue:3:author:2026-11-16T19:30:22Z": {
+        status: "pending",
+        at: AT,
+        kind: "issue",
+        attempts: 1,
+      },
+    },
+  };
+  const closed = closeResolved(state, [], { at: AT, repos: ["o/r"] });
+  assert.deepEqual(closed.marked, ["o/r#issue:3:author:2026-11-16T19:30:22Z"]);
+  assert.equal(
+    closed.state.events["o/r#issue:4:author:2026-11-17T12:25:51Z"].status,
+    "pending",
+  );
+});
+
 test("classify splits events by the state they carry", () => {
   const events = [
     { key: "ci:1", kind: "ci" },
