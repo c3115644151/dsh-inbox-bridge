@@ -50,7 +50,7 @@ ack 命令从 `INBOX_BRIDGE_KEYS`（JSON 数组）接收 key，收到 `--done` �
 1. ~~**轮询跟着回合走**~~（2.2.0 已完成：回合开始一次、进行中每 `intervalMs` 一次、结束一次；空闲完全不轮询）。
 2. ~~**`wakeup` 重做**~~（2.2.0 已完成：`wakeOn` + `wakeAfterIdleMs` + `wakesPerHour` + 每会话上限，日志写 `woke … because …`）。
 3. ~~**`dsh-inbox-bridge status`**~~（2.2.0 已完成：仓库、身份、角色、投递方式、队列计数、上次轮询，只读本地文件）。
-4. ~~**多仓库**~~（2.3.0 已完成：`repos` 让一个实例订阅一组仓库；状态按仓库分片，事件 key 带仓库前缀 `owner/name#…`，会话仍只收自己仓库的事件；`INBOX_REPO` 支持逗号分隔，`--repo` 可重复）。
+4. ~~**多仓库**~~（2.3.0 已完成：`repos` 让一个实例接管一组仓库；状态按仓库分片，事件 key 带仓库前缀 `owner/name#…`；`INBOX_REPO` 支持逗号分隔，`--repo` 可重复。2.21.0 起接管是会话级的，`repos` 只作为实例级兜底）。
 5. **第二个来源**。候选按成本排序：GitLab/Gitea（同一套 REST 形状，约 100 行适配器）、IM webhook（Slack/Discord/飞书，约几十行，只读进来）、RSS（解析后按 `guid` 去重，约几十行）。做完第一个，才会知道契约是否真的够用；在那之前不承诺第三个。
 
 ## 不做

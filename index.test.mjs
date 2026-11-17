@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { DEFAULT_ACK_HINT, audienceFor, buildMessage, buildUiPayload, deliver, deliveryTargets, detectRepo, eventTier, filterUndelivered, formatEvents, matchesWatch, mergeConfig, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, sessionLabel, sessionTag, wakePlan } from "./index.js";
+import { DEFAULT_ACK_HINT, audienceFor, buildMessage, buildUiPayload, deliver, deliveryTargets, detectRepo, eventTier, filterUndelivered, formatEvents, fromHostPage, matchesWatch, mergeConfig, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, sessionLabel, sessionTag, wakePlan } from "./index.js";
 
 const idle = { status: "idle" };
 const running = { status: "running" };
@@ -327,6 +327,9 @@ test("wake settings are validated and only mean something in wakeup mode", () =>
   // Idle polling is gone: the interval is the in-turn cadence, one minute by default.
   assert.equal(mergeConfig({}).intervalMs, 60 * 1000);
   assert.deepEqual(mergeConfig({}).wakeOn, []);
+  // The panel title and the pill it opens from must not disagree: the pill says
+  // "GitHub 收件箱" from the locale file, so the host default has to match it.
+  assert.equal(mergeConfig({}).label, "GitHub 收件箱");
 });
 
 test("both delivery paths hand over the whole message, role and id included", () => {
@@ -1430,4 +1433,25 @@ test("a fact about my repository waits for me while I am mid-turn", async () => 
   } finally {
     removeTree(root);
   }
+});
+
+// The route answers the page the host serves and nothing else: a local tab, a
+// script, a curl with a made-up fetch site all stay outside.
+test("only the host's own page may read or change this instance", () => {
+  const ask = (headers) =>
+    new Request("http://127.0.0.1:3281/inbox-bridge/status.json", { headers });
+  assert.equal(fromHostPage(ask({ "sec-fetch-site": "same-origin" })), true);
+  assert.equal(fromHostPage(ask({ "sec-fetch-site": "none" })), true);
+  assert.equal(fromHostPage(ask({ "sec-fetch-site": "cross-site" })), false);
+  assert.equal(fromHostPage(ask({ "sec-fetch-site": "same-site" })), false);
+  assert.equal(fromHostPage(ask({})), false);
+  assert.equal(fromHostPage(ask({ origin: "http://127.0.0.1:3281" })), true);
+  assert.equal(fromHostPage(ask({ origin: "http://127.0.0.1:9999" })), false);
+  assert.equal(fromHostPage(ask({ referer: "http://127.0.0.1:3281/app/" })), true);
+  assert.equal(fromHostPage(ask({ referer: "http://elsewhere.test/app/" })), false);
+  // A page on another origin may not pass by naming its own origin either.
+  assert.equal(
+    fromHostPage(ask({ origin: "http://elsewhere.test" }), { origin: "http://elsewhere.test" }),
+    false,
+  );
 });

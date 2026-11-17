@@ -168,7 +168,10 @@ function readJsonSync(file) {
 }
 
 const DEFAULTS = Object.freeze({
-  label: "外部收件箱",
+  // One name everywhere: the pill, the panel title and the market entry all say
+  // "GitHub 收件箱". The panel used to be titled differently from the pill it
+  // opened from, which reads as two different things.
+  label: "GitHub 收件箱",
   cwd: process.cwd(),
   repo: null,
   /** Watch several repositories from one instance: `["owner/one", "owner/two"]`. */
@@ -405,7 +408,9 @@ export function apply(ctx, config) {
         polled: polledRepos(),
       }),
       // The page proves it is this process's page before it may change anything,
-      // and shows which choices came from it rather than from the profile.
+      // and shows which choices came from it rather than from the profile. The
+      // token rides in this response only because the route that answers it
+      // already refused every caller that is not the host's own page.
       token: uiToken,
       overlay: Object.keys(prefs),
       signIn: {
@@ -975,6 +980,16 @@ export function apply(ctx, config) {
     if (!server || typeof server.register !== "function") return;
     routeReady = true;
     let served = 0;
+    // One answer for every caller that is not the host's page: no detail about
+    // what exists here, and no hint that a setting was within reach.
+    const refused = () =>
+      new Response(`${JSON.stringify({ ok: false, error: "not this page" })}\n`, {
+        status: 403,
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "cache-control": "no-store",
+        },
+      });
     try {
       ctx.effect(() =>
         server.register({
@@ -982,6 +997,9 @@ export function apply(ctx, config) {
           path: UI_ROUTE,
           resource: async (request) => {
             served += 1;
+            // Only the page the host serves reads this: another tab on the same
+            // machine must not learn which repositories this instance watches.
+            if (!fromHostPage(request)) return refused();
             // Which session asked decides what is shown: two sessions in
             // different repositories must not read the same list.
             let sessionId = null;
@@ -1032,6 +1050,9 @@ export function apply(ctx, config) {
             } catch {
               return reply(400, { ok: false, error: "unreadable request" });
             }
+            // Changing this instance is the host page's privilege twice over:
+            // it must be that page, and it must carry this process's token.
+            if (!fromHostPage(request)) return refused();
             if (url.searchParams.get("token") !== uiToken) {
               return reply(403, { ok: false, error: "token" });
             }
@@ -1081,6 +1102,9 @@ export function apply(ctx, config) {
           kind: "exact",
           path: CLIENT_LOG_ROUTE,
           resource: async (request) => {
+            // The log is not a surface for other pages: only our own may write
+            // to it, or any local tab could fill it with whatever it likes.
+            if (!fromHostPage(request)) return refused();
             // Routes answer GET/HEAD only, so the page reports through the query
             // string; a JSON body is still accepted when a caller sends one.
             let message = null;
@@ -1312,6 +1336,39 @@ export function matchesWatch(agent, event, options, cache) {
   const role = event?.role ?? "any";
   if (roles.length > 0 && role !== "any" && !roles.includes(role)) return false;
   return true;
+}
+
+/**
+ * Who may read this instance, or change it: the page the host itself serves.
+ *
+ * A `WebResource` receives no peer over HTTP (the webserver hands one only to
+ * in-process reads), so the only evidence is what the browser says about
+ * itself. A fetch from the GUI marks its fetch site `same-origin`; a page from
+ * anywhere else marks `cross-site`, and a bare `curl` marks nothing at all —
+ * which is not the page either. When the caller names an origin it must be the
+ * one this very request arrived on, so a proxied or forwarded host cannot be
+ * spoofed by merely echoing its own header.
+ */
+export function fromHostPage(request, { origin = null, self = null } = {}) {
+  const headers = request?.headers;
+  if (!headers || typeof headers.get !== "function") return false;
+  let here = self;
+  if (!here) {
+    try {
+      here = new URL(request.url).origin;
+    } catch {
+      here = null;
+    }
+  }
+  const site = headers.get("sec-fetch-site");
+  if (site === "cross-site" || site === "same-site") return false;
+  const claimed = headers.get("origin") ?? origin;
+  if (claimed) return Boolean(here) && claimed === here;
+  const referer = headers.get("referer");
+  if (referer) return Boolean(here) && (referer === here || referer.startsWith(`${here}/`));
+  // Nothing at all: not a browser page. `same-origin` and `none` are the only
+  // fetch sites a page the host serves can produce.
+  return site === "same-origin" || site === "none";
 }
 
 function sourceLabel(options) {
@@ -1784,7 +1841,7 @@ export function buildUiPayload({
   };
 }
 
-export function buildMessage(count, text, label = "外部收件箱") {
+export function buildMessage(count, text, label = "GitHub 收件箱") {
   const summary = count > 0 ? `${label}有 ${count} 条新事件` : `${label}需要你注意`;
   return {
     id: randomUUID(),

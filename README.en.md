@@ -12,7 +12,7 @@ English | [中文](README.md)
 It does not track "what is in the GitHub account". It tracks "did what my agent did get an answer", so it is decoupled from the account: several sessions on one account each receive their own.
 
 <p align="center">
-  <img src="https://c3115644151.github.io/dsh-inbox-bridge/assets/panel.png" width="300" alt="The chip in the status row and the panel it opens">
+  <img src="https://c3115644151.github.io/dsh-inbox-bridge/assets/panel.png" width="300" alt="The panel: what is waiting, how patient a wakeup is, and which repositories this session owns">
 </p>
 
 ## Why it exists

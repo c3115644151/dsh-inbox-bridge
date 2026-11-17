@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "GitHub inbox",
-    "description": "A GitHub notifier for each session: using that session's identity it watches whether the work it did got an answer — did the pull request I opened get reviewed, which CI run broke, did anyone reply on the issue assigned to me — plus CI failures, security alerts, review requests and mentions in the repositories it owns. What it finds becomes one message, injected at the next turn boundary; when the moment is right it can open a turn on its own. Repository-level facts go to the owner, item-level facts to whoever works in that repository, and one fact wakes one session. The chip in the status row lists what waits, switches delivery and rhythm, and manages the owned repositories. It reads GitHub only; wakeups are opt-in and pass five gates.",
+    "description": "Give each DSH session its own GitHub watch: reviews on the PR it opened, failing CI, issues assigned to it and @mentions arrive in the next turn; an idle session can open a turn to fix them. Read-only.",
     "detail": "docs/DETAIL.md"
   }
 }

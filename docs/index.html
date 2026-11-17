@@ -4,9 +4,9 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>GitHub inbox · DSH 插件</title>
-    <meta name="description" content="dsh-inbox-bridge 是一个 DSH 插件：按会话订阅的 GitHub 仓库收集与你相关的事件，在回合边界注入会话上下文。" />
+    <meta name="description" content="dsh-inbox-bridge 是一个 DSH 插件：让每个会话自己盯 GitHub——它提的 PR 被评审、CI 挂了、派给它的 issue 有人回，下一轮自动进上下文。" />
     <meta property="og:title" content="GitHub inbox · DSH 插件" />
-    <meta property="og:description" content="按会话订阅的 GitHub 仓库，把失败 CI、待评审 PR、指派给你的 issue 与 @你的评论，在回合边界注入会话。" />
+    <meta property="og:description" content="让每个会话自己盯 GitHub：它提的 PR 被评审、CI 挂了、派给它的 issue 有人回，都会在下一轮自动进上下文；会话空闲时还能自己开一轮去修。" />
     <meta property="og:image" content="https://c3115644151.github.io/dsh-inbox-bridge/assets/panel.png" />
     <link rel="icon" href="icon.svg" type="image/svg+xml" />
     <style>
@@ -77,7 +77,7 @@
       </header>
 
       <p class="lede">
-        <code>dsh-inbox-bridge</code> 按会话订阅的 GitHub 仓库，收集与你相关、需要你处理的事件——失败的 CI、待你评审的 PR、指派给你的 issue、@你的评论——汇总成一条消息，在回合边界注入会话上下文。
+        <code>dsh-inbox-bridge</code> 让每个会话自己盯 GitHub：它提的 PR 被评审、CI 挂了、派给它的 issue 有人回、评论里有人 @ 它，都会在下一轮自动进入上下文；会话空闲又遇到要紧的事，它还能自己开一轮去修。只读，不改仓库。
       </p>
 
       <div class="actions">
@@ -87,8 +87,8 @@
       </div>
 
       <figure>
-        <img src="assets/panel.png" alt="输入框下方状态行里的胶囊，悬停展开的面板列出待处理事件与三组开关" />
-        <figcaption>状态行里的胶囊与悬停展开的面板：事件、身份、订阅仓库与三组开关。</figcaption>
+        <img src="assets/panel.png" alt="面板：待处理的事实、提醒方式与节奏、接管的仓库" />
+        <figcaption>面板里的四件事：等着的几条事实、提醒方式与节奏、这个会话接管的仓库。会话标题栏和输入框下方各有一个入口，点开是同一个面板。</figcaption>
       </figure>
 
       <h2>为什么需要它</h2>
@@ -101,17 +101,21 @@
 
       <h2>它做什么</h2>
       <ul>
-        <li><strong>按身份判断相关性。</strong>用 <code>gh</code> 的登录身份（或配置的 App 身份）查询仓库，只保留以你为作者、评审人、指派对象或提及对象的事件。</li>
-        <li><strong>只看仓库，不看通知箱。</strong>GitHub 的通知箱按账号推送，无法区分会话与仓库；这里直接查仓库状态，同一账号下不同仓库互不干扰。</li>
-        <li><strong>轮询跟随回合。</strong>会话开始时一次、进行中每 1 分钟一次、结束时一次；空闲会话不发请求。</li>
-        <li><strong>注入到上下文。</strong>消息在下一次安全注入点进入会话；送达后标为 <code>delivered</code>，未处理的 6 小时后重新提醒一次。</li>
+        <li><strong>按身份判断相关性。</strong>用它自己的身份查 GitHub，只留它是作者、评审人、指派对象或被提及的事。</li>
+        <li><strong>自己的工作跟人走。</strong>在别的仓库提的 PR、被指派的 issue、被 @ 的评论，也一样会送回来——不限于它所在的仓库。</li>
+        <li><strong>接管仓库。</strong>一个会话接管一个仓库之后，仓库级信号（默认分支的 CI、安全告警、新开的 issue）只给接管的会话；工作区里的第一个会话自动接管它所在的仓库。</li>
+        <li><strong>两级归属。</strong>仓库级事实只给接管者；条目级事实给在仓库里干活的会话，没有就落到接管者、再落到最近说话的那个——同一条事实只叫一个会话。</li>
+        <li><strong>轮询跟随回合。</strong>开始时一次、进行中每 1 分钟一次、结束时一次；没人接管的仓库不被访问。</li>
+        <li><strong>消息只有事实。</strong>一句抬头加每条一行「要对它做什么」，不写插件自己的机制。</li>
+        <li><strong>顺手清掉读过的。</strong>收到的事件标已读；仓库级事件归档到 Done。归档默认开着，只需要登录一次浏览器，插件会自己弹窗口。</li>
       </ul>
 
       <h2>它不做什么</h2>
       <ul>
-        <li>不合并、不评论、不修改仓库。</li>
-        <li>默认不主动开启一轮对话。</li>
-        <li>只读一个 GitHub 仓库集，不读账号级通知。</li>
+        <li>不合并、不评论、不修改仓库，只读。</li>
+        <li>不仲裁并发：两个会话都动手时它管不了，它只保证一条事实只叫一个会话。</li>
+        <li>不读 GitHub 通知箱，也就不追「账号上的消息」；只看仓库里发生的事。</li>
+        <li>默认不主动开一轮对话，`delivery: wakeup` 才开，且有五道门。</li>
       </ul>
 
       <h2 id="install">安装</h2>
@@ -121,16 +125,19 @@
       <p><strong>从源码：</strong></p>
       <pre>git clone https://github.com/c3115644151/dsh-inbox-bridge
 dsh plugin add ./dsh-inbox-bridge</pre>
-      <p>安装后在插件配置里指定工作目录 <code>cwd</code>；仓库与身份都从该目录的 <code>git remote</code> 与 <code>gh</code> 读取。</p>
+      <p><strong>从 npm：</strong></p>
+      <pre>dsh plugin add dsh-inbox-bridge</pre>
+      <p>安装后在插件配置里指定工作目录 <code>cwd</code>；仓库与身份都从该目录的 <code>git remote</code> 与 <code>gh</code> 读取。会话第一次出现时自动接管它所在的仓库，之后的会话默认接手条目级的事。</p>
 
       <h2>配置</h2>
       <table class="table">
         <tr><th>键</th><th>默认</th><th>作用</th></tr>
         <tr><td><code>cwd</code></td><td>DSH 进程工作目录</td><td>状态文件位置；推断仓库的起点</td></tr>
-        <tr><td><code>repo</code> / <code>repos</code></td><td>从 <code>origin</code> 推断</td><td>订阅一个或一组 <code>owner/name</code></td></tr>
-        <tr><td><code>delivery</code></td><td><code>quiet</code></td><td><code>quiet</code> 只入队；<code>wakeup</code> 可在空闲时开启一轮</td></tr>
-        <tr><td><code>clear</code></td><td><code>repo</code></td><td>把订阅仓库里读过的通知标为已读</td></tr>
-        <tr><td><code>sweep</code></td><td>关</td><td>有发现的回合把收件箱归档到 Done，需先登录一次浏览器</td></tr>
+        <tr><td><code>repo</code> / <code>repos</code></td><td>空</td><td>实例级接管；平时由会话自己接管，不用写</td></tr>
+        <tr><td><code>delivery</code></td><td><code>quiet</code></td><td><code>quiet</code> 只注入；<code>wakeup</code> 空闲时也能开一轮</td></tr>
+        <tr><td><code>roles</code></td><td>空（全收）</td><td>只关心某些角色：<code>author</code>、<code>reviewer</code>、<code>assignee</code>…</td></tr>
+        <tr><td><code>clear</code></td><td><code>repo</code></td><td>读到的事件标已读：<code>repo</code> 自己的仓库、<code>all</code> 整个账号、<code>off</code> 不动</td></tr>
+        <tr><td><code>sweep</code></td><td>开</td><td>有新的仓库级事实时把收件箱归档到 Done，需先登录一次浏览器</td></tr>
       </table>
 
       <footer>

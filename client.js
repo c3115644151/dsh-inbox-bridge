@@ -92,7 +92,6 @@ window.__ModuleLoader__.load({
         empty: "没有待处理的事",
         waiting: (n) => `${n} 条待处理`,
         handed: (n) => `${n} 条已投递`,
-        handedTag: "已投递",
         handedTip: "已经交给某一轮，等它处理；下次轮询若这条事实不再成立，它会自动结束",
         synced: (text) => `${text}同步`,
         never: "尚未同步",
@@ -147,7 +146,6 @@ window.__ModuleLoader__.load({
         empty: "nothing waiting",
         waiting: (n) => `${n} waiting`,
         handed: (n) => `${n} already delivered`,
-        handedTag: "delivered",
         handedTip: "Already handed to a turn, waiting for it; the next poll closes it once the fact no longer holds",
         synced: (text) => `synced ${text}`,
         never: "not synced yet",
@@ -296,15 +294,17 @@ window.__ModuleLoader__.load({
         position: "fixed",
         zIndex: 1100,
         boxSizing: "border-box",
-        width: "max-content",
         minWidth: `min(${FALLBACK_WIDTH}px, calc(100vw - 24px))`,
         maxWidth: "min(440px, calc(100vw - 24px))",
         padding: "16px",
         border: 0,
         borderRadius: "var(--dsw-radius-lg)",
-        background: "var(--dsw-specific-menu)",
-        backdropFilter: "var(--dsw-menu-backdrop-filter)",
-        boxShadow: "var(--dsw-elevation-prominent)",
+        // Every surface token gets a fallback: a host (or a preview harness) that
+        // does not define `--dsw-specific-menu` would otherwise paint this panel
+        // transparent, and the composer underneath shows through the rows.
+        background: "var(--dsw-specific-menu, var(--dsw-alias-bg-base, #fff))",
+        backdropFilter: "var(--dsw-menu-backdrop-filter, none)",
+        boxShadow: "var(--dsw-elevation-prominent, 0 8px 24px rgba(0, 0, 0, 0.14))",
         fontSize: "12px",
         lineHeight: "18px",
         color: "var(--dsw-alias-label-secondary)",
@@ -319,7 +319,10 @@ window.__ModuleLoader__.load({
         pointerEvents: "auto",
         // Position comes from the measured chip; the host's anchor() fallback chain is not
         // something a plugin can reproduce faithfully, and a wrong guess stretches the panel.
-        left: `${geometry?.left ?? 12}px`,
+        // The chip sits on the right of the dock and of the header, so the panel is pinned by
+        // its right edge when that edge is the one with room: a left offset measured against
+        // a wider window pushed the panel off the screen after a resize.
+        ...(geometry?.right != null ? { right: `${geometry.right}px` } : { left: `${geometry?.left ?? 12}px` }),
         ...(geometry?.placement === "below"
           ? { top: `${geometry?.top ?? 12}px` }
           : { bottom: `${geometry?.bottom ?? 12}px` }),
@@ -345,35 +348,50 @@ window.__ModuleLoader__.load({
         whiteSpace: "nowrap",
       },
       rule: { marginBottom: "10px", borderTop: "0.5px solid var(--dsw-alias-border-l2)" },
-      list: { display: "grid", gap: "2px", minWidth: 0 },
+      list: { display: "grid", gap: "6px", minWidth: 0 },
       row: {
+        // Two lines per fact: the title is what the reader scans, so it gets the
+        // full width; the role, repository and age sit underneath in the tertiary
+        // colour. A single line of five columns cannot hold all of them at 320px
+        // without cutting the title to a stump.
         display: "grid",
-        gridTemplateColumns: "auto minmax(0, 1fr) auto",
-        alignItems: "baseline",
-        gap: "8px",
+        gap: "1px",
         minWidth: 0,
-        padding: "2px 4px",
+        padding: "4px 4px",
         margin: "0 -4px",
         borderRadius: "var(--dsw-radius-sm)",
       },
       rowOn: { background: "var(--dsw-alias-interactive-bg-hover)" },
-      handed: {
+      rowTop: {
+        display: "flex",
+        alignItems: "baseline",
+        gap: "8px",
+        minWidth: 0,
+      },
+      rowTitle: { flex: "1 1 auto", minWidth: 0 },
+      rowFoot: {
+        display: "flex",
+        alignItems: "baseline",
+        gap: "5px",
+        minWidth: 0,
+        overflow: "hidden",
         color: "var(--dsw-alias-label-tertiary)",
         fontSize: "10.5px",
-        lineHeight: "16px",
-        padding: "0 4px",
-        borderRadius: "var(--dsw-radius-sm)",
-        border: "0.5px solid var(--dsw-alias-border-l2)",
-        whiteSpace: "nowrap",
-        opacity: 0.9,
+        lineHeight: "15px",
       },
-      tag: {
-        color: "var(--dsw-alias-label-tertiary)",
-        fontSize: "11px",
-        lineHeight: "18px",
+      rowKind: { flex: "0 0 auto", whiteSpace: "nowrap" },
+      rowRepo: {
+        flex: "0 1 auto",
+        minWidth: 0,
+        overflow: "hidden",
+        textOverflow: "ellipsis",
         whiteSpace: "nowrap",
-        fontVariantNumeric: "tabular-nums",
+        opacity: 0.85,
       },
+      // A row that already reached a turn reads quieter instead of carrying a
+      // status word: the pill and the row would otherwise be spending width on
+      // jargon the reader does not need to decode.
+      linkDim: { color: "var(--dsw-alias-label-tertiary)" },
       link: {
         color: "var(--dsw-alias-label-secondary)",
         textDecoration: "none",
@@ -396,6 +414,11 @@ window.__ModuleLoader__.load({
       },
       meta: {
         display: "grid",
+        // A grid item defaults to min-width: auto, so a single long line (a sign-in
+        // sentence, a repository name) used to widen the whole column past the
+        // panel and get clipped by overflow-x instead of ellipsising. minmax(0, 1fr)
+        // lets the track shrink to the panel.
+        gridTemplateColumns: "minmax(0, 1fr)",
         gap: "2px",
         marginTop: "12px",
         paddingTop: "10px",
@@ -435,6 +458,7 @@ window.__ModuleLoader__.load({
         gap: "8px",
         marginTop: "2px",
         paddingLeft: "2px",
+        minWidth: 0,
       },
       signInText: {
         color: "var(--dsw-alias-label-warning, var(--dsw-alias-label-secondary))",
@@ -599,18 +623,25 @@ window.__ModuleLoader__.load({
       );
     }
 
-    function Role({ role, text }) {
-      const label = text.roles[role] ?? text.kinds?.[role] ?? "";
-      if (!label) return null;
-      return h("span", { style: styles.tag }, label);
-    }
-
     function Row({ event, text }) {
       const [hover, setHover] = React.useState(false);
       const title = event.title || fallbackTitle(event.key);
+      const delivered = event.status === "delivered";
       const body = event.url
-        ? h("a", { href: event.url, target: "_blank", rel: "noreferrer", style: styles.link, title }, title)
-        : h("span", { style: styles.link, title }, title);
+        ? h(
+            "a",
+            {
+              href: event.url,
+              target: "_blank",
+              rel: "noreferrer",
+              style: { ...styles.link, ...(delivered ? styles.linkDim : {}) },
+              title: delivered ? `${title} — ${text.handedTip}` : title,
+            },
+            title,
+          )
+        : h("span", { style: { ...styles.link, ...(delivered ? styles.linkDim : {}) }, title }, title);
+      const kind = event.role && event.role !== "any" ? event.role : event.kind;
+      const kindLabel = text.roles[kind] ?? text.kinds?.[kind] ?? "";
       return h(
         "div",
         {
@@ -619,20 +650,19 @@ window.__ModuleLoader__.load({
           onMouseLeave: () => setHover(false),
         },
         h(
-          "span",
-          { style: { display: "inline-flex", gap: "6px", alignItems: "baseline", minWidth: 0 } },
-          h(Role, { role: event.role && event.role !== "any" ? event.role : event.kind, text }),
+          "div",
+          { style: styles.rowTop },
+          h("span", { style: styles.rowTitle }, body),
+          event.at ? h("span", { style: styles.age }, ago(event.at, text)) : null,
+        ),
+        h(
+          "div",
+          { style: styles.rowFoot },
+          h("span", { style: styles.rowKind }, kindLabel),
           event.repo
-            ? h("span", { style: styles.tag, title: event.repo }, event.repo.split("/").pop())
-            : null,
-          // Delivered means the agent already has it in front of it; saying so
-          // keeps the row from reading like something nobody looked at.
-          event.status === "delivered"
-            ? h("span", { style: styles.handed, title: text.handedTip }, text.handedTag)
+            ? h("span", { style: styles.rowRepo, title: event.repo }, `· ${event.repo.split("/").pop()}`)
             : null,
         ),
-        h("span", { style: { minWidth: 0 } }, body),
-        event.at ? h("span", { style: styles.age }, ago(event.at, text)) : null,
       );
     }
 
@@ -1030,18 +1060,26 @@ window.__ModuleLoader__.load({
           window.innerWidth || Infinity,
           document.documentElement?.clientWidth || Infinity,
         );
-        const width = Math.max(300, Math.min(FALLBACK_WIDTH, room - 24));
-        const left = Math.min(Math.max(12, rect.left), Math.max(12, room - width - 12));
+        const margin = 12;
+        const width = Math.max(280, Math.min(FALLBACK_WIDTH, room - margin * 2));
+        const slack = Math.max(margin, room - width - margin);
+        const left = Math.min(Math.max(margin, Math.round(rect.left)), slack);
+        // The dock and the header both put the chip on the right, so a left-anchored panel
+        // runs off the window as soon as the window is narrower than chip + panel. Pin the
+        // right edge instead when the left one does not fit.
+        const overflowingRight = rect.left + width + margin > room;
+        const right = Math.min(Math.max(margin, Math.round(room - rect.right)), slack);
         const viewport = window.innerHeight || document.documentElement?.clientHeight || 800;
         const floor = 16 + 8;
         const spaceAbove = Math.max(0, Math.round(rect.top - floor));
         const spaceBelow = Math.max(0, Math.round(viewport - rect.bottom - floor));
+        const horizontal = overflowingRight ? { right } : { left };
         // The composer pill sits near the bottom, so the panel opens upward there. The
         // header toolbar sits at the top, where upward would put the panel off-screen:
         // whichever side has more room wins, and that side gets the height budget.
         if (spaceAbove < 240 && spaceBelow > spaceAbove) {
           return {
-            left,
+            ...horizontal,
             top: Math.round(rect.bottom + 8),
             width,
             maxHeight: Math.max(160, spaceBelow),
@@ -1049,13 +1087,29 @@ window.__ModuleLoader__.load({
           };
         }
         return {
-          left,
+          ...horizontal,
           bottom: Math.max(12, viewport - rect.top + 8),
           width,
           maxHeight: Math.max(160, spaceAbove),
           placement: "above",
         };
       };
+
+      // The window can be resized or scrolled while the panel is open; a geometry measured
+      // once would then point at where the chip used to be.
+      React.useEffect(() => {
+        if (!open) return undefined;
+        const refresh = () => {
+          const next = measure();
+          if (next) setGeometry(next);
+        };
+        window.addEventListener("resize", refresh);
+        window.addEventListener("scroll", refresh, true);
+        return () => {
+          window.removeEventListener("resize", refresh);
+          window.removeEventListener("scroll", refresh, true);
+        };
+      }, [open]);
 
       const reveal = () => {
         clearTimers();
@@ -1156,7 +1210,9 @@ window.__ModuleLoader__.load({
                   shown.map((event) => h(Row, { key: event.key, event, text })),
                   hidden > 0 ? h("div", { style: styles.more }, text.more(hidden)) : null,
                 )
-              : h("div", { style: styles.emptyLine }, text.empty),
+              : // The title already says "nothing waiting"; a second copy of the same
+                // sentence was the loudest thing in an otherwise quiet panel.
+                null,
             h(
               "div",
               { style: styles.meta },

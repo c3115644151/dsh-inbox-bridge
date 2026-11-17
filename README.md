@@ -12,7 +12,7 @@
 它不管「GitHub 账号上有什么消息」，只管「我这个 agent 做的事有没有回音」。所以它和账号解耦：同一个账号下的多个会话各自收各自的事。
 
 <p align="center">
-  <img src="https://c3115644151.github.io/dsh-inbox-bridge/assets/panel.png" width="300" alt="状态行里的胶囊与悬停展开的面板">
+  <img src="https://c3115644151.github.io/dsh-inbox-bridge/assets/panel.png" width="300" alt="面板：待处理的事实、提醒方式与节奏、接管的仓库">
 </p>
 
 ## 为什么需要它
