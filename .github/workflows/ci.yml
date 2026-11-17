@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  schedule:
+    # macOS runners on this repository are scarce: a macOS job queued by a push
+    # sat for fifteen minutes and was cancelled, turning every release red for a
+    # reason that has nothing to do with the code. macOS still gets tested, just
+    # once a night instead of on every push.
+    - cron: "0 18 * * *"
 
 jobs:
   test:
@@ -13,7 +19,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run tests
+        run: npm test
+
+  macos:
+    name: test (macos-latest, nightly)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
