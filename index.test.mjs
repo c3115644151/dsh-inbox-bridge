@@ -316,6 +316,10 @@ test("the notice states the wake rules it actually enforces", () => {
   assert.match(waking, /仅限 reviewer 角色/u);
   assert.match(waking, /空闲满 20 分钟后/u);
   assert.match(waking, /每小时最多 1 次/u);
+  // The mode that can open a turn must say it also reads while idle; quiet must
+  // keep the promise that an idle session costs nothing.
+  assert.match(waking, /空闲时也按同一间隔读一次/u);
+  assert.match(quiet, /空闲时不访问来源/u);
 });
 
 test("both delivery paths hand over the whole message, role and id included", () => {
@@ -397,6 +401,119 @@ test("a status event for the same session reaches the poll schedule", async () =
     }
     assert.equal((await import("node:fs")).existsSync(marker), true, "the turn start did not poll");
   } finally {
+    removeTree(root);
+  }
+});
+
+test("a wakeup opens a turn for the session on that repository, and only that session", async () => {
+  const root = mkdtempSync(join(tmpdir(), "inbox-wake-"));
+  const watched = join(root, "watched");
+  const neighbourRepo = join(root, "neighbour");
+  const noRemote = join(root, "no-remote");
+  // A wake is the one path that spends the user's attention unasked, so it must
+  // be impossible to open the wrong session: the event names its repository, and
+  // only a session whose workspace points there is even a candidate.
+  const makeRepo = (dir, remote) => {
+    git(root, ["init", "--quiet", dir]);
+    git(dir, ["remote", "add", "origin", `https://github.com/${remote}.git`]);
+  };
+  try {
+    makeRepo(watched, "owner/watched");
+    makeRepo(neighbourRepo, "owner/neighbour");
+    git(root, ["init", "--quiet", noRemote]);
+
+    const woke = [];
+    const told = [];
+    const agentOn = (cwd, id) => ({
+      ...fakeAgent(cwd, id),
+      inject: () => told.push(id),
+      followup: () => woke.push(id),
+    });
+    const home = agentOn(watched, "a");
+    const neighbour = agentOn(neighbourRepo, "b");
+    const bare = agentOn(noRemote, "c");
+    const ctx = fakeContext([home, neighbour, bare]);
+    const { apply } = await import("./index.js");
+    apply(ctx, mergeConfig({
+      cwd: root,
+      delivery: "wakeup",
+      wakeOn: ["reviewer"],
+      wakeAfterIdleMs: 0,
+      intervalMs: 600_000,
+      poll: {
+        command: process.execPath,
+        args: [
+          "-e",
+          `console.log(JSON.stringify({ events: [{ key: "k1", repo: "owner/watched", role: "reviewer", kind: "pr", title: "t", url: "u" }] }))`,
+        ],
+      },
+      ack: { command: process.execPath, args: ["-e", "console.log('{}')"] },
+    }));
+    ctx.emit("session/event", { id: "a" }, { type: "user/message", data: { source: { kind: "user" } } });
+
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline && woke.length === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.deepEqual(woke, ["a"], "only the session on that repository is woken");
+    // A session on another repository is not merely quiet about it: it is never
+    // handed the notice at all.
+    assert.deepEqual(told, [], "nobody else receives the event");
+  } finally {
+    removeTree(root);
+  }
+});
+
+test("wakeup reads while sessions are idle; quiet keeps them free", async () => {
+  const root = mkdtempSync(join(tmpdir(), "inbox-watch-"));
+  const wakeMarker = join(root, "wake.txt");
+  const quietMarker = join(root, "quiet.txt");
+  const disposers = [];
+  const contextWith = (agent) => {
+    const base = fakeContext([agent]);
+    return {
+      ...base,
+      effect(fn) {
+        const dispose = fn();
+        disposers.push(dispose);
+        return dispose;
+      },
+    };
+  };
+  const config = (marker, extra) => mergeConfig({
+    cwd: root,
+    repo: "owner/name",
+    intervalMs: 5_000,
+    poll: {
+      command: process.execPath,
+      args: ["-e", `require("node:fs").appendFileSync(${JSON.stringify(marker)}, "x");console.log("{\\"events\\":[]}")`],
+    },
+    ack: { command: process.execPath, args: ["-e", "console.log('{}')"] },
+    ...extra,
+  });
+  try {
+    const { apply } = await import("./index.js");
+    // No status event and no user message: the heartbeat is the only trigger.
+    apply(contextWith(fakeAgent(root, "wake-session")), config(wakeMarker, {
+      delivery: "wakeup",
+      wakeOn: ["reviewer"],
+    }));
+    apply(contextWith(fakeAgent(root, "quiet-session")), config(quietMarker, { delivery: "quiet" }));
+
+    const deadline = Date.now() + 8_000;
+    while (Date.now() < deadline && !(await import("node:fs")).existsSync(wakeMarker)) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    // The mode exists to act while you are away, so it must read the source then.
+    assert.equal((await import("node:fs")).existsSync(wakeMarker), true, "wakeup never read the source while idle");
+    // Quiet keeps its promise: an idle session costs no subprocess and no request.
+    assert.equal((await import("node:fs")).existsSync(quietMarker), false, "quiet polled an idle session");
+  } finally {
+    for (const dispose of disposers.reverse()) {
+      try {
+        dispose?.();
+      } catch {}
+    }
     removeTree(root);
   }
 });

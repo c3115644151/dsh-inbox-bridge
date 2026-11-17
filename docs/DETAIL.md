@@ -39,6 +39,6 @@ Then give it a working directory (`cwd`); the repository and the identity come f
 ## Boundaries
 
 - Read-only: no merging, commenting or changing repositories.
-- No turn by default; only `delivery: wakeup` with a matching `wakeOn` role may start one.
+- No turn by default; only `delivery: wakeup` with a matching `wakeOn` role, enough idle time, and room in both budgets may start one; any gate that fails falls back to queueing.
 - Archiving to Done needs one browser sign-in (GitHub has no archive API).
 - State is local, under `<cwd>/.work/`, and is not synced across machines.

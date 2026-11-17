@@ -7,7 +7,7 @@
 
 English | [中文](README.md)
 
-`dsh-inbox-bridge` is a DSH plugin. For each session it looks at the GitHub repositories that session subscribes to, collects the events that concern you (failed checks, review requests, issues assigned to you, comments mentioning you), and delivers them as one message at the next turn boundary. It reads only, never acts on your behalf, and does not start a turn on its own.
+`dsh-inbox-bridge` is a DSH plugin. For each session it looks at the GitHub repositories that session subscribes to, collects the events that concern you (failed checks, review requests, issues assigned to you, comments mentioning you), and hands them over at the next turn boundary. When the session is idle and the fact matters, it opens a turn itself so the agent fixes the check, reviews the pull request, or takes the issue. It reads only and never acts on your behalf.
 
 <p align="center">
   <img src="https://c3115644151.github.io/dsh-inbox-bridge/assets/panel.png" width="300" alt="The chip in the status row and the panel it opens">
@@ -19,14 +19,14 @@ When an agent writes the code, the repository does not move in step with the con
 
 This plugin hands that loop to the agent: once per turn it reads the repository and puts the facts that need action into the context — a failing check gets fixed, a review request gets reviewed, an assigned issue gets taken. Product work and repository upkeep stop interrupting each other, and the agent keeps the repository in shape the way a maintainer does instead of waiting for you to check.
 
-That is also why it only reads: its job is to make the agent aware. The work happens in a turn you can watch, not in the background on your behalf.
+That is also why it only reads: its job is to make the agent aware. The work happens in the agent's own turn — the one you are in, or the one it was given — not in the background behind your back.
 
 ## What it does
 
 - **Relevance comes from your identity.** It queries the repositories as your `gh` login (or a configured App identity) and keeps only events where you are the author, the reviewer, the assignee, or are mentioned. Failed checks on someone else's PR, and unrelated repositories, never enter the queue.
 - **It reads repositories, not the notification inbox.** GitHub's notification inbox pushes per account and cannot tell one session or repository from another; querying repository state directly keeps two repositories on the same account apart.
-- **Polling follows turns.** Once when a session starts, every minute while a turn runs, once when it ends. An idle session makes no request.
-- **It is injected into the context and does not interrupt the tool loop.** A notice arrives at the next safe injection point, is marked `delivered`, and unhandled events come back once after six hours.
+- **Polling follows turns.** Once when a session starts, every minute while a turn runs, once when it ends; an idle session makes no request. Only with `delivery: wakeup` does it also read on that interval while idle — without that it could never wake you while you are away.
+- **It goes into the context, and opens a turn only when it has to.** By default a notice arrives at the next safe injection point and does not interrupt the tool loop; with `delivery: wakeup` it opens a turn only for a listed `wakeOn` role, with the session idle for 15 minutes, at most 3 times in a row per session, and at most 2 times an hour — anything else keeps queueing. A notice is marked `delivered`, and unhandled events come back once after six hours.
 
 ## What you will see
 
@@ -69,6 +69,14 @@ git clone https://github.com/c3115644151/dsh-inbox-bridge
 dsh plugin add ./dsh-inbox-bridge
 ```
 
+**From npm** (all the profile needs is a working pnpm):
+
+```powershell
+dsh plugin add dsh-inbox-bridge
+```
+
+All three routes install the same package; versions live on [npm](https://www.npmjs.com/package/dsh-inbox-bridge).
+
 Then give it a working directory (`cwd`) in the plugin configuration. The repository and the identity are read from that directory's `git remote` and from `gh`; nothing else needs filling in.
 
 ## Configuration
@@ -89,7 +97,7 @@ Full configuration, CLI and state files: [configuration](docs/configuration.md).
 ## Boundaries
 
 - **Read-only.** It does not merge, comment, or change anything.
-- **No turn by default.** Only `delivery: wakeup` with a matching `wakeOn` role may start one.
+- **No turn by default.** Only `delivery: wakeup` with a matching `wakeOn` role, enough idle time, and room in both budgets may start one; any gate that fails falls back to queueing.
 - **Done archiving needs one browser sign-in.** GitHub has no archive API; `scripts/clear-inbox.mjs` drives a local Chromium-based browser (Edge, Chrome or Chromium) and needs a single `--login`.
 - **State is local.** It lives under `.work/` in the working directory and is not synced across machines.
 

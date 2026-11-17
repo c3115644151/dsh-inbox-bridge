@@ -653,6 +653,19 @@ export function apply(ctx, config) {
     log(`adopted ${adopted.length} live agent(s), ${midTurn.length} mid-turn`);
   }
 
+  // A wakeup is the one reason to read the source while nothing is happening.
+  // Without this, no poll would ever run after a session went idle — the only
+  // timer follows a turn — so the mode could not fire while you were away. In
+  // quiet mode an idle session still costs nothing, which is the point of that
+  // mode; the read is paid for only when the plugin is allowed to open a turn.
+  const watchesWhileIdle = options.delivery === "wakeup" && options.wakeOn.length > 0 && options.wakesPerHour > 0;
+  if (watchesWhileIdle) {
+    const heartbeat = setInterval(() => void poll(), options.intervalMs);
+    heartbeat.unref?.();
+    ctx.effect(() => () => clearInterval(heartbeat));
+    log(`watching while idle: poll every ${pollLabel(options.intervalMs)} so a wakeup can happen`);
+  }
+
   ctx.effect(() => () => {
     for (const key of [...turnTimers.keys()]) stopTurn(key);
     agents.clear();
@@ -1212,6 +1225,11 @@ export function formatEvents(events, options = DEFAULTS) {
   const lines = events.slice(0, maxEvents).map((event) => `- ${describeEvent(event)}`);
   if (events.length > maxEvents)
     lines.push(`- 其余 ${events.length - maxEvents} 条见 \`node "${CLI}" list\``);
+  // Only the mode that is allowed to open a turn pays for reading while idle.
+  const idleRead =
+    delivery === "wakeup" && (options.wakeOn ?? DEFAULTS.wakeOn).length > 0
+      ? "空闲时也按同一间隔读一次，否则无法在你不在时叫醒你。"
+      : "空闲时不访问来源。";
   const identity = options.identity ?? DEFAULTS.identity;
   const who =
     identity.kind === "app" ? `App ${identity.login ?? ""}`.trim() : (identity.login ?? "本机 gh");
@@ -1223,7 +1241,7 @@ export function formatEvents(events, options = DEFAULTS) {
     ...(ackHint.startsWith("npm ") ? ["（`--done` 放在 `--` 之后，否则被 npm 吞掉，只标 delivered）"] : []),
     `只标 delivered 的事件会在 ${resurfaceHours} 小时后再次提醒；\`kind: infra\` 的基础设施失败只提醒一次。`,
     wakeNotice(options, delivery),
-    `只在回合边界轮询：回合开始一次、进行中每 ${intervalLabel}一次、结束一次；空闲时不访问来源。`,
+    `只在回合边界轮询：回合开始一次、进行中每 ${intervalLabel}一次、结束一次；${idleRead}`,
     ...(options.repos?.length
       ? [`只播报 ${options.repos.join(", ")} 的事件，其它仓库的会话不会收到它。`]
       : []),
