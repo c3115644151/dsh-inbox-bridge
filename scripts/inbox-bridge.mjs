@@ -67,6 +67,7 @@ export function transition(state, items, status, at) {
           at,
           ...(item.kind ? { kind: item.kind } : {}),
           ...(item.group ? { group: item.group } : {}),
+          ...(status === "delivered" ? { attempts: (current.attempts ?? 0) + 1 } : {}),
         };
         marked.push(item.key);
       }
@@ -75,6 +76,11 @@ export function transition(state, items, status, at) {
     const next = { status, at };
     if (item.kind) next.kind = item.kind;
     if (item.group) next.group = item.group;
+    // How many times this notice has actually reached an agent. A second
+    // delivery means the first one was already there and went unanswered, so
+    // the event gets one resurface and then stops asking.
+    if (status === "delivered") next.attempts = (current?.attempts ?? 0) + 1;
+    else if (typeof current?.attempts === "number") next.attempts = current.attempts;
     events[item.key] = next;
     marked.push(item.key);
   }
@@ -111,6 +117,9 @@ export function classify(events, state, options = {}) {
     const stale = now - at >= resurfaceMs;
     if (entry.status === "delivered" && (stale || event.kind === "infra")) {
       if (event.kind === "infra") done.push(event);
+      // One resurface, then silence: an event that already reached the agent
+      // twice and was never acked stops counting as unread.
+      else if ((entry.attempts ?? 1) >= 2) done.push(event);
       else pending.push(event);
       continue;
     }
@@ -140,8 +149,50 @@ export function autoDone(state, events, at) {
   return { state: { events: out }, marked };
 }
 
+/**
+ * Close the events whose fact no longer holds.
+ *
+ * A poll asks the repositories what is true right now, so an entry for a
+ * repository the poll covered and no longer reports has been settled — the
+ * check went green, the pull request was merged, the issue closed. Without
+ * this, a notice nobody explicitly acks comes back every `resurfaceMs`
+ * forever, which is how a five-hour-old item ends up back on the line.
+ */
+export function closeResolved(state, events, { at, repos = [] } = {}) {
+  const events_ = { ...(state?.events ?? {}) };
+  const covered = new Set(
+    (Array.isArray(repos) ? repos : []).map((repo) => String(repo).toLowerCase()),
+  );
+  if (covered.size === 0) return { state: { events: events_ }, marked: [] };
+  const live = new Set(
+    (Array.isArray(events) ? events : [])
+      .filter((event) => event && typeof event.key === "string")
+      .map((event) => event.key),
+  );
+  const marked = [];
+  for (const [key, entry] of Object.entries(events_)) {
+    if (!entry || entry.status === "done") continue;
+    const hash = key.indexOf("#");
+    const repo = hash > 0 ? key.slice(0, hash).toLowerCase() : null;
+    if (!repo || !covered.has(repo)) continue;
+    if (live.has(key)) continue;
+    events_[key] = { ...entry, status: "done", at };
+    marked.push(key);
+  }
+  return { state: { events: events_ }, marked };
+}
+
 /** Run the poller and return its current events (no bridge state involved). */
 export function pollEvents(root, options = {}) {
+  return pollSnapshot(root, options).events;
+}
+
+/**
+ * The poller's answer, including which repositories it actually covered.
+ * Coverage is what lets the queue close settled facts: a repository the poll
+ * did not reach must keep its entries untouched.
+ */
+export function pollSnapshot(root, options = {}) {
   const poller = POLLER_PATH;
   if (!existsSync(poller)) throw new Error(`missing poller: ${poller}`);
   const exec = options.execFile ?? execFileSync;
@@ -157,8 +208,13 @@ export function pollEvents(root, options = {}) {
     maxBuffer: 4 * 1024 * 1024,
   });
   const payload = JSON.parse(String(stdout));
-  const fresh = Array.isArray(payload?.fresh) ? payload.fresh : [];
-  return fresh.filter((event) => event && typeof event.key === "string");
+  const events = (Array.isArray(payload?.fresh) ? payload.fresh : []).filter(
+    (event) => event && typeof event.key === "string",
+  );
+  const repos = (Array.isArray(payload?.repos) ? payload.repos : []).filter(
+    (repo) => typeof repo === "string" && repo.length > 0,
+  );
+  return { events, repos };
 }
 
 export function describeEvent(event) {
@@ -171,10 +227,12 @@ export function describeEvent(event) {
 
 function safePoll(root, options = {}) {
   try {
-    return { events: pollEvents(root, options), skipped: null };
+    const snapshot = pollSnapshot(root, options);
+    return { events: snapshot.events, repos: snapshot.repos, skipped: null };
   } catch (error) {
     return {
       events: null,
+      repos: [],
       skipped: error instanceof Error ? error.message : String(error),
     };
   }
@@ -189,17 +247,22 @@ function writeState(file, state) {
   writeFileSync(file, `${JSON.stringify(state, null, 2)}\n`, "utf8");
 }
 
-/** One poll: persist auto-closed events, then return what still needs attention. */
+/** One poll: close settled facts, persist what closed, then say what still needs attention. */
 export function pollOnce(root, options = {}) {
   const at = options.at ?? new Date().toISOString();
-  const { events, skipped } = safePoll(root, options);
-  if (events === null) return { events: [], skipped, state: readState(stateFileOf(root)) };
+  const snapshot = safePoll(root, options);
+  const events = snapshot.events;
+  if (events === null) return { events: [], skipped: snapshot.skipped, state: readState(stateFileOf(root)) };
   const file = stateFileOf(root);
   const initial = readState(file);
-  const closed = autoDone(initial, events, at);
+  const settled = closeResolved(initial, events, { at, repos: snapshot.repos });
+  const closed = autoDone(settled.state, events, at);
   const groups = classify(events, closed.state, options);
-  if (closed.marked.length > 0 || !existsSync(file)) writeState(file, closed.state);
-  return { ...groups, skipped: null, state: closed.state };
+  // `classify` also settles events that stop asking; that decision has to be
+  // written back, or the next poll reads them as delivered again.
+  const quiet = groups.done.length > 0 ? transition(closed.state, groups.done, "done", at) : closed;
+  if (quiet.marked.length > 0 || settled.marked.length > 0 || !existsSync(file)) writeState(file, quiet.state);
+  return { ...groups, skipped: null, closed: settled.marked, state: quiet.state };
 }
 
 /**

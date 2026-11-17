@@ -8,6 +8,7 @@ import {
   STATUSES,
   autoDone,
   classify,
+  closeResolved,
   describeEvent,
   describeStatus,
   formatStatus,
@@ -59,7 +60,40 @@ test("meta travels with an event so a recovery can close it", () => {
     at: AT,
     kind: "ci",
     group: "Desktop checks|main",
+    attempts: 1,
   });
+});
+
+test("a delivered event is resurfaced once, then it stops asking", () => {
+  const first = transition({ events: {} }, [{ key: "run:1", kind: "ci" }], "delivered", AT);
+  const later = new Date(Date.parse(AT) + 7 * 60 * 60 * 1000).toISOString();
+  const second = transition(first.state, [{ key: "run:1", kind: "ci" }], "delivered", later);
+  const after = new Date(Date.parse(later) + 7 * 60 * 60 * 1000).toISOString();
+  const split = classify([{ key: "run:1", kind: "ci" }], second.state, {
+    now: Date.parse(after),
+    resurfaceMs: 6 * 60 * 60 * 1000,
+  });
+  assert.equal(split.pending.length, 0);
+  assert.deepEqual(split.done.map((event) => event.key), ["run:1"]);
+});
+
+test("a fact the repository no longer reports is closed", () => {
+  const state = {
+    events: {
+      "o/r#run:1": { status: "delivered", at: AT, kind: "ci" },
+      "o/r#run:2": { status: "delivered", at: AT, kind: "ci" },
+      "other/r#run:3": { status: "delivered", at: AT, kind: "ci" },
+    },
+  };
+  const closed = closeResolved(state, [{ key: "o/r#run:2", kind: "ci" }], {
+    at: AT,
+    repos: ["o/r"],
+  });
+  assert.deepEqual(closed.marked, ["o/r#run:1"]);
+  assert.equal(closed.state.events["o/r#run:1"].status, "done");
+  assert.equal(closed.state.events["o/r#run:2"].status, "delivered");
+  // A repository the poll never reached keeps what it had.
+  assert.equal(closed.state.events["other/r#run:3"].status, "delivered");
 });
 
 test("classify splits events by the state they carry", () => {

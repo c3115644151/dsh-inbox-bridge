@@ -1,6 +1,6 @@
 {
   "name": "dsh-inbox-bridge",
-  "version": "2.15.1",
+  "version": "2.15.2",
   "displayName": "GitHub inbox",
   "description": "DSH 插件：让 agent 像维护者一样盯着你的仓库——按会话订阅的 GitHub 仓库取数，在回合边界注入与你相关的事件（失败的 CI、待评审的 PR、指派给你的 issue、@你的评论）",
   "type": "module",

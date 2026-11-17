@@ -91,6 +91,9 @@ window.__ModuleLoader__.load({
         label: "GitHub 收件箱",
         empty: "没有待处理的事",
         waiting: (n) => `${n} 条待处理`,
+        handed: (n) => `${n} 条已投递`,
+        handedTag: "已投递",
+        handedTip: "已经交给某一轮，等它处理；下次轮询若这条事实不再成立，它会自动结束",
         synced: (text) => `${text}同步`,
         never: "尚未同步",
         asUser: (login) => `以 ${login} 读取`,
@@ -139,6 +142,9 @@ window.__ModuleLoader__.load({
         label: "GitHub inbox",
         empty: "nothing waiting",
         waiting: (n) => `${n} waiting`,
+        handed: (n) => `${n} already delivered`,
+        handedTag: "delivered",
+        handedTip: "Already handed to a turn, waiting for it; the next poll closes it once the fact no longer holds",
         synced: (text) => `synced ${text}`,
         never: "not synced yet",
         asUser: (login) => `as ${login}`,
@@ -338,6 +344,16 @@ window.__ModuleLoader__.load({
         borderRadius: "var(--dsw-radius-sm)",
       },
       rowOn: { background: "var(--dsw-alias-interactive-bg-hover)" },
+      handed: {
+        color: "var(--dsw-alias-label-tertiary)",
+        fontSize: "10.5px",
+        lineHeight: "16px",
+        padding: "0 4px",
+        borderRadius: "var(--dsw-radius-sm)",
+        border: "0.5px solid var(--dsw-alias-border-l2)",
+        whiteSpace: "nowrap",
+        opacity: 0.9,
+      },
       tag: {
         color: "var(--dsw-alias-label-tertiary)",
         fontSize: "11px",
@@ -578,6 +594,11 @@ window.__ModuleLoader__.load({
           h(Role, { role: event.kind === "ci" ? "ci" : event.role, text }),
           event.repo
             ? h("span", { style: styles.tag, title: event.repo }, event.repo.split("/").pop())
+            : null,
+          // Delivered means the agent already has it in front of it; saying so
+          // keeps the row from reading like something nobody looked at.
+          event.status === "delivered"
+            ? h("span", { style: styles.handed, title: text.handedTip }, text.handedTag)
             : null,
         ),
         h("span", { style: { minWidth: 0 } }, body),
@@ -977,7 +998,11 @@ window.__ModuleLoader__.load({
       if (missing || !status) return null;
 
       const queue = status.queue ?? { pending: 0, delivered: 0, done: 0 };
-      const waiting = (queue.pending ?? 0) + (queue.delivered ?? 0);
+      // Only what the agent has not been told yet counts as unread. An event
+      // already sitting in a turn is "delivered": it stays listed, but it must
+      // not keep a badge burning for hours.
+      const waiting = queue.pending ?? 0;
+      const handed = queue.delivered ?? 0;
       const events = status.events ?? [];
       // A session outside this instance's repositories gets an honest line
       // instead of an empty list that looks like "all quiet".
@@ -1011,12 +1036,20 @@ window.__ModuleLoader__.load({
               "div",
               { style: styles.title },
               h("span", { style: styles.titleLabel }, h(TrayIcon), status.label ?? text.label),
-              h("span", { style: styles.titleValue }, waiting > 0 ? text.waiting(waiting) : text.empty),
+              h(
+                "span",
+                { style: styles.titleValue },
+                waiting > 0
+                  ? text.waiting(waiting)
+                  : handed > 0
+                    ? text.handed(handed)
+                    : text.empty,
+              ),
             ),
             h("div", { style: styles.rule }),
             unwatched
               ? h("div", { style: styles.emptyLine }, text.unwatched(unwatched))
-              : waiting > 0
+              : events.length > 0
               ? h(
                   "div",
                   { style: styles.list },
