@@ -24,6 +24,8 @@ import {
   formatEvent,
   mentionsLogin,
   prRole,
+  pullsArgs,
+  runsArgs,
   setRepo,
   watchedRepo,
   normalizeState,
@@ -596,6 +598,26 @@ test("the watched repository can be overridden for another workspace", () => {
   }
 });
 
+test("run and pull-request reads name their repository, not the working directory", () => {
+  const original = watchedRepo();
+  try {
+    setRepo("owner/second");
+    // gh resolves a repository from cwd; the poller's cwd is the agent's
+    // checkout, so watching a second repository used to report the first one's
+    // runs and pull requests under the second one's name.
+    const runs = runsArgs();
+    assert.equal(runs.slice(0, 4).join(" "), "run list --repo owner/second");
+    assert.ok(runs.includes("--json"));
+    const pulls = pullsArgs();
+    assert.equal(pulls.slice(0, 4).join(" "), "pr list --repo owner/second");
+    assert.ok(pulls.includes("--state"));
+    assert.ok(runsArgs("owner/third").includes("owner/third"));
+    assert.ok(pullsArgs("owner/third").includes("owner/third"));
+  } finally {
+    setRepo(original);
+  }
+});
+
 test("repeated failures of one workflow and branch collapse to one event", () => {
   const runs = [
     {
@@ -1083,14 +1105,14 @@ test("a repository without Dependabot still polls the rest", () => {
 test("my own items collapse into one fact each, wherever they live", () => {
   const events = extractMineEvents([
     { repo: "owner/one", number: 7, kind: "pr", role: "mention", title: "old", updated: "t1" },
-    { repo: "owner/one", number: 7, kind: "pr", role: "author", title: "new", updated: "t2" },
-    { repo: "owner/two", number: 3, kind: "issue", role: "assignee", title: "an issue", updated: "t2" },
+    { repo: "owner/one", number: 7, kind: "pr", role: "author", title: "new", updated: "t2", state: "open", comments: 0 },
+    { repo: "owner/two", number: 3, kind: "issue", role: "assignee", title: "an issue", updated: "t2", state: "open", comments: 2 },
     { repo: null, number: 9, kind: "issue", role: "author" },
   ]);
 
   assert.deepEqual(
     events.map((event) => event.key),
-    ["owner/one#pr:7:mine", "owner/two#issue:3:mine"],
+    ["owner/one#pr:7:mine:openc0", "owner/two#issue:3:mine:openc2"],
   );
   // The strongest relation wins: the account wrote this pull request, so the fact
   // says "author" even though a mention search found it first.
@@ -1099,4 +1121,16 @@ test("my own items collapse into one fact each, wherever they live", () => {
   assert.equal(events[0].repo, "owner/one");
   assert.equal(events[1].kind, "issue");
   assert.equal(events[1].url, "https://github.com/owner/two/issues/3");
+});
+
+test("an answered item is news again, an untouched one is not", () => {
+  const once = (extra) =>
+    extractMineEvents([
+      { repo: "owner/one", number: 16094, kind: "pr", role: "author", title: "add the plugin", updated: "t1", ...extra },
+    ])[0].key;
+
+  // First look records existence; a merge, a comment or a close changes the key,
+  // so the answer reaches the session instead of being swallowed by "seen".
+  assert.notEqual(once({ state: "open", comments: 0 }), once({ state: "closed", merged: true, comments: 0 }));
+  assert.notEqual(once({ state: "open", comments: 0 }), once({ state: "open", comments: 1 }));
 });

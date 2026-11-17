@@ -143,21 +143,28 @@ export function recordPending(state, events, at) {
 
 /**
  * Rebuild the events a previous poll recorded but never delivered, so a turn
- * that starts later still learns about them. These never expire: a fact that
- * nobody was told about has no second chance, and a queue that quietly drops it
- * is worse than a queue with one stale line in it. Delivered facts have their
- * own `resurfaceMs` window in `classify`.
+ * that starts later still learns about them. These do not expire on the clock the
+ * way a delivered reminder does — a fact nobody was told about has no second
+ * chance. The one exception is a fact that has simply become history: a red build
+ * from three days ago is not news, and waking a session for it wastes the only
+ * attention it has. `maxAgeMs` drops those and says how many it dropped.
  */
-export function carriedPending(state, events) {
+export function carriedPending(state, events, { now = Date.now(), maxAgeMs = 48 * 60 * 60 * 1000 } = {}) {
   const live = new Set(
     (Array.isArray(events) ? events : [])
       .filter((event) => event && typeof event.key === "string")
       .map((event) => event.key),
   );
   const out = [];
+  let dropped = 0;
   for (const [key, entry] of Object.entries(state?.events ?? {})) {
     if (!entry || entry.status !== "pending" || (entry.attempts ?? 0) !== 0) continue;
     if (live.has(key)) continue;
+    const at = Date.parse(entry.eventAt ?? entry.at ?? "");
+    if (Number.isFinite(at) && now - at > maxAgeMs) {
+      dropped += 1;
+      continue;
+    }
     // A record written before this field existed still knows its repository: the
     // key starts with it, and routing the fact matters more than the round trip.
     const repo = entry.repo ?? repoFromKey(key);
@@ -176,7 +183,7 @@ export function carriedPending(state, events) {
       carried: true,
     });
   }
-  return out;
+  return { events: out, dropped };
 }
 
 /**
@@ -364,7 +371,12 @@ export function pollOnce(root, options = {}) {
     groups.pending.length > 0
       ? recordPending(quiet.state, groups.pending, at)
       : { state: quiet.state, marked: [] };
-  const carried = carriedPending(recorded.state, events);
+  const carriedNow = carriedPending(recorded.state, events, { now: Date.parse(at) || Date.now() });
+  const carried = carriedNow.events;
+  const notes = [...(groups.notes ?? [])];
+  if (carriedNow.dropped > 0) {
+    notes.push(`${carriedNow.dropped} stale fact(s) dropped (older than 48 小时)`);
+  }
   if (
     recorded.marked.length > 0 ||
     quiet.marked.length > 0 ||
@@ -375,6 +387,7 @@ export function pollOnce(root, options = {}) {
   }
   return {
     ...groups,
+    notes,
     pending: [...groups.pending, ...carried],
     events: [...events, ...carried],
     skipped: null,

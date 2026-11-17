@@ -272,6 +272,9 @@ window.__ModuleLoader__.load({
         background: "var(--dsw-alias-interactive-bg-hover)",
         color: "var(--dsw-alias-label-secondary)",
       },
+      // The header toolbar variant: the same pill without the sentence, so it
+      // fits next to the session title at 11px.
+      pillCompact: { gap: "3px", padding: "1px 5px", fontSize: "11px" },
       icon: { width: "14px", height: "14px", flex: "none", display: "block" },
       // The icon carries the count: a dot in the corner, the way GitHub marks an
       // unread inbox, so the pill can stay to a single word.
@@ -317,7 +320,9 @@ window.__ModuleLoader__.load({
         // Position comes from the measured chip; the host's anchor() fallback chain is not
         // something a plugin can reproduce faithfully, and a wrong guess stretches the panel.
         left: `${geometry?.left ?? 12}px`,
-        bottom: `${geometry?.bottom ?? 12}px`,
+        ...(geometry?.placement === "below"
+          ? { top: `${geometry?.top ?? 12}px` }
+          : { bottom: `${geometry?.bottom ?? 12}px` }),
         width: `${geometry?.width ?? FALLBACK_WIDTH}px`,
       }),
       title: {
@@ -1027,10 +1032,29 @@ window.__ModuleLoader__.load({
         );
         const width = Math.max(300, Math.min(FALLBACK_WIDTH, room - 24));
         const left = Math.min(Math.max(12, rect.left), Math.max(12, room - width - 12));
-        // Keep the panel inside the space that actually exists above the chip.
+        const viewport = window.innerHeight || document.documentElement?.clientHeight || 800;
         const floor = 16 + 8;
-        const maxHeight = Math.max(160, Math.round(rect.top - floor));
-        return { left, bottom: Math.max(12, window.innerHeight - rect.top + 8), width, maxHeight };
+        const spaceAbove = Math.max(0, Math.round(rect.top - floor));
+        const spaceBelow = Math.max(0, Math.round(viewport - rect.bottom - floor));
+        // The composer pill sits near the bottom, so the panel opens upward there. The
+        // header toolbar sits at the top, where upward would put the panel off-screen:
+        // whichever side has more room wins, and that side gets the height budget.
+        if (spaceAbove < 240 && spaceBelow > spaceAbove) {
+          return {
+            left,
+            top: Math.round(rect.bottom + 8),
+            width,
+            maxHeight: Math.max(160, spaceBelow),
+            placement: "below",
+          };
+        }
+        return {
+          left,
+          bottom: Math.max(12, viewport - rect.top + 8),
+          width,
+          maxHeight: Math.max(160, spaceAbove),
+          placement: "above",
+        };
       };
 
       const reveal = () => {
@@ -1169,6 +1193,8 @@ window.__ModuleLoader__.load({
           )
         : null;
 
+      const compact = props?.compact === true;
+      const pillStyle = { ...styles.pill, ...(compact ? styles.pillCompact : {}), ...(open ? styles.pillOn : {}) };
       return h(
         "span",
         { ref: wrap, style: styles.wrap, onMouseEnter: reveal, onMouseLeave: conceal },
@@ -1180,6 +1206,7 @@ window.__ModuleLoader__.load({
             "aria-haspopup": "dialog",
             "aria-expanded": open,
             "aria-label": `${text.label} · ${waiting > 0 ? text.waiting(waiting) : text.empty}`,
+            title: compact ? `${text.label} · ${waiting > 0 ? text.waiting(waiting) : text.empty}` : undefined,
             onClick: toggle,
             onFocus: reveal,
             onBlur: (event) => {
@@ -1187,7 +1214,7 @@ window.__ModuleLoader__.load({
               if (panelRef.current?.contains(event.relatedTarget)) return;
               conceal();
             },
-            style: { ...styles.pill, ...(open ? styles.pillOn : {}) },
+            style: pillStyle,
           },
           h(
             "span",
@@ -1195,8 +1222,11 @@ window.__ModuleLoader__.load({
             h(TrayIcon),
             waiting > 0 ? h("span", { style: styles.iconDot, "aria-hidden": "true" }) : null,
           ),
-          h("span", { style: styles.label }, text.label),
-          waiting > 0 ? h("span", { style: styles.sep }, "·") : null,
+          // The header toolbar has room for the count, not for the sentence: the
+          // full label lives in the composer dock, this is the always-visible
+          // entry next to the session title.
+          compact ? null : h("span", { style: styles.label }, text.label),
+          compact ? null : waiting > 0 ? h("span", { style: styles.sep }, "·") : null,
           waiting > 0 ? h("span", { style: styles.count }, String(waiting)) : null,
         ),
         panel ? (canPortal ? ReactDOM.createPortal(panel, layer()) : panel) : null,
@@ -1258,6 +1288,23 @@ window.__ModuleLoader__.load({
           ),
         );
         report(`registered inbox-bridge-status in ${SLOT}`);
+
+        // A second, always-visible entry in the session header toolbar: the
+        // composer dock row scrolls away with the conversation, the header does
+        // not. Same component, compact form — clicking it opens the same panel.
+        const HEADER = "conversation.session.header.actions";
+        ctx.slots.inject(HEADER, () =>
+          ctx.slots.register(
+            {
+              name: HEADER,
+              id: "inbox-bridge-toolbar",
+              order: 2,
+              inject: (sessionId) => ({ sessionId, compact: true }),
+            },
+            (props) => h(Guard, null, h(InboxBar, props)),
+          ),
+        );
+        report(`registered inbox-bridge-toolbar in ${HEADER}`);
       } catch (error) {
         report(`register failed: ${error && error.message ? error.message : String(error)}`);
       }

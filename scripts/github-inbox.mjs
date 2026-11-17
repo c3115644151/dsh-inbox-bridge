@@ -208,6 +208,9 @@ export function normalizeState(state) {
   return {
     version: 2,
     lastPollAt: typeof source.lastPollAt === "string" ? source.lastPollAt : null,
+    // When this repository's slice last looked at the account's own items. Null
+    // means the next look is the baseline, not a burst of old pull requests.
+    lastMinePoll: typeof source.lastMinePoll === "string" ? source.lastMinePoll : null,
     lastPoll,
     seen,
     lastRun,
@@ -684,24 +687,29 @@ export function extractSecurityEvents(alerts = []) {
  * request opened elsewhere still deserves an answer when it gets one. These are
  * item-tier facts, so they are routed to whoever works in that repository.
  *
- * `role` says why the account is involved (author beats assignee beats mention);
- * the key carries the item number alone, so three searches for one pull request
- * collapse into one fact instead of three.
+ * `role` says why the account is involved (author beats reviewer beats assignee
+ * beats mention). The key carries the item number and a digest of what has
+ * happened to it since — state, merge, comment count — so an item is news the
+ * first time it is seen and again when somebody answers it, instead of exactly
+ * once forever. Three searches for one pull request still collapse into one fact.
  */
 export function extractMineEvents(items = []) {
   const order = { author: 0, reviewer: 1, assignee: 2, mention: 3 };
-  const byKey = new Map();
+  const byItem = new Map();
   for (const item of Array.isArray(items) ? items : []) {
     const repo = item?.repo ?? null;
     const number = Number(item?.number);
     if (!repo || !Number.isInteger(number)) continue;
     const kind = item?.kind === "pr" ? "pr" : "issue";
-    const key = `${repo}#${kind}:${number}:mine`;
+    const slot = `${repo}#${kind}:${number}`;
     const role = item?.role ?? "mention";
-    const previous = byKey.get(key);
+    const previous = byItem.get(slot);
     if (previous && (order[previous.role] ?? 9) <= (order[role] ?? 9)) continue;
-    byKey.set(key, {
-      key,
+    const state = String(item?.state ?? "open");
+    const comments = Number(item?.comments ?? 0);
+    const digest = `${state}${item?.merged ? "m" : ""}c${Number.isFinite(comments) ? comments : 0}`;
+    byItem.set(slot, {
+      key: `${slot}:mine:${digest}`,
       repo,
       role,
       kind,
@@ -713,8 +721,11 @@ export function extractMineEvents(items = []) {
       at: item?.updated ?? null,
     });
   }
-  return [...byKey.values()];
+  return [...byItem.values()];
 }
+
+/** How many changed items one poll may report, so a burst cannot flood a turn. */
+const MINE_BURST = 6;
 
 const MINE_SEARCHES = [
   { q: "is:pr author:@me archived:false", role: "author", kind: "pr" },
@@ -739,7 +750,10 @@ export function fetchMyItems(cwd, { me = null } = {}) {
         "GET",
         `search/issues?q=${encodeURIComponent(query)}&per_page=20&sort=updated`,
         "--jq",
-        ".items[] | {number, title, html_url, updated_at, repository_url, pull_request}",
+        // `--jq` prints one JSON value per line for an iterator, and `ghJson`
+        // parses a single document: wrap the result in an array, or every search
+        // fails with "Unexpected non-whitespace character after JSON".
+        "[.items[] | {number, title, html_url, updated_at, repository_url, state, comments, merged_at: (.pull_request.merged_at // null)}]",
       ],
       { cwd },
     );
@@ -760,6 +774,9 @@ export function fetchMyItems(cwd, { me = null } = {}) {
         title: row.title,
         url: row.html_url,
         updated: row.updated_at,
+        state: row.state,
+        comments: row.comments,
+        merged: Boolean(row.merged_at),
         role: search.role,
         kind: row?.pull_request ? "pr" : search.kind === "pr" ? "pr" : "issue",
       });
@@ -1207,10 +1224,22 @@ export function resolveLogin(cwd) {
   return login;
 }
 
+/**
+ * Arguments for the branch's run list. `--repo` is not optional: `gh run list`
+ * and `gh pr list` resolve a repository from the working directory, and the
+ * poller's working directory is the *agent's* checkout, not the repository it
+ * is polling. Without it, watching a second repository reports the first one's
+ * runs under the second one's name — the same CI failure arriving as two
+ * facts, one of them attached to a repository that never had it.
+ */
+export function runsArgs(repo = activeRepo, limit = 40) {
+  return ["run", "list", "--repo", repo, "--limit", String(limit), "--json", RUN_FIELDS];
+}
+
 export function fetchRuns(cwd) {
   // No `--branch`: a branch you opened a PR from is watched too (see
   // `filterRuns`), so its failures are not invisible until the PR is merged.
-  return ghJson(["run", "list", "--limit", "40", "--json", RUN_FIELDS], {
+  return ghJson(runsArgs(), {
     cwd,
   });
 }
@@ -1244,8 +1273,13 @@ export function fetchOpenIssues(cwd) {
   );
 }
 
+/** See `runsArgs`: `gh pr list` needs `--repo` for the same reason. */
+export function pullsArgs(repo = activeRepo) {
+  return ["pr", "list", "--repo", repo, "--state", "open", "--json", PR_FIELDS];
+}
+
 export function fetchOpenPullRequests(cwd) {
-  return ghJson(["pr", "list", "--state", "open", "--json", PR_FIELDS], { cwd });
+  return ghJson(pullsArgs(), { cwd });
 }
 
 /**
@@ -1558,11 +1592,20 @@ function runPoll({ repoRoot, stateFile, pendingFile, state, options, now, me, re
       const slice = nextRepos[repo] ?? normalizeState({});
       const known = slice.seen ?? {};
       const stillNew = events.filter((event) => !known[event.key]);
-      if (stillNew.length === 0) continue;
+      // The first look at the account's items is a baseline, not news: the
+      // backlog of every pull request this identity ever opened would otherwise
+      // arrive as one burst. Record what exists, report what changes next. The
+      // bookmark is written on every poll, even one that finds nothing new, or
+      // the baseline would never be established. A slice that predates the
+      // bookmark (or one recorded before keys carried their digest) is also a
+      // baseline: an upgrade must not replay years of closed pull requests.
+      const digestMarks = Object.keys(known).filter((key) => key.includes(":mine:"));
+      const bootstrap = !slice.lastMinePoll || digestMarks.length === 0;
       const seen = { ...known };
       for (const event of stillNew) seen[event.key] = toIso(now);
-      nextRepos[repo] = { ...slice, seen };
-      fresh.push(...stillNew);
+      nextRepos[repo] = { ...slice, seen, lastMinePoll: toIso(now) };
+      if (bootstrap || stillNew.length === 0) continue;
+      fresh.push(...stillNew.slice(0, MINE_BURST));
     }
   }
 

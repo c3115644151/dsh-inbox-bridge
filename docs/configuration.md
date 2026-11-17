@@ -56,11 +56,11 @@ GitHub 的 Done 只有网页端点，所以归档要用插件自己的浏览器�
 | `intervalMs` | `60000`（1 分钟） | **回合进行中**的轮询间隔；`wakeup` 下空闲时也按它取数，`quiet` 下空闲不轮询。CI 需要更快的返工就调小它（下限 5000），代价是每次轮询三个 `gh` 只读请求 |
 | `timeoutMs` | `45000` | 单次轮询命令的超时 |
 | `maxEvents` | `6` | 一条通知里最多列几条，其余指向 `list` |
-| `ackHint` | `node "<插件路径>/scripts/inbox-bridge.mjs" ack --done -- <key>` | 通知里让 agent 执行的那句命令 |
+| `ackHint` | `node "<插件路径>/scripts/inbox-bridge.mjs" ack --done -- <key>` | 收口命令的示例文本；只在 `list`/文档里出现，**不注入通知** |
 | `resurfaceMs` | `21600000`（6 小时） | 标了 delivered 但没处理的，多久后再提一次 |
 | `offlineReminderMs` | `43200000`（12 小时） | 工作区连不上仓库时，最多多久提醒一次 |
 | `injectWhileRunning` | `false` | 允许打断正在跑的工具循环；默认只在回合边界注入 |
-| `delivery` | `"quiet"` | `quiet` 只排队；`wakeup` 还会替你开一轮（受下面五道门约束） |
+| `delivery` | `"quiet"` | `quiet` 只在下一次注入点交给你；`wakeup` 还会在够安静时替你开一轮（受下面五道门约束，门没过时照常注入） |
 | `wakeOn` | `[]` | 允许唤醒的角色白名单；空 = 永不唤醒。若设了非空值，`delivery` 必须是 `wakeup` |
 | `wakeAfterIdleMs` | `900000`（15 分钟） | 会话静默多久后才允许唤醒 |
 | `wakesPerHour` | `2` | 滚动一小时内最多唤醒几次；0 = 关闭 |

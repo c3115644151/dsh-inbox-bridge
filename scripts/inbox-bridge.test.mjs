@@ -175,7 +175,7 @@ test("an event held while everyone was busy reaches a later poll", () => {
     const queue = readState(join(root, ".work", "inbox-bridge", "state.json"));
     const delivered = transition(queue, ["o/r#issue:5"], "delivered", "2026-11-17T12:42:00Z");
     const carried = carriedPending(delivered.state, [], { now: Date.parse("2026-11-17T12:43:00Z") });
-    assert.deepEqual(carried, []);
+    assert.deepEqual(carried.events, []);
 
     // A fact nobody was told about keeps waiting, however long that takes: it
     // cannot be reported twice, so expiring it would delete the news.
@@ -186,18 +186,18 @@ test("an event held while everyone was busy reaches a later poll", () => {
     );
     const late = carriedPending(stale.state, [], { now: Date.parse("2026-11-17T19:00:00Z") });
     assert.deepEqual(
-      late.map((event) => event.key),
+      late.events.map((event) => event.key),
       ["o/r#issue:5"],
     );
 
     // A record written before the field existed still names its repository: the
     // key starts with it, and routing matters more than the round trip.
-    const legacy = carriedPending(
+    const legacyRaw = carriedPending(
       { events: { "o/r#issue:9": { status: "pending", attempts: 0, at: "2026-11-17T12:59:00Z", title: "legacy" } } },
       [],
       { now: Date.parse("2026-11-17T13:00:00Z") },
     );
-    assert.equal(legacy[0]?.repo, "o/r");
+    assert.equal(legacyRaw.events[0]?.repo, "o/r");
   } finally {
     rmSync(root, { recursive: true, force: true, maxRetries: 3 });
   }

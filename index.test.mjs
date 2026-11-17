@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { audienceFor, buildMessage, buildUiPayload, deliver, deliveryTargets, detectRepo, eventTier, filterUndelivered, formatEvents, matchesWatch, mergeConfig, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, sessionLabel, sessionTag, wakePlan } from "./index.js";
+import { DEFAULT_ACK_HINT, audienceFor, buildMessage, buildUiPayload, deliver, deliveryTargets, detectRepo, eventTier, filterUndelivered, formatEvents, matchesWatch, mergeConfig, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, sessionLabel, sessionTag, wakePlan } from "./index.js";
 
 const idle = { status: "idle" };
 const running = { status: "running" };
@@ -188,50 +188,72 @@ test("the plugin watches the repository the workspace points at", () => {
   });
 });
 
-test("the notice says when it was queued and how to stop the reminder", () => {
+test("the notice is the fact and nothing else", () => {
+  // Whatever the plugin does with timing, budget or credentials is mechanism: it
+  // costs context on every delivery and gives the agent nothing to act on.
   const text = formatEvents(
     [
       {
-        key: "ci:1",
+        key: "owner/one#run:1",
+        repo: "owner/one",
         kind: "ci",
-        ref: "run 1",
         title: "verify failed",
         url: "https://example.test/1",
       },
-      { key: "ci:2", kind: "ci", ref: "run 2", title: "package failed" },
+      { key: "owner/one#run:2", repo: "owner/one", kind: "ci", title: "package failed" },
     ],
     { maxEvents: 1, label: "外部收件箱", ackHint: "npm run inbox:ack -- --done -- <key>" },
   );
-  assert.match(text, /只在你发消息时随该轮进入上下文/u);
-  assert.match(text, /其余 1 条/u);
-  // Teach the command that actually marks the event done: npm eats `--done`
-  // when it sits before `--`, so the flag has to follow the separator.
-  assert.match(text, /npm run inbox:ack -- --done -- <key>/u);
-  assert.match(text, /--done` 放在 `--` 之后/u);
-  assert.doesNotMatch(text, /inbox:ack --done/u);
+  assert.match(text, /^【告知】 2 条 · 后台派发，不是用户提问$/mu);
+  assert.match(text, /- \[CI 失败\] owner\/one verify failed https:\/\/example\.test\/1/u);
+  assert.match(text, /还有 1 条/u);
+  for (const leaked of ["读取身份", "key:", "回合边界", "delivered", "ack --done", "只访问"]) {
+    assert.ok(!text.includes(leaked), `the notice leaks mechanism: ${leaked}`);
+  }
 });
 
-test("the default ack hint is a command that actually exists on a fresh install", () => {
-  const text = formatEvents([{ key: "ci:1", kind: "ci", ref: "run 1", title: "verify failed" }], {});
-  assert.match(text, /node ".*scripts[\\/]inbox-bridge\.mjs" ack --done -- <key>/u);
+test("a woken turn says so in one clause, not a page of rules", () => {
+  const event = { key: "owner/one#issue:3", repo: "owner/one", kind: "issue", title: "t" };
+  const quiet = formatEvents([event], mergeConfig({}));
+  assert.match(quiet, /后台派发，不是用户提问/u);
+  const woken = formatEvents([event], { ...mergeConfig({}), woken: true });
+  assert.match(woken, /插件为这一轮开了个回合/u);
+  assert.doesNotMatch(woken, /仅限|每小时|空闲满/u);
 });
 
-test("the notice names the identity it reads as and the role of each event", () => {
-  const text = formatEvents(
-    [
-      { key: "pr:1:reviewer:x", kind: "pr", role: "reviewer", ref: "PR #1", title: "t" },
-      { key: "run:2", kind: "ci", role: "ci", title: "ci failed" },
-    ],
-    {
-      label: "外部收件箱",
-      identity: { kind: "app", login: "noema-agent[bot]" },
-      repo: "example-org/example-repo",
-    },
+test("the ack command is still available, it is just not injected", () => {
+  const text = formatEvents([{ key: "owner/one#run:1", kind: "ci", title: "x" }], {});
+  assert.doesNotMatch(text, /ack --done/u);
+  assert.match(DEFAULT_ACK_HINT, /node ".*scripts[\\/]inbox-bridge\.mjs" ack --done -- <key>/u);
+});
+
+test("each line says what is being asked of me", () => {
+  const line = (event) => formatEvents([event], {}).split("\n")[1];
+  assert.equal(
+    line({ key: "owner/one#pr:1:reviewer:review-requested", kind: "pr", role: "reviewer", title: "t" }),
+    "- [请你评审] owner/one#1 t",
   );
-  assert.match(text, /读取身份：App noema-agent\[bot\]/u);
-  assert.match(text, /\[pr\/reviewer\] PR #1/u);
-  // The role is redundant on CI lines: every CI event is the same relationship.
-  assert.match(text, /\[ci\] ci failed/u);
+  assert.equal(
+    line({ key: "owner/one#issue:2:assignee:2026", kind: "issue", role: "assignee", title: "t" }),
+    "- [指派给你的 issue] owner/one#2 t",
+  );
+  assert.equal(
+    line({ key: "owner/one#comment:9:mention", kind: "comment", role: "mention", title: "t" }),
+    "- [有人 @ 你] owner/one t",
+  );
+  assert.equal(
+    line({ key: "owner/one#run:7", kind: "ci", scheduled: true, title: "t" }),
+    "- [定时任务失败] owner/one t",
+  );
+  assert.equal(
+    line({ key: "owner/one#run:7:recovered", kind: "recovered", title: "t" }),
+    "- [CI 恢复] owner/one t",
+  );
+  // A review comment is the one place a file and line add something a title cannot.
+  assert.equal(
+    line({ key: "owner/one#pr:4:review:88", kind: "review", ref: "src/a.ts:12", title: "t" }),
+    "- [你的 PR 有新评审] owner/one#4 src/a.ts:12 t",
+  );
 });
 
 test("a delivered key is suppressed inside the resurface window and released after it", () => {
@@ -305,33 +327,6 @@ test("wake settings are validated and only mean something in wakeup mode", () =>
   // Idle polling is gone: the interval is the in-turn cadence, one minute by default.
   assert.equal(mergeConfig({}).intervalMs, 60 * 1000);
   assert.deepEqual(mergeConfig({}).wakeOn, []);
-});
-
-test("the notice states the wake rules it actually enforces", () => {
-  const event = { key: "k", kind: "pr", role: "reviewer", title: "t", url: "u" };
-  const quiet = formatEvents([event], mergeConfig({}));
-  assert.match(quiet, /只会?在你发消息时随该轮进入上下文|不会替你另开一轮/u);
-  assert.match(quiet, /只在回合边界轮询：回合开始一次、进行中每 1 分钟一次、结束一次/u);
-
-  const empty = formatEvents([event], mergeConfig({ delivery: "wakeup" }));
-  assert.match(empty, /`wakeOn` 为空：仍是只排队/u);
-
-  const waking = formatEvents(
-    [event],
-    mergeConfig({
-      delivery: "wakeup",
-      wakeOn: ["reviewer"],
-      wakeAfterIdleMs: 20 * 60 * 1000,
-      wakesPerHour: 1,
-    }),
-  );
-  assert.match(waking, /仅限 reviewer 角色/u);
-  assert.match(waking, /空闲满 20 分钟后/u);
-  assert.match(waking, /每小时最多 1 次/u);
-  // The mode that can open a turn must say it also reads while idle; quiet must
-  // keep the promise that an idle session costs nothing.
-  assert.match(waking, /空闲时也按同一间隔读一次/u);
-  assert.match(quiet, /空闲时不访问来源/u);
 });
 
 test("both delivery paths hand over the whole message, role and id included", () => {
@@ -476,7 +471,7 @@ test("a wakeup opens a turn for the session on that repository, and only that se
   }
 });
 
-test("a wakeup that is not idle yet holds the event instead of spending it", async () => {
+test("a wakeup that cannot happen still delivers the fact", async () => {
   const root = mkdtempSync(join(tmpdir(), "inbox-notidle-"));
   const watched = join(root, "watched");
   try {
@@ -513,13 +508,15 @@ test("a wakeup that is not idle yet holds the event instead of spending it", asy
     while (Date.now() < deadline && told.length === 0) {
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    // Injecting here would fill the next turn with a notice the wake existed to
-    // open. The event has to stay pending instead.
-    assert.deepEqual(told, [], "a held wakeup does not inject the event");
-    assert.deepEqual(woke, [], "and it does not open a turn yet either");
+    // A wake is an extra, not a condition: when the session is not quiet enough to
+    // be woken, the fact is still handed over at this boundary. Holding it for a
+    // wake that may never come starves the queue — a session that keeps running
+    // long turns would sit on a pending notice for hours.
+    assert.deepEqual(woke, [], "it does not open a turn");
+    assert.deepEqual(told, ["a"], "but the session is told at this boundary");
     const log = readFileSync(join(root, ".work", "inbox-bridge", "plugin.log"), "utf8");
     assert.match(log, /no wakeup: not-idle/u);
-    assert.match(log, /held 1 event\(s\): the session has not been idle for/u);
+    assert.match(log, /delivered without a wakeup: not-idle/u);
   } finally {
     removeTree(root);
   }
@@ -947,7 +944,7 @@ test("a labelled event keeps its own name on the page and in the notice", () => 
     [{ key: "a/b#dependabot:3", kind: "security", label: "Dependabot", role: "any", ref: "foo", title: "high Prototype pollution", url: "u" }],
     { label: "外部收件箱", identity: { kind: "user", login: "me" }, delivery: "quiet" },
   );
-  assert.match(notice, /- \[Dependabot\] foo high Prototype pollution u/u);
+  assert.match(notice, /- \[Dependabot\] a\/b high Prototype pollution u/u);
   assert.ok(!notice.includes("[security]"));
 });
 
@@ -1369,4 +1366,68 @@ test("a repository fact belongs to its owner, an item fact to whoever works ther
   );
   // A source that names no repository is instance-wide: there is nothing to match.
   assert.deepEqual(audienceFor("item", null, agents, { owns }), ["a", "b"]);
+});
+
+test("a fact about my repository waits for me while I am mid-turn", async () => {
+  const root = mkdtempSync(join(tmpdir(), "inbox-busy-"));
+  const one = join(root, "one");
+  const two = join(root, "two");
+  try {
+    git(root, ["init", "--quiet", "one"]);
+    git(one, ["remote", "add", "origin", "https://github.com/owner/one.git"]);
+    git(root, ["init", "--quiet", "two"]);
+    git(two, ["remote", "add", "origin", "https://github.com/owner/two.git"]);
+
+    // The session that works in owner/one is mid-turn when its own issue arrives.
+    // Handing it to the idle session next door is how one project's news ends up in
+    // another project's conversation: ownership must not depend on who is free.
+    const heard = { a: [], b: [] };
+    const agentOn = (cwd, id, status) => ({
+      ...fakeAgent(cwd, id),
+      status,
+      inject: (text) => heard[id].push(text),
+      followup: () => heard[id].push("woke"),
+    });
+    const owner = agentOn(one, "a", "running");
+    const ctx = fakeContext([owner, agentOn(two, "b", "idle")]);
+    const { apply } = await import("./index.js");
+    apply(ctx, mergeConfig({
+      cwd: root,
+      delivery: "quiet",
+      intervalMs: 600_000,
+      repo: "",
+      poll: {
+        command: process.execPath,
+        args: [
+          "-e",
+          `console.log(JSON.stringify({ events: [
+            { key: "owner/one#issue:7", repo: "owner/one", role: "author", kind: "issue", title: "mine", url: "u7" }
+          ] }))`,
+        ],
+      },
+      ack: { command: process.execPath, args: ["-e", "console.log('{}')"] },
+      sweep: null,
+    }));
+    ctx.emit("session/event", { id: "a" }, { type: "user/message", data: { source: { kind: "user" } } });
+
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    assert.deepEqual(heard.b, [], "the idle session next door was told about my repository");
+
+    // Polls are debounced within three seconds of each other; let that window pass
+    // so the idle transition really asks the source again.
+    await new Promise((resolve) => setTimeout(resolve, 3_200));
+
+    // Once the owner is idle again the same fact reaches it, not the neighbour.
+    owner.status = "idle";
+    ctx.emit("agent/status", { agent: { session: { id: "a" } }, status: "idle" });
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline && heard.a.length === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.ok(heard.a.length > 0, "the owner never received its own fact");
+    assert.deepEqual(heard.b, [], "the neighbour was told after the owner went idle");
+    assert.match(heard.a.map((entry) => JSON.stringify(entry)).join("\n"), /\[你的 issue 有动静\] owner\/one#7 mine/u);
+  } finally {
+    removeTree(root);
+  }
 });

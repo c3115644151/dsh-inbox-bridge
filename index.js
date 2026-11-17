@@ -381,10 +381,12 @@ export function apply(ctx, config) {
    */
   const uiPayload = (sessionId = null) => {
     const agent = sessionId ? agents.get(sessionId) : null;
-    const repo = agent ? repoOf(agent) : null;
-    // What this session watches: only what it subscribed to. The instance polls
-    // the union of those subscriptions.
+    // What this session watches: only what it took over. The instance polls the
+    // union of those takeovers.
     const watched = sessionId ? sessionReposOf(sessionId) : [];
+    // A workspace without a remote is still a workspace: if the session took over
+    // exactly one repository, that is the one it works in.
+    const repo = (agent ? repoOf(agent) : null) ?? (watched.length === 1 ? watched[0] : null);
     const session = agent
       ? {
           id: sessionId,
@@ -670,6 +672,18 @@ export function apply(ctx, config) {
       // and if nobody works there, to the maintainers, and if nobody maintains it, to
       // the session that spoke last.
       const audiences = new Map();
+      // Ownership is decided by the whole roster, not by who happens to be idle:
+      // a fact about my repository belongs to me even while I am mid-turn, and it
+      // waits for me instead of being handed to whichever other session is free.
+      const roster = [...agents.values()];
+      // A session that owns exactly one repository still works in it even when
+      // the workspace has no remote (a worktree, a detached directory): fall back
+      // to what it owns, so "whoever works in this repository" can match.
+      for (const agent of roster) {
+        if (repoNames.get(keyOf(agent))) continue;
+        const found = repoOf(agent, options, repoNames) ?? sessionReposOf(keyOf(agent))[0] ?? null;
+        if (found) repoNames.set(keyOf(agent), found);
+      }
       const audienceOf = (event) => {
         const repo = event?.repo ?? repoOfKey(event?.key) ?? scoped.repo ?? null;
         const tier = eventTier(event);
@@ -678,7 +692,7 @@ export function apply(ctx, config) {
           audiences.set(
             cacheKey,
             new Set(
-              audienceFor(tier, repo, ready, {
+              audienceFor(tier, repo, roster, {
                 owns: (agent) => {
                   const wanted = String(repo ?? "").toLowerCase();
                   return sessionReposOf(keyOf(agent)).some((entry) => String(entry).toLowerCase() === wanted);
@@ -719,23 +733,24 @@ export function apply(ctx, config) {
         now,
       });
       if (!wake.agent && wake.considered > 0) log(`no wakeup: ${wake.why}`);
-      // A wakeup that is only waiting for the idle window must not spend the
-      // event by injecting it: that would fill the next turn and leave nothing
-      // for the wake it existed for. The event stays pending and the next poll
-      // carries it (see `carriedPending`), so the wake still happens once the
-      // session has been quiet long enough.
-      if (!wake.agent && wake.why === "not-idle" && options.delivery === "wakeup") {
-        log(
-          `held ${events.length} event(s): the session has not been idle for ${pollLabel(options.wakeAfterIdleMs)} yet`,
-        );
-        return;
+      // A wake is an extra, never a condition. When it cannot happen — the
+      // session is busy, the window is not open, the budget is spent — the fact
+      // is still handed over at the next natural boundary. Holding it for a wake
+      // that may never come starves the queue: a session that keeps running
+      // long turns would never be told anything at all.
+      if (!wake.agent && wake.considered > 0 && options.delivery === "wakeup") {
+        log(`delivered without a wakeup: ${wake.why}`);
       }
       const waking = wake.agent ? new Set([wake.agent]) : new Set();
       const deliveredKeys = new Set();
       let delivered = 0;
       for (const [agent, mine] of batches) {
         try {
-          const message = buildMessage(mine.length, formatEvents(mine, scoped), options.label);
+          const message = buildMessage(
+            mine.length,
+            formatEvents(mine, { ...scoped, woken: waking.has(agent) === true }),
+            options.label,
+          );
           deliver(agent, message, waking);
           for (const event of mine) deliveredKeys.add(event.key);
           delivered += 1;
@@ -1240,11 +1255,14 @@ export function sessionTag(agent) {
 
 /** `owner/name` a session workspace points at, cached for a short while. */
 export function repoOf(agent, options, cache = new Map(), now = Date.now()) {
-  const hit = cache.get(agent);
+  // Cache by session id: two events about one agent hand in different objects for
+  // the same session, and a cache keyed by object identity would miss every time.
+  const id = keyOf(agent) ?? agent;
+  const hit = cache.get(id);
   if (hit && now - hit.at < REPO_TTL_MS) return hit.repo;
   const cwd = agent?.session?.header?.cwd ?? options?.cwd ?? DEFAULTS.cwd;
   const repo = detectRepo(cwd);
-  cache.set(agent, { repo, at: now });
+  cache.set(id, { repo, at: now });
   return repo;
 }
 
@@ -1554,14 +1572,13 @@ function runCommand(spec, options, extraEnv = {}) {
   });
 }
 
+/**
+ * The one line worth paying for when the source cannot be read: the agent knows
+ * the plugin is blind, so it does not mistake silence for "nothing happened".
+ */
 export function formatOfflineNotice(options, reason) {
-  const where = options.repo ? `仓库 ${options.repo}` : "本地工作区";
-  return [
-    `${options.label ?? "外部收件箱"}：收件箱暂时不可用（${where}，${reason}）。`,
-    "",
-    "如果这是工作区没有连接 GitHub 仓库：请告诉用户——把工作区指向已连接的仓库目录，或在插件配置里设置 `repoPath`/`repo`；否则不会收到该仓库的任何通知。",
-    "如果是 gh 未登录或离线：告知用户后继续手头工作，不必现在修。",
-  ].join("\n");
+  const where = options.repo ? `仓库 ${options.repo}` : "工作区";
+  return `${NOTICE_NAME} 暂时读不到 ${where}（${reason}）——这段时间的事它看不到。先做手头的事，需要我处理时告诉我。`;
 }
 
 /**
@@ -1589,55 +1606,99 @@ export function pollLabel(ms) {
   return `${Math.max(1, Math.round(value / 1_000))} 秒`;
 }
 
+/**
+ * The notice is the fact, and nothing else. Everything about how the plugin
+ * works — the poll cadence, the wakeup gates, the ack protocol, which credential
+ * read the source — is mechanism: it costs context on every delivery and tells
+ * the agent nothing it can act on. What it needs is: who is asking, what happened,
+ * where to look.
+ */
 export function formatEvents(events, options = DEFAULTS) {
-  const ackHint = options.ackHint ?? DEFAULT_ACK_HINT;
   const maxEvents = options.maxEvents ?? 6;
-  const delivery = options.delivery ?? DEFAULTS.delivery;
-  const resurfaceMs = options.resurfaceMs ?? DEFAULTS.resurfaceMs;
-  const resurfaceHours = Math.max(1, Math.round(resurfaceMs / (60 * 60 * 1000)));
-  const intervalLabel = pollLabel(options.intervalMs ?? DEFAULTS.intervalMs);
+  const woken = options.woken === true;
   const lines = events.slice(0, maxEvents).map((event) => `- ${describeEvent(event)}`);
-  if (events.length > maxEvents)
-    lines.push(`- 其余 ${events.length - maxEvents} 条见 \`node "${CLI}" list\``);
-  // Only the mode that is allowed to open a turn pays for reading while idle.
-  const idleRead =
-    delivery === "wakeup" && (options.wakeOn ?? DEFAULTS.wakeOn).length > 0
-      ? "空闲时也按同一间隔读一次，否则无法在你不在时叫醒你。"
-      : "空闲时不访问来源。";
-  const identity = options.identity ?? DEFAULTS.identity;
-  const who =
-    identity.kind === "app" ? `App ${identity.login ?? ""}`.trim() : (identity.login ?? "本机 gh");
-  return [
-    `${options.label ?? "外部收件箱"}（后台轮询，不是用户提问）· 读取身份：${who}`,
-    ...lines,
-    "",
-    `只在它影响当前工作时处理；处理完运行 \`${ackHint}\` 标记完成。`,
-    ...(ackHint.startsWith("npm ") ? ["（`--done` 放在 `--` 之后，否则被 npm 吞掉，只标 delivered）"] : []),
-    `只标 delivered 的事件会在 ${resurfaceHours} 小时后再次提醒；\`kind: infra\` 的基础设施失败只提醒一次。`,
-    wakeNotice(options, delivery),
-    `只在回合边界轮询：回合开始一次、进行中每 ${intervalLabel}一次、结束一次；${idleRead}`,
-    ...(options.repos?.length
-      ? [`只访问 ${options.repos.join(", ")} 这些仓库；没人接管的仓库不会被轮询。`]
-      : []),
-  ].join("\n");
+  if (events.length > maxEvents) {
+    lines.push(`- 还有 ${events.length - maxEvents} 条：\`node "${CLI}" list\``);
+  }
+  const head = woken
+    ? `${NOTICE_NAME} ${events.length} 条 · 插件为这一轮开了个回合`
+    : `${NOTICE_NAME} ${events.length} 条 · 后台派发，不是用户提问`;
+  return [head, ...lines].join("\n");
 }
 
-/** One honest sentence about whether this notice can open a turn, and why. */
-function wakeNotice(options, delivery) {
-  if (delivery !== "wakeup") {
-    return "这条通知只在你发消息时随该轮进入上下文，不会替你另开一轮。";
+const NOTICE_NAME = "【告知】";
+
+/**
+ * What a key says about the fact, without asking the collector again. Keys name
+ * the source noun (`run`, `pr`, `comment`); the notice should name the request,
+ * so the two vocabularies are mapped here instead of leaking into the text.
+ */
+const KEY_KINDS = {
+  run: "ci",
+  pr: "pr",
+  issue: "issue",
+  comment: "comment",
+  review: "review",
+  dependabot: "security",
+  "code-scanning": "security",
+  schedule: "ci",
+};
+
+function keyParts(event = {}) {
+  const key = String(event.key ?? "");
+  const at = key.indexOf("#");
+  const repo = at > 0 ? key.slice(0, at) : (event.repo ?? "");
+  const inner = at > 0 ? key.slice(at + 1) : key;
+  const match = /^([a-z-]+):(\d+)/u.exec(inner);
+  const noun = match ? match[1] : "";
+  let kind = KEY_KINDS[noun] ?? (event.kind ?? noun);
+  // A review comment hangs off a pull request: `pr:<n>:review:<id>`.
+  if (/:review:/u.test(inner)) kind = "review";
+  if (kind === "ci" && /:recovered\b/u.test(inner)) kind = "recovered";
+  return { repo, kind, noun, number: match ? match[2] : null, inner };
+}
+
+/** The request in the agent's terms: what is being asked of it, in three words. */
+function askOf(event = {}) {
+  const parts = keyParts(event);
+  const kind = parts.kind || event.kind || "";
+  const role = event.role ?? "any";
+  const key = String(event.key ?? "");
+  if (kind === "recovered") return event.scheduled ? "定时任务恢复" : "CI 恢复";
+  if (kind === "ci") return event.scheduled ? "定时任务失败" : "CI 失败";
+  if (kind === "security") return event.label ?? "安全告警";
+  if (kind === "review") return "你的 PR 有新评审";
+  if (kind === "comment") return role === "mention" ? "有人 @ 你" : "有人回复";
+  if (kind === "issue") {
+    if (role === "assignee") return "指派给你的 issue";
+    if (role === "author" || /mine/u.test(key)) return "你的 issue 有动静";
+    return "有 issue 有动静";
   }
-  const wakeOn = options.wakeOn ?? DEFAULTS.wakeOn;
-  if (!Array.isArray(wakeOn) || wakeOn.length === 0) {
-    return "`delivery: wakeup` 已开启但 `wakeOn` 为空：仍是只排队，不替你开轮。";
+  if (kind === "pr" || /pull_request/u.test(String(event.label ?? ""))) {
+    if (/mine/u.test(key)) {
+      if (/closedm|mergedm|c\d+/u.test(key)) return "你的 PR 有回音";
+      return "你的 PR 没动静";
+    }
+    if (role === "reviewer") return "请你评审";
+    if (/merge:DIRTY/u.test(key)) return "你的 PR 有冲突";
+    if (/merge:BEHIND/u.test(key)) return "你的 PR 落后了";
+    return "你的 PR 检查失败";
   }
-  const idleMinutes = Math.max(1, Math.round((options.wakeAfterIdleMs ?? DEFAULTS.wakeAfterIdleMs) / 60_000));
-  const perHour = options.wakesPerHour ?? DEFAULTS.wakesPerHour;
-  return (
-    `插件可能替你开一轮：仅限 ${wakeOn.join("/")} 角色，且只有你最近在用的那个会话；` +
-        `会话空闲满 ${idleMinutes} 分钟后，` +
-    `每小时最多 ${perHour} 次（另有每个会话 ${options.maxConsecutiveWakes ?? DEFAULTS.maxConsecutiveWakes} 次的连续上限）。`
-  );
+  return event.label ?? "告知";
+}
+
+function describeEvent(event) {
+  const parts = keyParts(event);
+  // Only a pull request or an issue has a number a reader can look up; the number
+  // in a comment or advisory key is an internal id and would read as a fake link.
+  const showsNumber = parts.noun === "pr" || parts.noun === "issue";
+  const where = parts.repo ? `${parts.repo}${showsNumber && parts.number ? `#${parts.number}` : ""}` : "";
+  // `ref` is only useful when it says something the title does not: a file and a
+  // line in a review comment. The run id of a CI failure is already in the URL.
+  const ref = event.ref && parts.kind === "review" ? `${event.ref} ` : "";
+  const title = String(event.title ?? "").trim();
+  const url = event.url ? ` ${event.url}` : "";
+  return `[${askOf(event)}] ${where ? `${where} ` : ""}${ref}${title}${url}`;
 }
 
 /**
@@ -1731,14 +1792,6 @@ export function buildMessage(count, text, label = "外部收件箱") {
     content: [{ type: "text", text }],
     source: { kind: "inbox-bridge", form: "notice", summary },
   };
-}
-
-function describeEvent(event) {
-  const kind = event.label ?? event.kind ?? "event";
-  const role = event.role && event.role !== "any" && event.role !== "ci" ? `/${event.role}` : "";
-  const ref = event.ref ? `${event.ref} ` : "";
-  const url = event.url ? ` ${event.url}` : "";
-  return `[${kind}${role}] ${ref}${event.title ?? ""}${url} · key: ${event.key}`;
 }
 
 function describe(error) {

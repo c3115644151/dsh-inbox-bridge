@@ -1,3 +1,26 @@
+## 2.21.1
+
+- **通知只写事实，不写插件。** 以前每条通知后面跟着身份、轮询节奏、唤醒四/五道门、ack 命令、`kind: infra` 的重复规则、实例轮询的仓库清单——这些是机制，不是信息，占的却是每一轮的上下文。现在只有一行抬头加每事一行：
+
+  ```
+  【告知】 2 条 · 后台派发，不是用户提问
+  - [请你评审] example-org/example-repo#23 fix: retry on flaky upload https://github.com/…
+  - [CI 失败] example-org/example-repo chore: release 2.3.1 https://github.com/…
+  ```
+
+  由插件开的那一轮，抬头改成「插件为这一轮开了个回合」；队列与收口命令留在 `list` / `ack` 里。
+- **每行先说要你做什么。** 方括号里是动作而不是内部类型名：`请你评审`、`CI 失败`、`CI 恢复`、`定时任务失败`、`指派给你的 issue`、`有人 @ 你`、`你的 PR 有新评审`、`你的 PR 有冲突`、`依赖告警`。编号只在 PR 与 issue 上出现（评论与告警的数字是不可点开的内部 id，不再冒充链接）。
+- **不再唤醒「已经过时」的事实。** 从没送到过任何人的事实仍然不过期，但超过 48 小时的直接丢弃并在 notes 里记一行——三小时前的红构建是待办，三天前的不是。
+- **归属按全体会话判断，空闲只决定何时投递。** 拥有者正在跑回合时，事实留给它，不再转手给恰好空闲的别的会话（实测中它把一条属于本仓库的 issue 叫醒了 Noema 工作区的会话）。
+- 回归测试：`the notice is the fact and nothing else`、`a woken turn says so in one clause, not a page of rules`、`the ack command is still available, it is just not injected`、`each line says what is being asked of me`、`a fact about my repository waits for me while I am mid-turn`。
+- **修一个把整条「自己的工作跟人走」变成静默失败的缺陷。** `fetchMyItems` 的 `--jq` 用 `.items[]` 输出，每行一个 JSON 对象，而 `ghJson` 只解析单个文档，于是四条搜索里三条直接报 `Unexpected non-whitespace character after JSON` 并被记进 notes、一条返回空——上线以来「我自己的条目」从未进过队列，两个插件市场的合并与回复也就从未到达任何会话。改成 `[.items[] | …]`，并实测搜到 `awesome-dsh-plugin#pr:16094`（已合并）、`noema-agent#pr:165` 等。
+- **「有人回了你」现在也是一条新事实。** 我的条目的 key 从 `repo#pr:42:mine` 变成带摘要的 `repo#pr:42:mine:<state><merged>c<comments>`：评论数变化、合并、关闭都会改变 key，于是回音会到；同一件事不会因为反复轮询重复通知。
+- **升级时不重放历史。** 新代码第一次看到某个仓库的条目、或旧 key 还没有摘要时，只记基线不报；否则一次升级会把历年关掉的 PR 全倒进一个回合。基线写入失败过一版（无新事件时不写 bookmark），已修，并加了 `MINE_BURST = 6` 的上限。
+- **唤醒不再饿死队列。** 以前「等空闲窗」会提前 return，`delivery: wakeup` 下如果负责会话一直在跑长回合，一条待投事实可以永远等下去。现在唤醒只是额外动作：门没过时照常在下一次注入点交给会话，日志写 `delivered without a wakeup: <原因>`。实测 `19:22:35 delivered without a wakeup: not-idle`。
+- 修两个让条目级归属悄悄失效的缺陷：`repoOf` 的缓存按对象身份做键、而读取时按会话 id 取（永远命中不了，每个事件都重新跑 `git remote get-url origin`）；工作区没有 remote 时会话的仓库为空，条目级「在这个仓库干活的人」因此匹配不上——现在缓存按会话 id，并在没有 remote 时回退到它接管的那一个仓库。
+- **一条事实不再被记到两个仓库名下。** `gh run list` 和 `gh pr list` 在没有 `--repo` 时会从「当前目录」推断仓库，而轮询的工作目录是 agent 的检出目录——于是轮询第二个仓库时读到的是第一个仓库的运行与 PR，再被打上第二个仓库的名字。表现就是同一次 CI 失败同时出现在两个会话里，其中一个属于根本无关的仓库。现在两处都显式带 `--repo`（`runsArgs` / `pullsArgs`），并有测试钉住。
+- 回归测试：`a wakeup that cannot happen still delivers the fact`、`an answered item is news again, an untouched one is not`、`my own items collapse into one fact each, wherever they live`、`run and pull-request reads name their repository, not the working directory`。
+
 ## 2.21.0
 
 - **定位换了：现在是会话通知器，不是 GitHub 通知器。** 它不再回答「我账号上有什么消息」，而是回答「这个会话在 GitHub 上做的事有没有回音」——查的是这个会话自己的条目、以及它接管的仓库。结果：插件与 GitHub 账号解耦，两个共用同一账号的实例不再互相干扰。

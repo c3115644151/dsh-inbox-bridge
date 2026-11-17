@@ -26,7 +26,7 @@ That is also why it only reads: its job is to make the agent aware. The work hap
 ## What it does
 
 - **Relevance comes from your identity.** It queries as your `gh` login (or a configured App identity) and keeps only facts where you are the author, the reviewer, the assignee, or are mentioned. Someone else's red PR, and unrelated repositories, never enter the queue.
-- **Your own work follows you.** Beyond the current repository it searches everything the account can read: pull requests you opened elsewhere, issues assigned to you, comments that mention you — the answer reaches the session that is working.
+- **Your own work follows you.** Beyond the current repository it searches everything the account can read: pull requests you opened elsewhere, issues assigned to you, comments that mention you — the answer reaches the session that is working. The key carries a digest of the item's state (open/merged/closed plus the comment count), so "somebody answered you" is news again; the first look is only a baseline and never replays years of closed pull requests.
 - **Take a repository over, and its own facts are yours.** The first session in a workspace takes over the repository it sits in; only then do repository-level facts (default-branch CI, security advisories) reach that session. Taking over and releasing are both manual, and one repository may have several owners.
 - **Two tiers of ownership.** Repository-level facts go to the owners; item-level facts (one pull request, one issue) go to the sessions working in that repository. When both would match, one fact still wakes one session.
 - **Polling follows turns.** Once when a session starts, every minute while a turn runs, once when it ends; an idle session makes no request. Only with `delivery: wakeup` does it also read on that interval while idle — without that it could never wake you while you are away.
@@ -37,15 +37,15 @@ That is also why it only reads: its job is to make the agent aware. The work hap
 
 ## What you will see
 
-At the top of a turn:
+At the top of a turn, one line per fact and nothing else:
 
-> External inbox (background poll, not a question from the user) · read as: c3115644151:
-> - [PR/reviewer] #23 review requested: fix: retry on flaky upload https://github.com/…
-> - [CI] run 43934997486 failed: chore: release 2.3.1 https://github.com/…
->
-> Act only where it affects the current work; when done, run `node "...\dsh-inbox-bridge\scripts\inbox-bridge.mjs" ack --done -- <key>`.
+> 【告知】 2 条 · 后台派发，不是用户提问
+> - [请你评审] example-org/example-repo#23 fix: retry on flaky upload https://github.com/…
+> - [CI 失败] example-org/example-repo chore: release 2.3.1 https://github.com/…
 
-`[Dependabot]` is an open dependency advisory, `[Code scanning]` an open code-scanning alert, `[Scheduled]` a scheduled run that failed, and `[Review]` a review comment on your own pull request (with file and line). The rest of the bracket states the relation to that identity: `reviewer` means it waits for your review, `author` means you opened it, `assignee` means it is assigned to you, `mention` means a comment mentions you. Run the `ack` command when you are done; an unacknowledged event is repeated after six hours rather than piling up.
+The bracket is what it asks of you; then the repository and number, the title, the link. Others you may see: `CI 恢复`, `定时任务失败`, `指派给你的 issue`, `有人 @ 你`, `你的 PR 有新评审`, `你的 PR 有冲突`, `依赖告警`, `代码告警`.
+
+**The notice carries no plugin mechanics**: no credential line, no poll cadence, no wakeup rules, no ack command — those live in configuration and documentation, and in a context window they are only cost. For the queue or a manual close: `inbox-bridge.mjs list` / `ack --done -- <key>`.
 
 ## How it works
 
@@ -102,7 +102,7 @@ To see what it can actually see: `node scripts/inbox-bridge.mjs doctor` checks t
 | --- | --- | --- |
 | `cwd` | DSH process directory | Where state lives; the starting point for inferring repositories |
 | `repo` / `repos` | `[]` | Instance-level ownership: these `owner/name` are watched no matter which session. Usually empty — session ownership joins in automatically |
-| `delivery` | `quiet` | `quiet` only queues; `wakeup` may open a turn while the session is idle |
+| `delivery` | `quiet` | `quiet` only delivers at the next step; `wakeup` may also open a turn when the session is idle (otherwise the notice is delivered as usual) |
 | `wakeOn` | empty | Role whitelist for waking under `wakeup`; empty means it never wakes |
 | `clear` | `repo` | Mark the threads it read as read: `repo` / `all` / `off`. Never touches what it did not read |
 | `sweep` | on | Archive repository-level facts (CI, advisories) into Done; a missing sign-in opens a window instead of asking you to type |
