@@ -18,7 +18,7 @@ DSH 的插件配置里，一个 `dsh-inbox-bridge` 条目即可；等价写法�
 
 ## 在页面上改（覆盖层）
 
-输入框下面那颗胶囊浮出来的卡片里，可以直接改三件事：提醒方式、清理强度、订阅哪些仓库。这些改动不写回 DSH 的插件配置，而是记在插件自己的覆盖层里：
+输入框下面那颗胶囊浮出来的卡片里，可以直接改三件事：提醒方式、消息清理、订阅哪些仓库。这些改动不写回 DSH 的插件配置，而是记在插件自己的覆盖层里：
 
 ```text
 <cwd>/.work/inbox-bridge/prefs.json
@@ -55,7 +55,7 @@ DSH 的插件配置里，一个 `dsh-inbox-bridge` 条目即可；等价写法�
 | `maxConsecutiveWakes` | `3` | 一个会话在你下次发言前最多被唤醒几次，之后只排队 |
 | `identity` | `{ kind: "user" }` | 用哪个身份读 GitHub，见下 |
 | `roles` | `[]` | 只接收这些角色的事件；空 = 全收 |
-| `clear` | `"repo"` | 把这一轮读过的通知线程标为已读：`repo` 只清盯的仓库，`all` 清整个账号，`off` 不碰收件箱。GitHub 没有「完成」API，所以清的是未读角标，历史仍在收件箱里 |
+| `clear` | `"repo"` | 把这一轮读过的通知线程标为已读：`repo` 只清订阅的仓库，`off` 不碰收件箱。整个账号不在范围内——清别人的仓库属于人的决定，不是后台轮询的决定。旧配置里的 `"all"` 按 `"repo"` 载入。GitHub 没有「完成」API，所以清的是未读角标，历史仍在收件箱里 |
 | `sweep` | `null` | 抓到东西后把收件箱归档进 Done：`{ args: ["scripts/clear-inbox.mjs"], when: "events" }`。`when: "events"` 只在有发现的回合跑，`"always"` 每轮都跑。需要先 `scripts/clear-inbox.mjs --login` 登录一次 |
 | `debug` | `false` | 把每个边界事件写进 `plugin.log`，用来排查「没轮询」还是「轮询了没结果」 |
 | `poll` | 插件自带 CLI 的 `poll` | 换掉抓取命令：`{ command, args }`，只要能输出约定的 JSON，来源可以不是 GitHub |

@@ -431,9 +431,11 @@ test("a poll that cannot reach the source says so in the log", async () => {
 
 test("thread clearing is on for the watched repositories, and refuses nonsense", () => {
   assert.equal(mergeConfig({}).clear, "repo");
-  assert.equal(mergeConfig({ clear: "all" }).clear, "all");
+  // A profile that still says "all" keeps loading, as "repo": marking other
+  // repositories read is not this instance's business.
+  assert.equal(mergeConfig({ clear: "all" }).clear, "repo");
   assert.equal(mergeConfig({ clear: "off" }).clear, "off");
-  assert.throws(() => mergeConfig({ clear: "sometimes" }), /`clear` must be "off", "repo" or "all"/u);
+  assert.throws(() => mergeConfig({ clear: "sometimes" }), /`clear` must be "off" or "repo"/u);
 });
 
 test("the poll child is told which threads to clear", () => {
@@ -614,23 +616,40 @@ test("switching to wakeup brings a usable role, and quiet drops it", () => {
 });
 
 test("turning the sweep off overrides a profile that configures one", () => {
-  const off = preferenceNext({}, "sweep", "off", {});
+  const off = preferenceNext({}, "archive", "off", {});
   assert.equal(off.sweep, null);
   // A null has to survive the merge: deleting the key falls back to the profile.
   assert.equal(mergeConfig({ cwd: process.cwd(), sweep: off.sweep }).sweep, null);
-  const on = preferenceNext({}, "sweep", "on", {});
+  const on = preferenceNext({}, "archive", "on", {});
   assert.equal(on.sweep.args.at(-1), "--json");
   assert.equal(mergeConfig({ cwd: process.cwd(), sweep: on.sweep }).sweep.when, "events");
 });
 
-test("watching and unwatching a repository edits the list without duplicates", () => {
-  const options = { repos: ["a/b"] };
-  const added = preferenceNext({}, "watch", "c/d", options);
+test("a session subscribes for itself, and the instance follows so it gets polled", () => {
+  const options = { repos: ["a/b"], sessionId: "s1", sessionRepo: "a/b" };
+  const added = preferenceNext({}, "subscribe", "c/d", options);
+  assert.deepEqual(added.sessionRepos.s1, ["a/b", "c/d"]);
+  // The instance polls, so a subscription it does not poll would never arrive.
   assert.deepEqual(added.repos, ["a/b", "c/d"]);
-  const again = preferenceNext({}, "watch", "a/b", options);
-  assert.deepEqual(again.repos, ["a/b"]);
-  const removed = preferenceNext({}, "unwatch", "a/b", options);
-  assert.deepEqual(removed.repos, []);
+  const again = preferenceNext(added, "subscribe", "c/d", options);
+  assert.deepEqual(again.sessionRepos.s1, ["a/b", "c/d"]);
+  const removed = preferenceNext(added, "unsubscribe", "a/b", {
+    ...options,
+    repos: ["a/b", "c/d"],
+  });
+  assert.deepEqual(removed.sessionRepos.s1, ["c/d"]);
+  // Two sessions keep separate lists, which is the point of scoping them.
+  const other = preferenceNext(removed, "subscribe", "e/f", {
+    ...options,
+    sessionId: "s2",
+    sessionRepo: "e/f",
+    repos: ["a/b", "c/d"],
+  });
+  assert.deepEqual(other.sessionRepos.s1, ["c/d"]);
+  assert.deepEqual(other.sessionRepos.s2, ["e/f"]);
+  // Without a session there is nobody to subscribe for.
+  assert.equal(preferenceNext({}, "subscribe", "c/d", { repos: ["a/b"] }), null);
+  assert.equal(preferenceNext({}, "subscribe", "not a repo", options), null);
 });
 
 test("an unknown setting is refused instead of silently doing nothing", () => {

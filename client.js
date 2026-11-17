@@ -112,14 +112,14 @@ window.__ModuleLoader__.load({
         pick: {
           mode: "提醒方式",
           quiet: "仅注入",
-          wakeup: "可唤醒",
-          clean: "清理范围",
-          cleanOff: "不清理",
-          cleanRead: "订阅的仓库",
-          cleanAll: "整个账号",
+          wakeup: "主动唤醒",
+          clean: "消息清理",
+          read: "已读",
           done: "归档",
           subscribe: "订阅仓库",
-          add: "订阅当前仓库",
+          typeRepo: "owner/name",
+          add: "添加",
+          addHere: "订阅当前仓库",
           remove: "取消订阅",
           reset: "恢复配置",
         },
@@ -149,14 +149,14 @@ window.__ModuleLoader__.load({
         pick: {
           mode: "delivery",
           quiet: "queue only",
-          wakeup: "may wake",
+          wakeup: "may wake it",
           clean: "cleaning",
-          cleanOff: "off",
-          cleanRead: "watched repos",
-          cleanAll: "whole account",
+          read: "mark read",
           done: "archive",
           subscribe: "repositories",
-          add: "watch current repo",
+          typeRepo: "owner/name",
+          add: "add",
+          addHere: "watch this repo",
           remove: "unwatch",
           reset: "reset",
         },
@@ -443,6 +443,17 @@ window.__ModuleLoader__.load({
         minWidth: 0,
       },
       repoName: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+      input: {
+        width: "88px",
+        padding: "0 2px",
+        border: "none",
+        background: "transparent",
+        color: "var(--dsw-alias-label-secondary)",
+        font: "inherit",
+        fontSize: "11px",
+        lineHeight: "18px",
+        outline: "none",
+      },
       iconBtn: {
         padding: "0 4px",
         border: 0,
@@ -583,9 +594,12 @@ window.__ModuleLoader__.load({
     async function change(status, set, value) {
       const token = status?.token;
       if (!token) return { ok: false, error: "no token" };
+      const session = status?.sessionId
+        ? `&session=${encodeURIComponent(status.sessionId)}`
+        : "";
       const url = `/inbox-bridge/prefs?token=${encodeURIComponent(token)}&set=${encodeURIComponent(
         set,
-      )}&value=${encodeURIComponent(value)}`;
+      )}&value=${encodeURIComponent(value)}${session}`;
       try {
         const response = await fetch(url, { cache: "no-store" });
         return await response.json();
@@ -601,14 +615,10 @@ window.__ModuleLoader__.load({
       return result;
     }
 
-    /**
-     * The choices that change behaviour, in place. Every control writes through
-     * the host's own route and then re-reads the status, so what is shown is what
-     * the next poll will do — never an optimistic guess.
-     */
     function Controls({ status, text, reload }) {
       const [busy, setBusy] = React.useState(false);
       const [error, setError] = React.useState(null);
+      const [draft, setDraft] = React.useState("");
       const pick = text.pick;
       const send = async (set, value) => {
         if (busy) return;
@@ -641,9 +651,27 @@ window.__ModuleLoader__.load({
             ),
           ),
         );
-      const watched = status.watched ?? status.repos ?? [];
-      const sessionRepo = status.scope === "session" ? status.session?.repo ?? null : null;
-      const canAdd = Boolean(sessionRepo) && !watched.includes(sessionRepo);
+      // A toggle states its own condition, so the panel never needs a legend.
+      const toggle = (caption, on, set) =>
+        h(
+          "button",
+          {
+            type: "button",
+            disabled: busy,
+            "aria-pressed": on,
+            onClick: () => void send(set, on ? "off" : "on"),
+            style: { ...styles.seg, ...(on ? styles.segOn : {}) },
+          },
+          caption,
+        );
+      const repos = status.session?.repos ?? status.repos ?? [];
+      const sessionRepo = status.scope === "session" ? (status.session?.repo ?? null) : null;
+      const addDraft = () => {
+        const value = draft.trim();
+        if (!value) return;
+        setDraft("");
+        void send("subscribe", value);
+      };
       return h(
         "div",
         { style: styles.controls },
@@ -668,30 +696,9 @@ window.__ModuleLoader__.load({
           h("span", { style: styles.controlLabel }, pick.clean),
           h(
             "div",
-            { style: styles.repos },
-            seg(
-              pick.clean,
-              [
-                ["off", pick.cleanOff],
-                ["repo", pick.cleanRead],
-                ["all", pick.cleanAll],
-              ],
-              status.clear ?? "off",
-              "clear",
-              "clean",
-            ),
-            h(
-              "button",
-              {
-                type: "button",
-                disabled: busy,
-                "aria-pressed": Boolean(status.sweepOn),
-                onClick: () => void send("sweep", status.sweepOn ? "off" : "on"),
-                style: { ...styles.addBtn, ...(status.sweepOn ? styles.segOn : {}) },
-                title: pick.done,
-              },
-              `${pick.done}${status.sweepOn ? " ✓" : ""}`,
-            ),
+            { style: styles.segGroup },
+            toggle(pick.read, status.clear !== "off", "read"),
+            toggle(pick.done, Boolean(status.sweepOn), "archive"),
           ),
         ),
         h(
@@ -701,39 +708,66 @@ window.__ModuleLoader__.load({
           h(
             "div",
             { style: styles.repos },
-            watched.length === 0
+            repos.length === 0
               ? h("span", { style: styles.controlLabel }, text.none)
-              : watched.map((entry) =>
+              : repos.map((entry) =>
                   h(
                     "span",
                     { key: entry, style: styles.repoChip, title: entry },
                     h("span", { style: styles.repoName }, entry.split("/").pop()),
-                    watched.length > 1
-                      ? h(
-                          "button",
-                          {
-                            type: "button",
-                            disabled: busy,
-                            "aria-label": `${pick.remove} ${entry}`,
-                            onClick: () => void send("unwatch", entry),
-                            style: styles.iconBtn,
-                          },
-                          "×",
-                        )
-                      : null,
+                    h(
+                      "button",
+                      {
+                        type: "button",
+                        disabled: busy,
+                        "aria-label": `${pick.remove} ${entry}`,
+                        onClick: () => void send("unsubscribe", entry),
+                        style: styles.iconBtn,
+                      },
+                      "×",
+                    ),
                   ),
                 ),
-            canAdd
+            h(
+              "span",
+              { style: styles.repoChip },
+              h("input", {
+                value: draft,
+                placeholder: pick.typeRepo,
+                spellCheck: false,
+                disabled: busy,
+                onChange: (event) => setDraft(event.target.value),
+                onKeyDown: (event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    addDraft();
+                  }
+                },
+                style: styles.input,
+              }),
+              h(
+                "button",
+                {
+                  type: "button",
+                  disabled: busy || draft.trim().length === 0,
+                  onClick: addDraft,
+                  style: styles.iconBtn,
+                  "aria-label": pick.add,
+                },
+                "+",
+              ),
+            ),
+            sessionRepo && !repos.includes(sessionRepo)
               ? h(
                   "button",
                   {
                     type: "button",
                     disabled: busy,
-                    onClick: () => void send("watch", sessionRepo),
+                    onClick: () => void send("subscribe", sessionRepo),
                     style: styles.addBtn,
                     title: sessionRepo,
                   },
-                  `+ ${pick.add}`,
+                  pick.addHere,
                 )
               : null,
           ),

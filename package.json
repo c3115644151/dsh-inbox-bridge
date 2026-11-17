@@ -1,6 +1,6 @@
 {
   "name": "dsh-inbox-bridge",
-  "version": "2.12.2",
+  "version": "2.13.0",
   "displayName": "GitHub inbox",
   "description": "GitHub inbox for DeepSeek Harness: reads one identity's view of a repository (or a few) and keeps only the events that concern it (my failing PR, reviews requested of me, my issues, mentions, default-branch CI), queuing them at turn boundaries — polling only while a turn runs.",
   "type": "module",

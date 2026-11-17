@@ -828,7 +828,9 @@ test("clearing threads follows the scope, and off means hands off", () => {
     clearableThreads(threads, { scope: "repo", repo: "c3115644151/dsh-inbox-bridge" }),
     ["11"],
   );
-  assert.deepEqual(clearableThreads(threads, { scope: "all", repo: "x/y" }), ["11", "22"]);
+  // A repository this instance does not read is never marked read, whatever
+  // scope is asked for: that is a decision for a person.
+  assert.deepEqual(clearableThreads(threads, { scope: "all", repo: "x/y" }), []);
 });
 
 test("a poll marks the threads it just read as read, and says how many", () => {

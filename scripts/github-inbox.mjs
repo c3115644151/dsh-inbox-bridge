@@ -101,9 +101,10 @@ Usage:
   --repo <owner/name>  watch a repository; repeat for several
                        (default: INBOX_REPO, comma or space separated, else this git remote)
   --clear <scope>      mark the notification threads this poll read as read:
-                       repo (watched repositories), all (whole account), off (default
-                       off; the bridge sets it). GitHub has no "done" API, so this
-                       clears the unread badge, not the inbox history.
+                       repo (the watched repositories) or off (default off; the
+                       bridge sets it). GitHub has no "done" API, so this clears
+                       the unread badge, not the inbox history. Only threads from
+                       the repositories this instance reads are touched.
 
 State:   .work/github-inbox/state.json (one slice per repository)
 History: .work/github-inbox/pending.md`;
@@ -986,10 +987,11 @@ export function notificationsSince(state, cwd) {
  */
 export function clearableThreads(notifications = [], { scope = "repo", repo = REPO } = {}) {
   if (scope === "off") return [];
-  const wanted = (Array.isArray(notifications) ? notifications : []).filter((thread) => {
-    if (scope === "all") return true;
-    return thread?.repository?.full_name === repo;
-  });
+  // Only the repositories this instance reads. Marking the rest of the account
+  // read is a decision for a person, not for a background poll.
+  const wanted = (Array.isArray(notifications) ? notifications : []).filter(
+    (thread) => thread?.repository?.full_name === repo,
+  );
   return wanted.map((thread) => String(thread?.id ?? "")).filter((id) => id.length > 0);
 }
 
@@ -1003,15 +1005,6 @@ export function markThreadsRead(ids = [], cwd) {
     else failed.push({ id, reason: result.reason });
   }
   return { cleared, failed };
-}
-
-/**
- * Every unread thread on the account, across repositories. Only used when the
- * user asked for `clear: "all"`: the repo-scoped feed cannot see other projects.
- */
-export function fetchAccountThreads(cwd) {
-  const result = ghJson(["api", "notifications?all=false&per_page=50"], { cwd });
-  return result.ok && Array.isArray(result.value) ? result.value : [];
 }
 
 export function fetchFeed(state, cwd) {
@@ -1073,8 +1066,10 @@ export function parseArgs(argv = []) {
       continue;
     }
     if (options.expectClear) {
-      if (!["off", "repo", "all"].includes(argument)) {
-        throw new Error(`not a clearing scope: ${argument} (use off, repo or all)`);
+      if (!["off", "repo"].includes(argument)) {
+        throw new Error(
+          `not a clearing scope: ${argument} (use off or repo; clearing the whole account is not supported)`,
+        );
       }
       options.clear = argument;
       options.expectClear = false;
@@ -1176,16 +1171,6 @@ function runPoll({ repoRoot, stateFile, pendingFile, state, options, now, me, re
         events: result.fresh.length,
       },
     };
-  }
-
-  if (options.clear === "all" && activeIdentity?.kind !== "app") {
-    // The repo-scoped feed only sees the watched repositories; `all` means the
-    // whole account, which is what makes the unread badge stop growing.
-    const accountThreads = fetchAccountThreads(repoRoot);
-    const ids = clearableThreads(accountThreads, { scope: "all" });
-    const sweep = markThreadsRead(ids, repoRoot);
-    cleared.push(...sweep.cleared);
-    clearFailed.push(...sweep.failed);
   }
 
   if (Object.keys(nextRepos).length === 0) {

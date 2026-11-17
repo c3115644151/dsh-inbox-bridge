@@ -2,6 +2,11 @@
 
 Format: keep a short entry per released version. Dates are UTC.
 
+## 2.13.0
+
+- 面板文案：`可唤醒` → `主动唤醒`；`清理范围` → `消息清理`，从三选一改成两个开关（已读 / 归档）。
+- 清理只作用于订阅的仓库：去掉 `clear: "all"`（清整个账号），旧配置里的 `all` 按 `repo` 载入，CLI 也拒绝 `--clear all`。
+- 订阅按会话保存（`prefs.sessionRepos`）：每个会话默认只订阅自己所在的仓库，可自行增减；卡片里可输入 `owner/name` 手动添加，实例的轮询集合随之扩展。
 ## 2.12.2
 
 - 通知首行的身份段多了一个冒号（`读取身份：本机 gh：`），去掉。

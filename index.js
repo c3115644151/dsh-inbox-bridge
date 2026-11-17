@@ -43,8 +43,12 @@ const SWEEP_SCRIPT = fileURLToPath(new URL("./scripts/clear-inbox.mjs", import.m
  * Kept pure so the rules are testable without a running host: what a click means
  * is exactly this, and `apply` only writes the result.
  */
-export function preferenceNext(current = {}, action, value = "", options = {}) {
+export function preferenceNext(current = {}, action = "", value = "", options = {}) {
   const next = { ...current };
+  const sessionId = options.sessionId ?? null;
+  const polled = () =>
+    options.repos?.length ? options.repos : options.repo ? [options.repo] : [];
+
   if (action === "delivery") {
     next.delivery = value;
     // `wakeup` without roles wakes nobody, which looks broken; `quiet` with roles
@@ -53,20 +57,34 @@ export function preferenceNext(current = {}, action, value = "", options = {}) {
     else if (!next.wakeOn?.length) next.wakeOn = ["reviewer"];
     return next;
   }
-  if (action === "clear") {
-    next.clear = value;
+  // Cleaning is decided per repository, never per account: the queue only holds
+  // events from repositories this instance reads, so marking anything else read
+  // would be acting outside the operator's stated scope.
+  if (action === "read") {
+    next.clear = value === "off" ? "off" : "repo";
     return next;
   }
-  if (action === "sweep") {
+  if (action === "archive") {
     // `null` overrides a profile that configures a sweep; deleting the key would
     // only fall back to that profile and stay on.
     next.sweep = value === "on" ? { args: [SWEEP_SCRIPT, "--json"] } : null;
     return next;
   }
-  if (action === "watch" || action === "unwatch") {
-    const watched = options.repos?.length ? options.repos : options.repo ? [options.repo] : [];
-    next.repos =
-      action === "watch" ? [...new Set([...watched, value])] : watched.filter((entry) => entry !== value);
+  if (action === "subscribe" || action === "unsubscribe") {
+    if (typeof value !== "string" || !/^[\w.-]+\/[\w.-]+$/u.test(value)) return null;
+    if (!sessionId) return null;
+    // A session subscribes; the instance follows, because it is the one that
+    // polls. Without this the subscription would never see a fetch.
+    const current_list =
+      next.sessionRepos?.[sessionId] ?? (options.sessionRepo ? [options.sessionRepo] : []);
+    const list =
+      action === "subscribe"
+        ? [...new Set([...current_list, value])]
+        : current_list.filter((entry) => entry !== value);
+    next.sessionRepos = { ...(next.sessionRepos ?? {}), [sessionId]: list };
+    if (action === "subscribe" && !polled().includes(value)) {
+      next.repos = [...new Set([...polled(), value])];
+    }
     return next;
   }
   return null;
@@ -212,12 +230,21 @@ export function apply(ctx, config) {
     Object.assign(options, merged);
     return merged;
   };
+  /**
+   * What one session watches. A session chooses for itself; until it does, it
+   * watches the repository it lives in rather than everything the instance
+   * polls — that is what keeps two sessions on one machine apart.
+   */
+  const sessionReposOf = (sessionId, repo) => {
+    const explicit = sessionId ? prefs.sessionRepos?.[sessionId] : null;
+    if (Array.isArray(explicit)) return explicit;
+    return repo ? [repo] : [];
+  };
   if (Object.keys(prefs).length > 0) {
     try {
       Object.assign(options, mergeConfig({ ...baseConfig, ...prefs }));
     } catch {
-      // A stale overlay must not stop the instance; the loop below reports it.
-      prefs = {};
+      // A stale overlay must not stop the instance; the loop below reports it.      prefs = {};
     }
   }
   const agents = new Map();
@@ -287,10 +314,15 @@ export function apply(ctx, config) {
    */
   const uiPayload = (sessionId = null) => {
     const agent = sessionId ? agents.get(sessionId) : null;
+    const repo = agent ? repoOf(agent) : null;
+    // What this session watches: its own choice if it made one, otherwise the
+    // repository it lives in. The instance polls the union of these.
+    const watched = sessionId ? sessionReposOf(sessionId, repo) : [];
     const session = agent
       ? {
           id: sessionId,
-          repo: repoOf(agent),
+          repo,
+          repos: watched,
           roles: options.roles ?? [],
         }
       : null;
@@ -307,6 +339,7 @@ export function apply(ctx, config) {
       token: uiToken,
       overlay: Object.keys(prefs),
       sweepOn: Boolean(options.sweep),
+      sessionId,
     };
   };
 
@@ -654,6 +687,10 @@ export function apply(ctx, config) {
             }
             const action = url.searchParams.get("set") ?? "";
             const value = url.searchParams.get("value") ?? "";
+            const sessionId = url.searchParams.get("session") || null;
+            // Which repository the session lives in, so "subscribe my repo" and
+            // "unsubscribe the last one" know what the default is.
+            const sessionRepo = sessionId ? repoOf(agents.get(sessionId)) : null;
             try {
               if (action === "reset") {
                 prefs = {};
@@ -662,9 +699,13 @@ export function apply(ctx, config) {
                 Object.assign(options, mergeConfig(baseConfig));
                 log("preferences reset to the profile");
                 writeRuntime();
-                return reply(200, { ok: true, status: uiPayload() });
+                return reply(200, { ok: true, status: uiPayload(sessionId) });
               }
-              const next = preferenceNext(prefs, action, value, options);
+              const next = preferenceNext(prefs, action, value, {
+                ...options,
+                sessionId,
+                sessionRepo,
+              });
               if (next === null) {
                 return reply(400, { ok: false, error: `unknown setting: ${action || "-"}` });
               }
@@ -672,7 +713,7 @@ export function apply(ctx, config) {
             } catch (error) {
               return reply(400, { ok: false, error: describe(error) });
             }
-            log(`preference: ${action} ${value || ""} → delivery ${options.delivery}, clear ${options.clear}, sweep ${options.sweep?.when ?? "off"}, repos ${(options.repos ?? []).join(",") || "-"}`);
+            log(`preference: ${action} ${value || ""} (session ${sessionId ?? "-"}) → delivery ${options.delivery}, clear ${options.clear}, sweep ${options.sweep?.when ?? "off"}, repos ${(options.repos ?? []).join(",") || "-"}`);
             writeRuntime();
             return reply(200, { ok: true, status: uiPayload() });
           },
@@ -917,10 +958,14 @@ export function mergeConfig(config) {
       `inbox-bridge: \`wakesPerHour\` must be a non-negative integer, got ${JSON.stringify(wakesPerHour)}`,
     );
   }
-  const clear = given.clear ?? DEFAULTS.clear;
-  if (!["off", "repo", "all"].includes(clear)) {
+  // `all` used to mean "clear the whole account". Marking other repositories'
+  // notifications read is outside what this instance watches, so it is gone;
+  // a profile that still says `all` keeps working as `repo`.
+  const requested = given.clear ?? DEFAULTS.clear;
+  const clear = requested === "all" ? "repo" : requested;
+  if (!["off", "repo"].includes(clear)) {
     throw new Error(
-      `inbox-bridge: \`clear\` must be "off", "repo" or "all", got ${JSON.stringify(clear)}`,
+      `inbox-bridge: \`clear\` must be "off" or "repo", got ${JSON.stringify(requested)}`,
     );
   }
   const sweep = given.sweep ?? DEFAULTS.sweep;
@@ -1159,16 +1204,19 @@ export function buildUiPayload({
   session = null,
 }) {
   const configured = options.repos?.length > 0 ? options.repos : options.repo ? [options.repo] : [];
-  // A session sees exactly what a poll would deliver to it: its own repository
-  // and its own roles. Without a session (or without a repository) the payload
-  // describes the whole instance, and says so.
+  // A session sees exactly what a poll would deliver to it: the repositories it
+  // watches and its own roles. Without a session (or without a repository) the
+  // payload describes the whole instance, and says so.
   const scoped = session !== null;
-  const repos = scoped ? (session.repo ? [session.repo] : []) : configured;
+  const repos = scoped
+    ? (session.repos ?? (session.repo ? [session.repo] : []))
+    : configured;
+  const watchedRepos = new Set(repos.map((entry) => String(entry).toLowerCase()));
   const roles = scoped ? (session.roles?.length > 0 ? session.roles : []) : [];
   const inScope = (event) => {
     if (!scoped) return true;
-    if (!session.repo) return false;
-    if (String(event.repo ?? "").toLowerCase() !== String(session.repo).toLowerCase()) return false;
+    if (watchedRepos.size === 0) return false;
+    if (!watchedRepos.has(String(event.repo ?? "").toLowerCase())) return false;
     if (roles.length === 0) return true;
     const role = event.role ?? "any";
     return role === "any" || roles.includes(role);
@@ -1194,8 +1242,10 @@ export function buildUiPayload({
   return {
     at: new Date(now).toISOString(),
     label: options.label ?? DEFAULTS.label,
-    scope: scoped ? (session.repo ? "session" : "unbound") : "instance",
-    session: scoped ? { id: session.id ?? null, repo: session.repo ?? null, roles } : null,
+    scope: scoped ? (repos.length > 0 ? "session" : "unbound") : "instance",
+    session: scoped
+      ? { id: session.id ?? null, repo: session.repo ?? null, repos, roles }
+      : null,
     repos,
     // What this instance polls at all, so a session can tell "nothing for me"
     // from "nobody watches my repository".
