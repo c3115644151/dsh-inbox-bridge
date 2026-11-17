@@ -555,52 +555,77 @@ export function extractIssueEvents(issues = [], state = {}, { me = null } = {}) 
   return events;
 }
 
+const SEVERITY_ORDER = ["critical", "high", "medium", "low"];
+
+function severityRank(word) {
+  const index = SEVERITY_ORDER.indexOf(word);
+  return index < 0 ? SEVERITY_ORDER.length : index;
+}
+
 /**
- * Security advisories are repository facts, not personal ones: they belong to
- * whoever maintains the repository, so they carry role `any` and are never the
- * reason to wake a session (unless `wakeOn` names `any`).
- * The key is the alert number alone, so an open alert stays one entry while it
- * is being fixed, and closes by itself once the alert is resolved — a fixed
- * vulnerability stops being reported, and `closeResolved` settles it.
+ * Open advisories for the watched repository, one line per source.
+ *
+ * A real repository can carry dozens of open alerts at once (a single
+ * dependency can account for twenty), so listing them one by one buries the
+ * queue and turns one fix into twenty notices. What a maintainer needs to know
+ * is that the repository has open advisories, how bad the worst of them are,
+ * and what they are about — so each source collapses into one entry with a
+ * stable key, and it closes by itself once no open alert of that source is
+ * left.
  */
 export function extractSecurityEvents(alerts = []) {
-  const events = [];
+  const groups = new Map();
   for (const entry of Array.isArray(alerts) ? alerts : []) {
     const alert = entry?.alert;
-    const number = alert?.number;
-    if (number == null) continue;
-    if (entry.source === "dependabot") {
-      const severity = singleLine(alert?.security_advisory?.severity ?? "unknown").toLowerCase();
-      const pkg = singleLine(alert?.dependency?.package?.name ?? "");
-      const summary = singleLine(alert?.security_advisory?.summary ?? "vulnerable dependency");
-      events.push({
-        key: `dependabot:${number}`,
-        kind: "security",
-        role: "any",
-        repo: activeRepo,
-        label: "Dependabot",
-        ref: pkg ? `${pkg} #${number}` : `#${number}`,
-        title: compact([severity, summary]),
-        url: alert?.html_url ?? "",
-        at: alert?.updated_at ?? alert?.created_at ?? null,
-      });
-      continue;
-    }
-    if (entry.source === "code-scanning") {
-      const rule = singleLine(alert?.rule?.description ?? alert?.rule?.id ?? "code scanning alert");
-      const where = singleLine(alert?.most_recent_instance?.location?.path ?? "");
-      events.push({
-        key: `code-scanning:${number}`,
-        kind: "security",
-        role: "any",
-        repo: activeRepo,
-        label: "Code scanning",
-        ref: where ? `${where} #${number}` : `#${number}`,
-        title: rule,
-        url: alert?.html_url ?? "",
-        at: alert?.updated_at ?? alert?.created_at ?? null,
-      });
-    }
+    if (!alert) continue;
+    const source = entry?.source === "code-scanning" ? "code-scanning" : "dependabot";
+    const group = groups.get(source) ?? {
+      source,
+      count: 0,
+      severity: new Map(),
+      names: [],
+      at: null,
+      url: `https://github.com/${activeRepo}/security/${source === "code-scanning" ? "code-scanning" : "dependabot"}`,
+    };
+    group.count += 1;
+    const severity =
+      source === "dependabot"
+        ? singleLine(alert?.security_advisory?.severity ?? "unknown").toLowerCase()
+        : singleLine(
+            alert?.rule?.security_severity_level ?? alert?.rule?.severity ?? "",
+          ).toLowerCase();
+    if (severity) group.severity.set(severity, (group.severity.get(severity) ?? 0) + 1);
+    const name =
+      source === "dependabot"
+        ? singleLine(alert?.dependency?.package?.name ?? "")
+        : singleLine(alert?.most_recent_instance?.location?.path ?? "");
+    if (name && !group.names.includes(name)) group.names.push(name);
+    const at = alert?.updated_at ?? alert?.created_at ?? null;
+    if (at && (!group.at || String(at).localeCompare(String(group.at)) > 0)) group.at = at;
+    groups.set(source, group);
+  }
+
+  const events = [];
+  for (const group of groups.values()) {
+    const severities = [...group.severity.entries()]
+      .sort((left, right) => severityRank(left[0]) - severityRank(right[0]))
+      .map(([word, count]) => `${count} ${word}`);
+    const shown = group.names.slice(0, 3).join(", ");
+    const names = group.names.length > 3 ? `${shown} …` : shown;
+    const count = `${group.count} open ${group.count === 1 ? "advisory" : "advisories"}`;
+    const spread = severities.length > 0 ? ` (${severities.join(", ")})` : "";
+    const what = names ? `: ${names}` : "";
+    events.push({
+      key: group.source,
+      kind: "security",
+      role: "any",
+      repo: activeRepo,
+      label: group.source === "code-scanning" ? "Code scanning" : "Dependabot",
+      ref: "",
+      title: `${count}${spread}${what}`,
+      url: group.url,
+      at: group.at,
+    });
   }
   return events;
 }
@@ -803,7 +828,7 @@ export function formatEvent(event) {
     case "issue":
       return compact([`[Issue${role}] ${event.ref ?? ""}:`, title, url]);
     case "security":
-      return compact([`[${event.label ?? "Security"}] ${event.ref ?? ""}:`, title, url]);
+      return compact([`[${event.label ?? "Security"}]${event.ref ? ` ${event.ref}` : ""}`, title, url]);
     default:
       return compact([`[${event.label ?? event.kind ?? "event"}${role}]`, title, url]);
   }
@@ -1051,7 +1076,19 @@ export function fetchSecurityAlerts(cwd) {
   for (const { source, path } of wanted) {
     const result = ghJson(["api", `repos/${activeRepo}/${path}?state=open&per_page=20`], { cwd });
     if (!result.ok) {
-      notes.push(`${source} unavailable (${result.reason})`);
+      const reason = String(result.reason ?? "");
+      // gh reports a 404 "no analysis found" as a scope problem and suggests
+      // admin:repo_hook, which cannot read code scanning. Say what actually
+      // helps instead of repeating a hint that leads nowhere.
+      const noAnalysis = reason.includes("no analysis found");
+      const needsScope = !noAnalysis && reason.includes("admin:repo_hook");
+      notes.push(
+        noAnalysis
+          ? `${source} is not set up in this repository (no analysis found)`
+          : needsScope
+            ? `${source} needs the security_events scope (gh auth refresh -h github.com -s security_events)`
+            : `${source} unavailable (${reason})`,
+      );
       continue;
     }
     for (const alert of Array.isArray(result.value) ? result.value : []) {
