@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "GitHub inbox",
-    "description": "Lets the agent keep watch over your repository the way a maintainer would: it reads the GitHub repositories a session subscribes to, keeps the events that concern you — failed checks, reviews waiting for you, issues assigned to you, comments that mention you — and puts them in front of the agent in its own turn, opening one by itself when the session is idle and the fact matters, so a broken check gets fixed and a review request gets reviewed without waiting for you. A chip in the status row lists them and switches delivery, message clearing and subscriptions. Read-only; waking is opt-in and gated; no request while idle.",
+    "description": "Lets the agent keep watch over your repository the way a maintainer would: it reads the GitHub repositories a session subscribes to, keeps the events that concern you — failed checks, reviews waiting for you, issues assigned to you, comments that mention you — and puts them in front of the agent in its own turn, opening one by itself when the session is idle and the fact matters, so a broken check gets fixed and a review request gets reviewed without waiting for you. A chip in the status row lists them and switches delivery, message clearing and subscriptions. Read-only; waking is opt-in and gated, and reading while idle happens only in the mode that can wake — the default queue-only mode makes no request while idle.",
     "detail": "docs/DETAIL.md"
   }
 }
