@@ -1057,7 +1057,9 @@ export function parseArgs(argv = []) {
       continue;
     }
     if (options.expectRepo) {
-      options.repos.push(argument);
+      // A caller that hands over a list ("--repo a,b") means several watches,
+      // same as INBOX_REPO; a repository name never contains a comma.
+      options.repos.push(...argument.split(/[,\s]+/u).filter(Boolean));
       options.expectRepo = false;
       continue;
     }

@@ -9,6 +9,8 @@ Format: keep a short entry per released version. Dates are UTC.
 - 消息清理合并成一档三态（关闭 / 已读 / 归档），一个选择同时决定标已读与归档。
 - 订阅支持整条仓库链接：https://github.com/owner/repo、…/repo.git、git@github.com:owner/repo.git 都按 owner/repo 处理；输入框独占一行，不再被仓库名挤掉。
 - 每个按钮加了悬停说明；胶囊图标在有未处理事件时显示蓝点。
+- 修复桌面应用里轮询一直失败的两处：插件进程内跑子命令时用的是宿主二进制，只有设置 `ELECTRON_RUN_AS_NODE` 才会像 node 一样执行；`--repo a,b` 现在按两个仓库处理（以前被当成一个非法名字，整次轮询失败）。
+
 ## 2.14.0
 
 - 归档所用的浏览器在 macOS 与 Linux 上也能找到（Chrome、Edge、Chromium、Brave）；找不到时列出的候选名会写进错误信息。

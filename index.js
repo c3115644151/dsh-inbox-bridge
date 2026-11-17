@@ -1119,7 +1119,11 @@ function identityEnv(identity) {
 function runCommand(spec, options, extraEnv = {}) {
   const command = spec.command ?? "node";
   const args = Array.isArray(spec.args) ? spec.args : [];
-  const useNode = command === "node";
+  // "node" — or the binary this plugin itself runs inside, which is Electron in
+  // the desktop app — means "run this with the host's JS runtime". The Electron
+  // binary only behaves like node once ELECTRON_RUN_AS_NODE is set, so both
+  // spellings have to take the same branch.
+  const useNode = command === "node" || command === process.execPath;
   const ackArgs =
     useNode && (spec.args ?? []).includes("ack")
       ? [...args, ...(extraEnv.INBOX_BRIDGE_DONE === "1" ? ["--done"] : [])]

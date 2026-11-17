@@ -640,6 +640,11 @@ test("parseArgs collects repeated --repo and rejects a malformed name", () => {
   assert.throws(() => parseArgs(["--repo", "not-a-repo"]), /not an owner\/name repository/u);
 });
 
+test("a comma-joined --repo is a list, the way the plugin passes it", () => {
+  const options = parseArgs(["--poll", "--repo", "a/b,c/d"]);
+  assert.deepEqual(options.repos, ["a/b", "c/d"]);
+});
+
 // ---------------------------------------------------------------------------
 // Identity: which relationship makes an event mine
 // ---------------------------------------------------------------------------

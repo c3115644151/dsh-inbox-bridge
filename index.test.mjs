@@ -430,6 +430,34 @@ test("an agent that is mid-turn when the plugin loads polls right away", async (
   }
 });
 
+test("a poll runs through the host runtime in node mode", async () => {
+  const root = mkdtempSync(join(tmpdir(), "inbox-node-mode-"));
+  const marker = join(root, "mode.txt");
+  try {
+    // Inside the desktop app process.execPath is the Electron binary, which only
+    // acts like node with ELECTRON_RUN_AS_NODE set; without it the poll dies with
+    // the GUI's argv parsing and the row stays stale forever.
+    const ctx = fakeContext([fakeAgent(root)]);
+    const { apply } = await import("./index.js");
+    const script = `require("node:fs").writeFileSync(${JSON.stringify(marker)}, String(process.env.ELECTRON_RUN_AS_NODE));console.log("{\\"events\\":[]}")`;
+    apply(ctx, mergeConfig({
+      cwd: root,
+      repo: "owner/name",
+      poll: { command: process.execPath, args: ["-e", script] },
+      ack: { command: process.execPath, args: ["-e", "console.log('{}')"] },
+    }));
+    ctx.emit("agent/status", { agent: { session: { id: "session-1" } }, status: "running" });
+    const fs = await import("node:fs");
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline && !fs.existsSync(marker)) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(fs.readFileSync(marker, "utf8"), "1", "the host runtime did not run in node mode");
+  } finally {
+    removeTree(root);
+  }
+});
+
 test("a poll that cannot reach the source says so in the log", async () => {
   const root = mkdtempSync(join(tmpdir(), "inbox-skip-"));
   const logPath = join(root, ".work", "inbox-bridge", "plugin.log");
