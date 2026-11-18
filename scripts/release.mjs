@@ -133,11 +133,13 @@ writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`, "utf8");
 writeFileSync(changelogPath, changelog.replace(PENDING_HEADING, `## ${version}`), "utf8");
 log(`package.json ${current} -> ${version}; CHANGELOG heading -> ${version}`);
 
-// 6. The documentation gate runs on the bumped tree, before anything is
-// committed, because docs:check compares the three places that name a version.
-log("running docs:check");
-npmCmd(["run", "docs:check"]);
-log("docs:check passed");
+// 6. The documentation gate runs after the market rebuild (step 7), not here.
+// `docs:check` compares the version in package.json with the one pinned in
+// docs/index.json, and that pin cannot name the new version until the release
+// commit exists and `npm run market` has run. Checking here would always fail
+// with "index pins the old version" — which is why two releases had to be
+// finished by hand. The gate below still runs before anything is pushed or
+// published, so nothing external happens on an inconsistent tree.
 
 const commitEnv = { GIT_AUTHOR_NAME: AUTHOR.name, GIT_AUTHOR_EMAIL: AUTHOR.email, GIT_COMMITTER_NAME: AUTHOR.name, GIT_COMMITTER_EMAIL: AUTHOR.email };
 
