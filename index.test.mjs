@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { DEFAULT_ACK_HINT, audienceFor, buildMessage, buildUiPayload, deliver, deliveryTargets, detectRepo, eventTier, filterUndelivered, formatEvents, fromHostPage, matchesWatch, mergeConfig, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, sessionLabel, sessionTag, wakePlan } from "./index.js";
+import { DEFAULT_ACK_HINT, admissionVerdict, audienceFor, buildMessage, buildUiPayload, deliver, deliveryTargets, detectRepo, eventTier, filterUndelivered, formatEvents, fromHostPage, matchesWatch, mergeConfig, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, sessionLabel, sessionTag, wakePlan } from "./index.js";
 
 const idle = { status: "idle" };
 const running = { status: "running" };
@@ -1458,4 +1458,36 @@ test("only the host's own page may read or change this instance", () => {
     fromHostPage(ask({ origin: "http://elsewhere.test" }), { origin: "http://elsewhere.test" }),
     false,
   );
+});
+
+// The host's own admission is the rule when it exists: it knows the peer's
+// credential and the host fence, which no header can stand in for.
+test("the host decides who may read this instance, and its header fence is the fallback", () => {
+  const ask = (headers) =>
+    new Request("http://127.0.0.1:3281/inbox-bridge/status.json", { headers });
+  const bare = ask({});
+  const sameOrigin = ask({ "sec-fetch-site": "same-origin" });
+
+  assert.equal(admissionVerdict(bare, { connection: { requestRejection: () => 401 } }), 401);
+  assert.equal(admissionVerdict(bare, { connection: { requestRejection: () => 403 } }), 403);
+  // The host vouching for a request outranks anything the request says about
+  // itself -- the desktop shell forwards the page's fetch with no fetch site.
+  assert.equal(admissionVerdict(bare, { connection: { requestRejection: () => undefined } }), null);
+  // A host that throws is not vouching for anybody.
+  assert.equal(
+    admissionVerdict(
+      bare,
+      {
+        connection: {
+          requestRejection: () => {
+            throw new Error("boom");
+          },
+        },
+      },
+    ),
+    403,
+  );
+  // Older hosts have no service: the header fence stands in, weaker but honest.
+  assert.equal(admissionVerdict(bare, { connection: null }), 403);
+  assert.equal(admissionVerdict(sameOrigin, { connection: {} }), null);
 });

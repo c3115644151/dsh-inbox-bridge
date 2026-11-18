@@ -30,7 +30,7 @@ export const name = "inbox-bridge";
  * without it (a terminal-only run) still polls and delivers, just with no visual
  * surface.
  */
-export const inject = { agents: true, webServer: false };
+export const inject = { agents: true, connection: false, webServer: false };
 
 /** The bridge CLI that ships with this plugin; commands run it, not a project copy. */
 const CLI = fileURLToPath(new URL("./scripts/inbox-bridge.mjs", import.meta.url));
@@ -981,6 +981,14 @@ export function apply(ctx, config) {
     routeReady = true;
     let served = 0;
     let refusedCount = 0;
+    // The host's own admission service, when this DSH has one. Read once: the
+    // service does not come and go while the routes stay registered.
+    let connection = null;
+    try {
+      connection = ctx.connection ?? null;
+    } catch {
+      connection = null;
+    }
     // A caller that is not the host page tells us nothing useful, but its
     // headers tell us why the gate said no -- only when it first happens, and
     // every tenth after, so a stray client cannot flood the log.
@@ -996,14 +1004,27 @@ export function apply(ctx, config) {
     };
     // One answer for every caller that is not the host's page: no detail about
     // what exists here, and no hint that a setting was within reach.
-    const refused = () =>
-      new Response(`${JSON.stringify({ ok: false, error: "not this page" })}\n`, {
-        status: 403,
-        headers: {
-          "content-type": "application/json; charset=utf-8",
-          "cache-control": "no-store",
+    const refused = (status = 403) =>
+      new Response(
+        `${JSON.stringify({ ok: false, error: status === 401 ? "not signed in" : "not this page" })}\n`,
+        {
+          status,
+          headers: {
+            "content-type": "application/json; charset=utf-8",
+            "cache-control": "no-store",
+          },
         },
-      });
+      );
+    const refusalOf = (request) => admissionVerdict(request, { connection });
+    const turnAway = (request) => {
+      const verdict = refusalOf(request);
+      if (verdict === null) return null;
+      refusedCount += 1;
+      if (refusedCount === 1 || refusedCount % 10 === 0) {
+        log(`status refused ${refusedCount} time(s): ${verdict} ${whyRefused(request)}`);
+      }
+      return refused(verdict);
+    };
     try {
       ctx.effect(() =>
         server.register({
@@ -1013,13 +1034,8 @@ export function apply(ctx, config) {
             served += 1;
             // Only the page the host serves reads this: another tab on the same
             // machine must not learn which repositories this instance watches.
-            if (!fromHostPage(request)) {
-              refusedCount += 1;
-              if (refusedCount === 1 || refusedCount % 10 === 0) {
-                log(`status refused ${refusedCount} time(s): ${whyRefused(request)}`);
-              }
-              return refused();
-            }
+            const turnedAway = turnAway(request);
+            if (turnedAway) return turnedAway;
             // Which session asked decides what is shown: two sessions in
             // different repositories must not read the same list.
             let sessionId = null;
@@ -1075,7 +1091,8 @@ export function apply(ctx, config) {
             }
             // Changing this instance is the host page's privilege twice over:
             // it must be that page, and it must carry this process's token.
-            if (!fromHostPage(request)) return refused();
+            const turnedAway = turnAway(request);
+            if (turnedAway) return turnedAway;
             if (url.searchParams.get("token") !== uiToken) {
               return reply(403, { ok: false, error: "token" });
             }
@@ -1127,7 +1144,8 @@ export function apply(ctx, config) {
           resource: async (request) => {
             // The log is not a surface for other pages: only our own may write
             // to it, or any local tab could fill it with whatever it likes.
-            if (!fromHostPage(request)) return refused();
+            const turnedAway = turnAway(request);
+            if (turnedAway) return turnedAway;
             // Routes answer GET/HEAD only, so the page reports through the query
             // string; a JSON body is still accepted when a caller sends one.
             let message = null;
@@ -1359,6 +1377,39 @@ export function matchesWatch(agent, event, options, cache) {
   const role = event?.role ?? "any";
   if (roles.length > 0 && role !== "any" && !roles.includes(role)) return false;
   return true;
+}
+
+/**
+ * Whether this request may reach the instance: `401`/`403` to refuse, `null` to
+ * let it through.
+ *
+ * The host knows better than we can: `connection.requestRejection` applies the
+ * Host/Origin fence and then checks the caller's signed browser or API
+ * credential, so it refuses a rebound hostname, a cross-site page, and a bare
+ * client that has no session at all — and admits the GUI, including the desktop
+ * shell, which forwards the page's own fetch over its IPC bridge with the
+ * browser's credentials attached.
+ *
+ * Older hosts have no such service. There the only evidence is what the browser
+ * says about itself (see {@link fromHostPage}), and that has to stand in for the
+ * credential check — weaker, which is why it is the fallback rather than the rule.
+ */
+export function admissionVerdict(request, { connection = null } = {}) {
+  const judge = connection && typeof connection.requestRejection === "function" ? connection.requestRejection : null;
+  if (judge) {
+    let verdict;
+    try {
+      verdict = judge.call(connection, request);
+    } catch {
+      // A host that throws is not vouching for anybody; fall through to the
+      // header evidence rather than letting the request in.
+      verdict = undefined;
+      return fromHostPage(request) ? null : 403;
+    }
+    if (verdict === 401 || verdict === 403) return verdict;
+    return null;
+  }
+  return fromHostPage(request) ? null : 403;
 }
 
 /**
