@@ -144,11 +144,19 @@ log("docs:check passed");
 
 const commitEnv = { GIT_AUTHOR_NAME: AUTHOR.name, GIT_AUTHOR_EMAIL: AUTHOR.email, GIT_COMMITTER_NAME: AUTHOR.name, GIT_COMMITTER_EMAIL: AUTHOR.email };
 
-// 7. Commit everything (version, changelog, market index) as one release commit.
+// 7. Commit the version bump first, then rebuild the market index so its pin
+// names the release commit itself (the index must be repinned afterwards —
+// `source.commit` has to exist, so the pin commit comes second).
 runLoud("git", ["add", "-A"]);
 runLoud("git", ["commit", "-m", `${type}: ${subject} (${version})`], { env: commitEnv });
 const releaseCommit = run("git", ["rev-parse", "HEAD"], { quiet: true }).trim();
 log(`release commit ${releaseCommit.slice(0, 7)}`);
+
+log("rebuilding the market index");
+npmCmd(["run", "market"]);
+npmCmd(["run", "docs:check"]);
+runLoud("git", ["add", "-A"]);
+runLoud("git", ["commit", "-m", `chore: release ${version} in the market index`], { env: commitEnv });
 
 // 8. Push with retries: this network drops the connection often enough that a
 // single failure should not leave a half-finished release behind.
