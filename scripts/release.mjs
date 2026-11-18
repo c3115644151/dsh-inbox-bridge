@@ -135,10 +135,7 @@ log(`package.json ${current} -> ${version}; CHANGELOG heading -> ${version}`);
 
 // 6. The documentation gate runs on the bumped tree, before anything is
 // committed, because docs:check compares the three places that name a version.
-// The market index is part of that agreement: build it here too, so the gate
-// sees the pin that will be committed.
 log("running docs:check");
-npmCmd(["run", "market"]);
 npmCmd(["run", "docs:check"]);
 log("docs:check passed");
 
