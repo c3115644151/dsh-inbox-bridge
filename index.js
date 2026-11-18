@@ -22,6 +22,7 @@ import { randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { repoOfKey, splitKey } from "./scripts/key.mjs";
 
 export const name = "inbox-bridge";
 /**
@@ -68,14 +69,9 @@ export function repoFromInput(value) {
  * The collector prefixes every key with the repository it came from, so a fact
  * whose `repo` field went missing in a round trip can still be routed. This is
  * the safety net, not the primary source: the field is what the queue stores.
+ * The parse lives in `scripts/key.mjs`, shared with the queue.
  */
-export function repoOfKey(key) {
-  if (typeof key !== "string") return null;
-  const cut = key.indexOf("#");
-  if (cut <= 0) return null;
-  const repo = key.slice(0, cut);
-  return /^[\w.-]+\/[\w.-]+$/u.test(repo) ? repo : null;
-}
+export { repoOfKey, splitKey };
 
 export function preferenceNext(current = {}, action = "", value = "", options = {}) {
   const next = { ...current };
@@ -710,12 +706,7 @@ export function apply(ctx, config) {
         }
         return audiences.get(cacheKey);
       };
-      const roleAllows = (agent, event) => {
-        const roles = options.roles?.length ? options.roles : [];
-        if (roles.length === 0) return true;
-        const role = event?.role ?? "any";
-        return role === "any" || roles.includes(role);
-      };
+      const roleAllows = (agent, event) => roleAllowed(options.roles, event);
       const batches = new Map();
       for (const agent of ready) {
         const mine = events.filter((event) => audienceOf(event).has(keyOf(agent)) && roleAllows(agent, event));
@@ -1365,18 +1356,19 @@ export function audienceFor(tier, repo, agents = [], { owns = () => false, repoN
   return latest ? [key(latest)] : [];
 }
 
-export function matchesWatch(agent, event, options, cache) {
-  const eventRepo = event?.repo ?? options?.repo ?? null;
-  if (eventRepo) {
-    const sessionRepo = repoOf(agent, options, cache);
-    // Silence is better than telling the wrong session about someone else's
-    // repository: a session that cannot name one does not match.
-    if (!sessionRepo || sessionRepo.toLowerCase() !== eventRepo.toLowerCase()) return false;
-  }
-  const roles = options?.roles ?? DEFAULTS.roles;
+/**
+ * Whether an event's role may be told to a session at all.
+ *
+ * An event nobody was named in (`role: "any"`) is never filtered: it belongs to
+ * whoever it reaches by place. The rest are filtered by the instance's `roles`
+ * list — an empty list means the instance takes every role, and a session that
+ * watches a repository does not thereby become its reviewer.
+ */
+export function roleAllowed(roles, event) {
+  const wanted = Array.isArray(roles) ? roles : [];
+  if (wanted.length === 0) return true;
   const role = event?.role ?? "any";
-  if (roles.length > 0 && role !== "any" && !roles.includes(role)) return false;
-  return true;
+  return role === "any" || wanted.includes(role);
 }
 
 /**
@@ -1778,9 +1770,8 @@ const KEY_KINDS = {
 
 function keyParts(event = {}) {
   const key = String(event.key ?? "");
-  const at = key.indexOf("#");
-  const repo = at > 0 ? key.slice(0, at) : (event.repo ?? "");
-  const inner = at > 0 ? key.slice(at + 1) : key;
+  const { repo: named, inner } = splitKey(key);
+  const repo = named ?? event.repo ?? "";
   const match = /^([a-z-]+):(\d+)/u.exec(inner);
   const noun = match ? match[1] : "";
   let kind = KEY_KINDS[noun] ?? (event.kind ?? noun);
@@ -1870,7 +1861,7 @@ export function buildUiPayload({
   const rows = Object.entries(queue)
     .map(([key, entry]) => ({
       key,
-      repo: key.includes("#") ? key.slice(0, key.indexOf("#")) : null,
+      repo: repoOfKey(key),
       status: entry?.status ?? "unknown",
       at: entry?.at ?? null,
       ...(recent?.get?.(key) ?? {}),

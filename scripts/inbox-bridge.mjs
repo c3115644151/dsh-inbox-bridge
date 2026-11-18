@@ -13,6 +13,8 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { splitKey } from "./key.mjs";
+import { repoOfKey as repoFromKey } from "./key.mjs";
 
 const STATE_REL = join(".work", "inbox-bridge", "state.json");
 const RUNTIME_REL = join(".work", "inbox-bridge", "runtime.json");
@@ -92,14 +94,9 @@ export function transition(state, items, status, at) {
  *
  * Keys from the GitHub collector look like `owner/name#issue:7:author:…`. A
  * fact that lost its repository in a round trip is still routed by its key.
+ * The parse lives in `scripts/key.mjs`, shared with the host.
  */
-export function repoFromKey(key) {
-  if (typeof key !== "string") return null;
-  const cut = key.indexOf("#");
-  if (cut <= 0) return null;
-  const repo = key.slice(0, cut);
-  return /^[\w.-]+\/[\w.-]+$/u.test(repo) ? repo : null;
-}
+export { repoOfKey as repoFromKey, repoOfKey, splitKey } from "./key.mjs";
 
 /**
  * Remember the events nobody has been told about yet.
@@ -271,8 +268,8 @@ export function closeResolved(state, events, { at, repos = [] } = {}) {
   const marked = [];
   for (const [key, entry] of Object.entries(events_)) {
     if (!entry || entry.status === "done") continue;
-    const hash = key.indexOf("#");
-    const repo = hash > 0 ? key.slice(0, hash).toLowerCase() : null;
+    const { repo: prefixed } = splitKey(key);
+    const repo = prefixed ? prefixed.toLowerCase() : null;
     if (!repo || !covered.has(repo)) continue;
     if (live.has(key)) continue;
     // Never told anyone about it: the source going quiet does not settle it.
@@ -756,9 +753,7 @@ export function explainKey(root, key, options = {}) {
   const runtime = readJson(resolve(root, RUNTIME_REL));
   const source = readJson(resolve(root, SOURCE_STATE_REL));
   const queue = readState(stateFileOf(root)).events ?? {};
-  const cut = typeof key === "string" ? key.indexOf("#") : -1;
-  const repo = cut > 0 ? key.slice(0, cut) : null;
-  const inner = cut > 0 ? key.slice(cut + 1) : String(key ?? "");
+  const { repo, inner } = splitKey(key);
   const entry = queue[key] ?? null;
   const slice =
     repo && source?.repos && typeof source.repos === "object" ? (source.repos[repo] ?? null) : null;

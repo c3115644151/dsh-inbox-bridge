@@ -448,9 +448,6 @@ window.__ModuleLoader__.load({
         paddingTop: "8px",
         borderTop: "0.5px solid var(--dsw-alias-border-l2)",
       },
-      warnValue: {
-        color: "var(--dsw-alias-label-warning, var(--dsw-alias-label-secondary))",
-      },
       signInRow: {
         display: "flex",
         alignItems: "center",

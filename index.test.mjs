@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { DEFAULT_ACK_HINT, admissionVerdict, audienceFor, buildMessage, buildUiPayload, deliver, deliveryTargets, detectRepo, eventTier, filterUndelivered, formatEvents, fromHostPage, matchesWatch, mergeConfig, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, sessionLabel, sessionTag, wakePlan } from "./index.js";
+import { DEFAULT_ACK_HINT, admissionVerdict, audienceFor, buildMessage, buildUiPayload, deliver, deliveryTargets, detectRepo, eventTier, filterUndelivered, formatEvents, fromHostPage, mergeConfig, roleAllowed, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, sessionLabel, sessionTag, wakePlan } from "./index.js";
 
 const idle = { status: "idle" };
 const running = { status: "running" };
@@ -119,41 +119,23 @@ test("wakeup needs a listed role, an idle gap, and room in both budgets", () => 
   assert.equal(ok.why, "ok");
 });
 
-test("a session only hears about the repository its own workspace points at", () => {
+test("a session names the repository its own workspace points at", () => {
   withRepos(({ repo, plain }) => {
     const mine = { status: "idle", session: { header: { cwd: repo } } };
     const theirs = { status: "idle", session: { header: { cwd: plain } } };
-    const options = mergeConfig({ cwd: plain });
-    const event = { key: "k", kind: "pr", role: "author", repo: "example-org/example-repo" };
-
-    assert.equal(repoOf(mine, options), "example-org/example-repo");
-    assert.equal(repoOf(theirs, options), null);
-    assert.equal(matchesWatch(mine, event, options), true);
-    assert.equal(matchesWatch(theirs, event, options), false);
+    assert.equal(repoOf(mine, mergeConfig({ cwd: plain })), "example-org/example-repo");
+    assert.equal(repoOf(theirs, mergeConfig({ cwd: plain })), null);
   });
 });
 
-test("without a configured source every session matches", () => {
-  // No repository and no role: nothing to associate, so nothing is filtered.
-  assert.equal(matchesWatch({}, { key: "k", role: "any", repo: null }, { repo: null, roles: [] }), true);
-});
-
-test("one event reaches only the sessions whose repository and role it names", () => {
-  withRepos(({ repo, plain }) => {
-    const mine = { status: "idle", session: { header: { cwd: repo } } };
-    const elsewhere = { status: "idle", session: { header: { cwd: plain } } };
-    const options = mergeConfig({ cwd: repo, roles: ["author", "reviewer"] });
-    const event = { key: "pr:1:author:x", kind: "pr", role: "author", repo: "example-org/example-repo" };
-
-    assert.equal(matchesWatch(mine, event, options), true);
-    assert.equal(matchesWatch(elsewhere, event, options), false);
-    // A review request on the same repository is still not the author's task.
-    assert.equal(matchesWatch(mine, { ...event, role: "reviewer" }, options), true);
-    assert.equal(matchesWatch(mine, { ...event, role: "assignee" }, options), false);
-    // Unattributed events pass the role check; the repository check still holds.
-    assert.equal(matchesWatch(mine, { ...event, role: "any" }, options), true);
-    assert.equal(matchesWatch(mine, { ...event, role: "any", repo: "other/repo" }, options), false);
-  });
+// The role gate is about what a session is willing to hear, not where it works:
+// an unattributed fact always passes, everything else must be named in `roles`.
+test("a role the instance did not ask for is not told to it", () => {
+  assert.equal(roleAllowed([], { role: "reviewer" }), true);
+  assert.equal(roleAllowed(["author", "reviewer"], { role: "author" }), true);
+  assert.equal(roleAllowed(["author", "reviewer"], { role: "assignee" }), false);
+  assert.equal(roleAllowed(["author"], { role: "any" }), true);
+  assert.equal(roleAllowed(["author"], {}), true);
 });
 
 test("one instance can watch several repositories, one slice each", () => {
@@ -166,13 +148,9 @@ test("one instance can watch several repositories, one slice each", () => {
 });
 
 test("an empty roles list accepts every role", () => {
-  withRepos(({ repo }) => {
-    const mine = { status: "idle", session: { header: { cwd: repo } } };
-    const options = mergeConfig({ cwd: repo });
-    for (const role of ["author", "reviewer", "assignee", "mention", "ci", "any"]) {
-      assert.equal(matchesWatch(mine, { key: "k", role, repo: "example-org/example-repo" }, options), true);
-    }
-  });
+  for (const role of ["author", "reviewer", "assignee", "mention", "ci", "any"]) {
+    assert.equal(roleAllowed([], { key: "k", role, repo: "example-org/example-repo" }), true);
+  }
 });
 
 test("an agent without a status field is treated as idle", () => {

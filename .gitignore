@@ -6,3 +6,16 @@ node_modules/
 
 # Diagram generator scratch space: the deliverables are docs/assets/architecture.*
 .archify/
+
+# Artifacts a command can produce: they belong in .work/, never in a commit.
+*.tgz
+npm-debug.log*
+coverage/
+*.tsbuildinfo
+
+# Editor and OS droppings
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store

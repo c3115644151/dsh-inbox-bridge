@@ -46,7 +46,7 @@ jobs:
         run: npm test
 
   market:
-    name: market index
+    name: docs and market index
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -55,5 +55,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Check the documentation and the version it names
+        run: npm run docs:check
       - name: Check the market index
         run: npm run market:check

@@ -1,3 +1,10 @@
+## 未发布（等确认后定版本号）
+
+- 维护契约：AGENTS.md 重写为常驻文档，决策记录进 docs/decisions.md。
+- docs:check：必需文档、版本三处一致、链接、孤岛与旧术语复活检测。
+- release.mjs：一条命令完成测试、定版、market、推送与发布。
+- npm 包从 1.6MB 缩到 125KB：files 改为运行时白名单。
+- key 解析下沉到 scripts/key.mjs，删掉 matchesWatch 等死代码与无引用资产。
 ## 2.21.4
 
 - **准入改用宿主自己的判定**：`ctx.connection.requestRejection(request)`（`inject` 里加 `connection`）。它对每条请求做 Host/Origin 栅栏并检查浏览器或 API 凭据：没有凭据的裸 `curl` 现在拿 **401**，跨源页面拿 **403**，桌面壳的 IPC 桥带着页面凭据照常通过。宿主没有这个服务时（旧版本）退回原来按请求头判断的写法。

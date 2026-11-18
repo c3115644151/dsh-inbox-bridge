@@ -34,21 +34,27 @@
     "client.js",
     "cordis.patch.yml",
     "locale/*.json",
-    "scripts/*.mjs",
-    "docs",
+    "icon.svg",
+    "scripts/github-inbox.mjs",
+    "scripts/inbox-bridge.mjs",
+    "scripts/clear-inbox.mjs",
+    "docs/how-it-works.md",
+    "docs/configuration.md",
+    "docs/DETAIL.md",
+    "docs/DETAIL.zh.md",
     "README.md",
     "README.en.md",
     "ROADMAP.md",
     "CHANGELOG.md",
-    "icon.svg",
-    "LICENSE",
-    "screenshots.json"
+    "LICENSE"
   ],
   "scripts": {
     "test": "node --test index.test.mjs scripts/github-inbox.test.mjs scripts/inbox-bridge.test.mjs scripts/clear-inbox.test.mjs",
+    "docs:check": "node scripts/check-docs.mjs",
     "market": "node scripts/build-market-index.mjs",
     "market:check": "node scripts/build-market-index.mjs --check",
-    "market:release": "node scripts/build-market-index.mjs --check --release"
+    "market:release": "node scripts/build-market-index.mjs --check --release",
+    "release": "node scripts/release.mjs"
   },
   "engines": {
     "node": ">=20",
