@@ -118,11 +118,17 @@ window.__ModuleLoader__.load({
           quiet: "仅注入",
           quietTip: "只排队，等你下次发消息时随该轮进入上下文。",
           wakeup: "主动唤醒",
-          wakeupTip: "会话空闲时，插件可以替你开启一轮来处理这些事件。",
+          wakeupTip: "会话空闲时，插件可以替你开启一轮。选中后按钮右侧的 ⌄ 可展开空闲时长与每小时次数。",
           signInNeeded: "归档还没登录 GitHub，仓库的事件不会进 Done。",
           signInWaiting: "已打开登录窗口，登录后自动生效。",
           signInOpen: "打开登录窗口",
           signInTip: "在插件自己的浏览器配置里登录一次；之后归档会自动运行，失效时会再打开这个窗口。",
+          autonomy: "处理方式",
+          autonomyTip: "收到消息后怎么处理；与提醒方式（是否开新一轮）无关。",
+          act: "直接处理",
+          actTip: "收到消息后立刻动手处理；默认如此。",
+          confirm: "先确认",
+          confirmTip: "先做完手头的事，再把攒下的消息一起汇报给你，等你反馈。",
           idle: "空闲多久",
           idleTip: "会话安静满这么长时间，才允许唤醒；否则只把事件留下等下一轮。",
           minute1: "1 分钟",
@@ -172,11 +178,17 @@ window.__ModuleLoader__.load({
           quiet: "queue only",
           quietTip: "Wait for your next message; the notice rides along with that turn.",
           wakeup: "may wake it",
-          wakeupTip: "When the session is idle, the plugin may start a turn to handle it.",
+          wakeupTip: "When the session is idle, the plugin may start a turn to handle it. The ⌄ on the selected button opens the idle time and hourly limit.",
           signInNeeded: "Archiving is not signed in yet, so repository events do not reach Done.",
           signInWaiting: "The sign-in window is open; archiving resumes when you finish.",
           signInOpen: "open sign-in",
           signInTip: "Sign in once in this plugin's own browser profile; afterwards archiving runs on its own and reopens this window if the session expires.",
+          autonomy: "handling",
+          autonomyTip: "What to do with a fact after it arrives; independent of delivery (which decides if a turn opens).",
+          act: "act now",
+          actTip: "Handle the fact as soon as it arrives; this is the default.",
+          confirm: "confirm first",
+          confirmTip: "Finish the current task, then report the collected facts together and wait for your call.",
           idle: "quiet for",
           idleTip: "A session must be this quiet before a wakeup may open a turn; otherwise the event waits for a later poll.",
           minute1: "1 min",
@@ -447,6 +459,20 @@ window.__ModuleLoader__.load({
         marginTop: "6px",
         paddingTop: "8px",
         borderTop: "0.5px solid var(--dsw-alias-border-l2)",
+      },
+      disclosure: {
+        // A text affordance, not a segmented button: it opens two rows that are
+        // rarely touched, so it must not read as a peer of the real choices.
+        border: "none",
+        background: "none",
+        padding: "0",
+        color: "var(--dsw-alias-label-tertiary)",
+        font: "inherit",
+        fontSize: "11px",
+        lineHeight: "18px",
+        cursor: "pointer",
+        textAlign: "left",
+        minWidth: 0,
       },
       signInRow: {
         display: "flex",
@@ -746,6 +772,10 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = React.useState(false);
       const [error, setError] = React.useState(null);
       const [draft, setDraft] = React.useState("");
+      // Wakeup patience lives behind a disclosure: the two rows only matter in
+      // wakeup mode, and keeping them always open doubles the panel height for a
+      // setting most people never touch.
+      const [showWake, setShowWake] = React.useState(false);
       const pick = text.pick;
       const send = async (set, value) => {
         if (busy) return;
@@ -772,10 +802,28 @@ window.__ModuleLoader__.load({
                 "aria-pressed": current === value,
                 title: tip,
                 disabled: busy,
-                onClick: () => void send(set, value),
+                onClick: () => {
+                  if (set === "delivery" && value === status.delivery) {
+                    if (value === "wakeup") setShowWake((current) => !current);
+                    return;
+                  }
+                  if (set === "delivery" && value !== "wakeup") setShowWake(false);
+                  void send(set, value);
+                },
                 style: { ...styles.seg, ...(current === value ? styles.segOn : {}) },
               },
-              caption,
+              set === "delivery" && value === "wakeup" && current === value
+                ? h(
+                    "span",
+                    null,
+                    caption,
+                    h(
+                      "sup",
+                      { style: { fontSize: "9px", marginLeft: "2px", verticalAlign: "super", lineHeight: 0 } },
+                      showWake ? "⌃" : "⌄",
+                    ),
+                  )
+                : caption,
             ),
           ),
         );
@@ -806,10 +854,7 @@ window.__ModuleLoader__.load({
             "mode",
           ),
         ),
-        // How patient the wakeup is: quiet at least this long, at most this many
-        // times an hour. Both were file-only settings until a session could ask
-        // for them from here.
-        status.delivery === "wakeup"
+        showWake && status.delivery === "wakeup"
           ? h(
               "div",
               { style: styles.controlRow },
@@ -827,7 +872,7 @@ window.__ModuleLoader__.load({
               ),
             )
           : null,
-        status.delivery === "wakeup"
+        showWake && status.delivery === "wakeup"
           ? h(
               "div",
               { style: styles.controlRow },
@@ -845,6 +890,24 @@ window.__ModuleLoader__.load({
               ),
             )
           : null,
+        // What this session does with the facts it receives. A per-session
+        // choice, like the takeovers: one workspace can hold an automatic
+        // maintainer next to hand-driven sessions that only want to be told.
+        h(
+          "div",
+          { style: styles.controlRow },
+          h("span", { style: styles.controlLabel, title: pick.autonomyTip }, pick.autonomy),
+          seg(
+            pick.autonomy,
+            [
+              ["act", pick.act, pick.actTip],
+              ["confirm", pick.confirm, pick.confirmTip],
+            ],
+            status.session?.autonomy ?? "act",
+            "autonomy",
+            "autonomy",
+          ),
+        ),
         // Cleaning has no switch any more: the tier decides. Item-tier notices are
         // marked read; repository-tier notices are archived by the session that
         // maintains that repository. Archiving is a page action in GitHub, so it

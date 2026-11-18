@@ -34,6 +34,7 @@ That is also why it only reads: its job is to make the agent aware. The work hap
 - **The run that happens at night counts too.** A scheduled workflow that fails says it was scheduled, instead of reading as the last push failing; a review comment on your own pull request is reported as itself, and a push that answers it closes it.
 - **It tidies what it read, without a switch.** Repository-level facts (CI, advisories) are archived by the owner; item-level facts (answers on a pull request or issue) are only marked read — whoever received them clears them, and nobody touches another session's ledger.
 - **It goes into the context, and opens a turn only when it has to.** By default a notice arrives at the next safe injection point and does not interrupt the tool loop; with `delivery: wakeup` it opens a turn only for a listed `wakeOn` role, after the session has been idle for 15 minutes, at most 3 times in a row per session, and at most 2 times an hour — anything else keeps queueing. A notice is marked `delivered`, and unhandled events come back once after six hours.
+- **The session decides how to handle a fact.** "Handling" has two modes: act now (the default — act as soon as it arrives) and confirm first (finish the current task, then report the collected facts together and wait for your call). It changes neither delivery nor whether a turn opens — that is delivery's job.
 
 ## What you will see
 
@@ -61,7 +62,7 @@ The status row under the composer carries a chip: when something is waiting, a b
 
 - the events: role, repository, title (link), time;
 - the identity and the last poll;
-- two controls: delivery (queue only / may wake) and the rhythm (how idle is idle: 1 / 5 / 15 minutes; wakes per hour: 1 / 2 / 4), plus the repositories this session took over (paste a repository link or type `owner/name`; `×` releases).
+- two controls: delivery (queue only / may wake — selecting "may wake" reveals a `⌄` on the button that opens the rhythm rows) and how the session handles its facts (act now / confirm first), plus the repositories this session took over (paste a repository link or type `owner/name`; `×` releases).
 
 Each control explains itself on hover. Changes apply immediately and are stored in `<cwd>/.work/inbox-bridge/prefs.json`; they do not rewrite the DSH plugin configuration, and a reset returns to the configured values. The panel is per session: switching sessions shows what that session took over and what would reach it.
 

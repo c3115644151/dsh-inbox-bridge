@@ -1044,6 +1044,43 @@ test("the page can tune how patient a wakeup is", () => {
   assert.equal(preferenceNext({}, "budget", "2.5", {}), null);
 });
 
+test("how a session treats its facts is the session's own choice", () => {
+  // `act` is the default and stores nothing; `confirm` is recorded per session.
+  // This only changes the notice wording — it never changes delivery or the wake.
+  assert.deepEqual(preferenceNext({}, "autonomy", "act", { sessionId: "s1" }), {});
+  const confirm = preferenceNext({}, "autonomy", "confirm", { sessionId: "s1" });
+  assert.deepEqual(confirm.autonomy, { s1: "confirm" });
+  const released = preferenceNext(confirm, "autonomy", "act", { sessionId: "s1" });
+  assert.deepEqual(released, {});
+  assert.equal(preferenceNext({}, "autonomy", "report", { sessionId: "s1" }), null);
+  assert.equal(preferenceNext({}, "autonomy", "everything", { sessionId: "s1" }), null);
+  assert.equal(preferenceNext({}, "autonomy", "confirm", {}), null);
+});
+
+test("autonomy colours the notice but never decides the wake", () => {
+  const events = [{ key: "owner/one#issue:7", repo: "owner/one", role: "author", kind: "issue", title: "held", url: "https://example.test/7" }];
+  const batches = new Map([[{ session: { id: "a" }, repo: "owner/one" }, events]]);
+  const options = {
+    delivery: "wakeup",
+    wakeOn: ["author"],
+    wakeAfterIdleMs: 0,
+    wakesPerHour: 2,
+    maxConsecutiveWakes: 3,
+  };
+  const idle = new Map([[batches.keys().next().value, 0]]);
+  // Autonomy is never a wake gate: with the same delivery settings every mode
+  // is eligible for the same wake.
+  for (const autonomy of [{ a: "confirm" }, {}]) {
+    const plan = wakePlan(batches, options, { lastActive: idle, now: 10, autonomy });
+    assert.equal(plan.agent, batches.keys().next().value);
+    assert.equal(plan.why, "ok");
+  }
+  // The modes differ only in the notice tail.
+  const notice = (mode) => formatEvents(events, { delivery: "wakeup", ...options, autonomy: mode });
+  assert.match(notice("confirm"), /先做完手头的事，再把这条消息和其它待办一起汇报给我/u);
+  assert.doesNotMatch(notice("act"), /汇报给我/u);
+});
+
 test("the page is told what this instance polls, and what would reach this session", () => {
   const one = { repo: "owner/one", lastPoll: { at: "2026-11-17T10:00:00.000Z" } };
   const payload = buildUiPayload({

@@ -119,6 +119,24 @@ export function preferenceNext(current = {}, action = "", value = "", options = 
     next.wakesPerHour = perHour;
     return next;
   }
+  if (action === "autonomy") {
+    // How this session treats the facts it receives: `act` handles them at once
+    // (the default); `confirm` finishes the current task first, then reports the
+    // collected facts together and waits for the user. A per-session choice,
+    // like the takeovers: one workspace can hold an automatic maintainer next
+    // to a hand-driven one. Neither mode changes delivery or whether a turn opens.
+    if (!["act", "confirm"].includes(value)) return null;
+    if (!sessionId) return null;
+    if (value === "act") {
+      // The default needs no record: an empty map and a missing map read the same.
+      const { [sessionId]: dropped, ...rest } = next.autonomy ?? {};
+      if (Object.keys(rest).length === 0) delete next.autonomy;
+      else next.autonomy = rest;
+      return next;
+    }
+    next.autonomy = { ...(next.autonomy ?? {}), [sessionId]: value };
+    return next;
+  }
   return null;
 }
 
@@ -392,6 +410,9 @@ export function apply(ctx, config) {
           repo,
           repos: watched,
           roles: options.roles ?? [],
+          // The choice is per session, like the takeovers: one workspace can
+          // hold an automatic maintainer next to hand-driven sessions.
+          autonomy: prefs.autonomy?.[sessionId] ?? "act",
         }
       : null;
     return {
@@ -443,6 +464,7 @@ export function apply(ctx, config) {
             maxEvents: options.maxEvents,
             resurfaceMs: options.resurfaceMs,
             roles: options.roles,
+            autonomy: prefs.autonomy ?? {},
             identity: {
               kind: options.identity.kind,
               login: options.identity.login,
@@ -744,7 +766,11 @@ export function apply(ctx, config) {
         try {
           const message = buildMessage(
             mine.length,
-            formatEvents(mine, { ...scoped, woken: waking.has(agent) === true }),
+            formatEvents(mine, {
+              ...scoped,
+              woken: waking.has(agent) === true,
+              autonomy: (prefs.autonomy ?? {})[keyOf(agent)] ?? "act",
+            }),
             options.label,
           );
           deliver(agent, message, waking);
@@ -1203,18 +1229,20 @@ export function deliver(agent, message, waking) {
  * Decide whether this poll may open a turn, and for which event.
  *
  * A wakeup is the only way this plugin spends the user's attention without being
- * asked, so four independent gates must all pass: the mode must allow it
- * (`delivery: wakeup`), the event's role must be one the user listed (`wakeOn`,
- * empty by default), the session must have been quiet for `wakeAfterIdleMs`, and
- * both the per-session streak and the rolling `wakesPerHour` budget must have
- * room. Anything refused is reported in `why` so the log can answer "凭什么".
+ * asked, so five independent gates must all pass: the mode must allow it
+ * (`delivery: wakeup`), the session must not have asked to be left alone
+ * (autonomy never blocks a wake — whether a turn opens belongs to delivery;
+ * `confirm` only changes what the notice says), the event's role must be one the user listed
+ * (`wakeOn`, empty by default), the session must have been quiet for
+ * `wakeAfterIdleMs`, and both the per-session streak and the rolling
+ * `wakesPerHour` budget must have room. Anything refused is reported in `why`
+ * so the log can answer "凭什么".
  */
 export function wakePlan(batches, options, state = {}) {
   const none = (why, considered = 0) => ({ agent: null, event: null, why, considered });
   if ((options?.delivery ?? DEFAULTS.delivery) !== "wakeup") return none("not-requested");
   const wakeOn = options?.wakeOn ?? DEFAULTS.wakeOn;
   if (!Array.isArray(wakeOn) || wakeOn.length === 0) return none("no-role");
-
   const now = state.now ?? Date.now();
   const streak = state.streak ?? new Map();
   const lastActive = state.lastActive ?? new Map();
@@ -1744,10 +1772,21 @@ export function formatEvents(events, options = DEFAULTS) {
   if (events.length > maxEvents) {
     lines.push(`- 还有 ${events.length - maxEvents} 条：\`node "${CLI}" list\``);
   }
+  // Confirm only adds a nudge line to the notice; whether a turn opens is a
+  // separate decision made by delivery/wake gates. Report, likewise, only
+  // controls the nudge — never the delivery or the wake.
   const head = woken
     ? `${NOTICE_NAME} ${events.length} 条 · 插件为这一轮开了个回合`
     : `${NOTICE_NAME} ${events.length} 条 · 后台派发，不是用户提问`;
-  return [head, ...lines].join("\n");
+  // Autonomy only colours the notice, never the delivery or the wake: those
+  // belong to delivery/wakeOn. "confirm" asks the agent to finish what it is
+  // doing and report the collected facts together, waiting for the user's
+  // call. The default "act" adds nothing.
+  const ask =
+    options.autonomy === "confirm"
+      ? "\n先做完手头的事，再把这条消息和其它待办一起汇报给我，等我反馈。"
+      : "";
+  return [head, ...lines, ask].filter((line) => line !== "").join("\n");
 }
 
 const NOTICE_NAME = "【告知】";
