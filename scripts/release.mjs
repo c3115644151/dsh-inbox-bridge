@@ -69,6 +69,13 @@ function runLoud(command, commandArgs, options = {}) {
   });
 }
 
+// Blocking sleep. `cmd /c timeout /t 15 >nul` fails under a redirected stdin
+// ("Input redirection is not supported"), which is exactly how CI and any
+// scripted release runs this file.
+function sleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 if (!version) stop("give the version to release, for example: node scripts/release.mjs 2.22.0 --type feat --subject \"...\"");
 if (!subject) stop("give a subject: --subject \"what changed, in one line\"");
 if (!["feat", "fix", "docs", "chore", "refactor", "test", "perf"].includes(type)) stop(`unknown commit type: ${type}`);
@@ -205,7 +212,7 @@ if (!skipPublish) {
     } catch {
       // keep waiting
     }
-    if (!served) runLoud("cmd", ["/c", "timeout /t 15 >nul"]);
+    if (!served) sleep(15000);
   }
   if (served) log(`registry serves ${version}`);
   else log(`registry still reports an older version; it usually catches up within a few minutes (check with: npm view dsh-inbox-bridge dist-tags.latest)`);
