@@ -59,3 +59,19 @@ jobs:
         run: npm run docs:check
       - name: Check the market index
         run: npm run market:check
+
+  install:
+    # The gate that would have caught 2.22.0-2.23.2: pack, install into an empty
+    # project, import by name, run the CLI. Green tests and a green registry do
+    # not prove a tarball is installable.
+    name: install (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Pack, install and run the package
+        run: npm run verify:install
