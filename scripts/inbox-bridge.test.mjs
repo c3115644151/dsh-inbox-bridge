@@ -17,7 +17,11 @@ import {
   formatDoctor,
   formatExplanation,
   formatStatus,
+  POLL_TIMEOUT_MS,
+  pollBudget,
+  pollFailure,
   pollOnce,
+  pollSnapshot,
   readState,
   recordPending,
   transition,
@@ -533,4 +537,51 @@ test("explain distinguishes never-reported from already-closed", () => {
     assert.match(explainKey(root, "owner/one#run:7").verdict, /报过，但已经不在队列里/u);
     assert.match(explainKey(root, "owner/one#run:8").verdict, /没有报出过它/u);
   });
+});
+
+test("a poll that runs out of its budget names the budget, not the spawn layer", () => {
+  assert.equal(POLL_TIMEOUT_MS, 45_000);
+
+  // The caller's number wins, then the host's, then ours.
+  const previous = process.env.INBOX_POLL_TIMEOUT_MS;
+  try {
+    assert.equal(pollBudget({ timeoutMs: 115_000 }), 115_000);
+    process.env.INBOX_POLL_TIMEOUT_MS = "90000";
+    assert.equal(pollBudget({}), 90_000);
+    assert.equal(pollBudget({ timeoutMs: 0 }), 90_000);
+    delete process.env.INBOX_POLL_TIMEOUT_MS;
+    assert.equal(pollBudget({}), POLL_TIMEOUT_MS);
+  } finally {
+    if (previous === undefined) delete process.env.INBOX_POLL_TIMEOUT_MS;
+    else process.env.INBOX_POLL_TIMEOUT_MS = previous;
+  }
+
+  // The spawn layer's word becomes a sentence that says which budget ran out.
+  const killed = pollFailure(
+    Object.assign(new Error("spawnSync D:\\app.exe ETIMEDOUT"), { code: "ETIMEDOUT" }),
+    45_000,
+  );
+  assert.equal(killed.message, "the poll did not finish inside 45s");
+  assert.equal(killed.raw.code, "ETIMEDOUT");
+
+  // A command that answered badly keeps its own words.
+  const answered = pollFailure(
+    Object.assign(new Error("gh: needs the notifications scope"), { status: 1 }),
+    45_000,
+  );
+  assert.equal(answered.message, "gh: needs the notifications scope");
+
+  // The whole path: an injected exec that dies the way a killed spawn dies.
+  assert.throws(
+    () => pollSnapshot(process.cwd(), {
+      timeoutMs: 1_000,
+      execFile: () => {
+        throw Object.assign(new Error("spawnSync D:\\app.exe ETIMEDOUT"), {
+          code: "ETIMEDOUT",
+          signal: null,
+        });
+      },
+    }),
+    /the poll did not finish inside 1s/u,
+  );
 });

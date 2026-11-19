@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { DEFAULT_ACK_HINT, admissionVerdict, audienceFor, buildMessage, buildUiPayload, deliver, deliveryTargets, detectRepo, eventTier, filterUndelivered, formatEvents, itemIdentity, keyOf, mergeConfig, roleAllowed, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, runCommand, sessionLabel, sessionTag, wakePlan } from "./index.js";
+import { DEFAULT_ACK_HINT, admissionVerdict, audienceFor, buildMessage, buildUiPayload, commandFailure, deliver, deliveryTargets, detectRepo, eventTier, filterUndelivered, formatEvents, itemIdentity, keyOf, mergeConfig, roleAllowed, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, runCommand, sessionLabel, sessionTag, wakePlan } from "./index.js";
 
 const idle = { status: "idle" };
 const running = { status: "running" };
@@ -1555,4 +1555,35 @@ test("a poll killed for its budget says so, and one that exits non-zero keeps it
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
+});
+
+test("a failure names who ended the run, because three different things wear the same message", () => {
+  // This plugin's budget expired: the command never got to answer.
+  const budget = commandFailure(
+    { killed: true, signal: "SIGTERM", message: "Command failed: poll" },
+    {},
+    { timeoutMs: 400 },
+  );
+  assert.equal(budget.message, "the poll did not finish inside 0.4s");
+
+  // The host capped the spawn itself; blaming our budget would misreport it.
+  const host = commandFailure(
+    { code: "ETIMEDOUT", message: "spawnSync D:\\app.exe ETIMEDOUT" },
+    {},
+    { timeoutMs: 120_000 },
+  );
+  assert.equal(host.message, "the poll was cut off by the host before it finished (budget 120s)");
+  assert.equal(host.raw.code, "ETIMEDOUT");
+  assert.equal(host.raw.signal, null);
+
+  // A command that answered non-zero keeps its own words and its exit code.
+  const answered = commandFailure(
+    { code: 2, message: "Command failed: sweep" },
+    { stderr: "  needs a browser sign-in  \n" },
+    { timeoutMs: 120_000 },
+  );
+  assert.equal(answered.message, "Command failed: sweep: needs a browser sign-in");
+  assert.equal(answered.exitCode, 2);
+  // `raw` counts what the command actually emitted, before trimming.
+  assert.equal(answered.raw.stderr, "  needs a browser sign-in  \n".length);
 });

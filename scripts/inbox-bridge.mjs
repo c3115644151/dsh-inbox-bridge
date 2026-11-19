@@ -25,6 +25,13 @@ const SOURCE_STATE_REL = join(".work", "github-inbox", "state.json");
 export const STATUSES = ["pending", "delivered", "done"];
 /** Delivered-but-unhandled events resurface after this long. */
 export const RESURFACE_MS = 6 * 60 * 60 * 1000;
+/**
+ * How long one fetch of the source may take. A poll costs roughly 29 seconds
+ * (each `gh` call is its own process), so a 45 second cap leaves 16 seconds of
+ * slack: an ordinary slow minute used to kill the poll, and `spawnSync … ETIMEDOUT`
+ * was all the log ever said about it. The host passes a wider number down.
+ */
+export const POLL_TIMEOUT_MS = 45_000;
 
 /** Read the bridge state; a missing or broken file means "nothing handled yet". */
 export function readState(file) {
@@ -293,21 +300,55 @@ export function pollEvents(root, options = {}) {
  * Coverage is what lets the queue close settled facts: a repository the poll
  * did not reach must keep its entries untouched.
  */
+/** The budget this poll runs under: caller's number, then the host's, then ours. */
+export function pollBudget(options = {}) {
+  const asked = Number(options.timeoutMs);
+  if (Number.isFinite(asked) && asked > 0) return asked;
+  const passed = Number(process.env.INBOX_POLL_TIMEOUT_MS);
+  if (Number.isFinite(passed) && passed > 0) return passed;
+  return POLL_TIMEOUT_MS;
+}
+
+/**
+ * A poll that ran out of its budget never answered, and the spawn layer says so
+ * with `spawnSync … ETIMEDOUT` — true, unreadable, and the same sentence for a
+ * slow minute and a dead network. Say which budget instead; every skip in the
+ * log is this case, so it is worth a sentence of its own.
+ */
+export function pollFailure(error, budgetMs) {
+  const killed = error?.killed === true || error?.code === "ETIMEDOUT" || Boolean(error?.signal);
+  if (!killed) return error;
+  const seconds = Math.round(budgetMs / 100) / 10;
+  const failure = new Error(`the poll did not finish inside ${seconds}s`);
+  failure.raw = {
+    code: error?.code ?? null,
+    signal: error?.signal ?? null,
+    killed: error?.killed ?? null,
+  };
+  return failure;
+}
+
 export function pollSnapshot(root, options = {}) {
   const poller = POLLER_PATH;
   if (!existsSync(poller)) throw new Error(`missing poller: ${poller}`);
   const exec = options.execFile ?? execFileSync;
+  const budget = pollBudget(options);
   const args = [poller, "--poll", "--repeat", "--json", "--quiet"];
   if (typeof options.repo === "string" && options.repo.length > 0)
     args.push("--repo", options.repo);
-  const stdout = exec(process.execPath, args, {
-    cwd: root,
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
-    encoding: "utf8",
-    timeout: options.timeoutMs ?? 45_000,
-    windowsHide: true,
-    maxBuffer: 4 * 1024 * 1024,
-  });
+  let stdout;
+  try {
+    stdout = exec(process.execPath, args, {
+      cwd: root,
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+      encoding: "utf8",
+      timeout: budget,
+      windowsHide: true,
+      maxBuffer: 4 * 1024 * 1024,
+    });
+  } catch (error) {
+    throw pollFailure(error, budget);
+  }
   const payload = JSON.parse(String(stdout));
   const events = (Array.isArray(payload?.fresh) ? payload.fresh : []).filter(
     (event) => event && typeof event.key === "string",

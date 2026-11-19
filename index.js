@@ -870,7 +870,7 @@ export function apply(ctx, config) {
         if (infra.length > 0) await ackEvents(scoped, infra, "done");
       }
     } catch (error) {
-      log(`poll skipped: ${describe(error)}`);
+      log(`poll skipped: ${describe(error)}${error?.raw ? ` [${JSON.stringify(error.raw)}]` : ""}`);
     } finally {
       polling = false;
     }
@@ -1676,7 +1676,11 @@ export function detectRepo(cwd) {
 }
 
 async function pollEvents(options) {
-  const stdout = await runCommand(options.poll, options);
+  // One budget, spent inside: the fetch gets ours minus a margin so its own
+  // timeout message is the one that reaches the log. The outer kill is a
+  // backstop for a process that ignores its budget entirely.
+  const budget = Math.max(5_000, (options.timeoutMs ?? 120_000) - 5_000);
+  const stdout = await runCommand(options.poll, { ...options, pollBudgetMs: budget });
   const payload = JSON.parse(stdout);
   const events = Array.isArray(payload?.events) ? payload.events : [];
   return {
@@ -1711,6 +1715,49 @@ function identityEnv(identity) {
   };
 }
 
+/**
+ * Shape the many ways a spawn fails into one object the log can describe.
+ *
+ * Three different events end up here — this plugin's own budget running out, a
+ * command answering non-zero with words worth keeping, and a host that refuses
+ * or cuts the spawn before the callback ever runs — and `message` alone cannot
+ * tell them apart. That is how 91 timeouts read as "Command failed" and looked
+ * like a crashed script for two and a half days.
+ */
+export function commandFailure(error, { stdout = "", stderr = "" } = {}, options = {}) {
+  const detail = (stderr || stdout || "").trim().slice(0, 200);
+  // A kill for the elapsed budget is not the command failing: it never got to
+  // answer. Say which budget, because "Command failed" hid this for so long.
+  const seconds = Math.round((options.timeoutMs ?? 0) / 100) / 10;
+  const killedForBudget = error?.killed === true || error?.signal === "SIGTERM";
+  // `spawnSync … ETIMEDOUT` comes from the host wrapping child_process with a cap
+  // of its own; blaming our budget there would misreport who ended the run.
+  const cutByHost = error?.code === "ETIMEDOUT" && !killedForBudget;
+  const failure = new Error(
+    killedForBudget
+      ? `the poll did not finish inside ${seconds}s`
+      : cutByHost
+        ? `the poll was cut off by the host before it finished (budget ${seconds}s)`
+        : `${error?.message ?? "the command failed"}${detail ? `: ${detail}` : ""}`,
+  );
+  // Exit codes are part of the command contract: 2 means "this command needs a
+  // person once" (the sweep needs a browser sign-in), which is not the same
+  // problem as a crashed command.
+  if (typeof error?.code === "number") failure.exitCode = error.code;
+  // Keep the command's own words: a `--json` run may have answered while still
+  // exiting non-zero, and the answer is the better evidence.
+  failure.raw = {
+    code: error?.code ?? null,
+    signal: error?.signal ?? null,
+    killed: error?.killed ?? null,
+    stdout: String(stdout ?? "").length,
+    stderr: String(stderr ?? "").length,
+  };
+  failure.stdout = stdout ?? "";
+  failure.stderr = stderr ?? "";
+  return failure;
+}
+
 export function runCommand(spec, options, extraEnv = {}) {
   const command = spec.command ?? "node";
   const args = Array.isArray(spec.args) ? spec.args : [];
@@ -1724,54 +1771,45 @@ export function runCommand(spec, options, extraEnv = {}) {
       ? [...args, ...(extraEnv.INBOX_BRIDGE_DONE === "1" ? ["--done"] : [])]
       : args;
   return new Promise((resolve, reject) => {
-    execFile(
-      useNode ? process.execPath : command,
-      ackArgs,
-      {
-        cwd: options.cwd,
-        env: {
-          ...process.env,
-          ...(useNode ? { ELECTRON_RUN_AS_NODE: "1" } : {}),
-          ...(options.repos?.length > 0
-            ? { INBOX_REPO: options.repos.join(",") }
-            : options.repo
-              ? { INBOX_REPO: options.repo }
-              : {}),
-          ...identityEnv(options.identity),
-          ...(options.clear && options.clear !== "off" ? { INBOX_CLEAR: options.clear } : {}),
-          ...extraEnv,
+    try {
+      execFile(
+        useNode ? process.execPath : command,
+        ackArgs,
+        {
+          cwd: options.cwd,
+          env: {
+            ...process.env,
+            ...(useNode ? { ELECTRON_RUN_AS_NODE: "1" } : {}),
+            ...(options.repos?.length > 0
+              ? { INBOX_REPO: options.repos.join(",") }
+              : options.repo
+                ? { INBOX_REPO: options.repo }
+                : {}),
+            ...identityEnv(options.identity),
+          // The poller's fetch has its own budget inside the command we spawn.
+          // Give it ours minus a margin, so a slow fetch says "the poll did not
+          // finish inside Ns" instead of the outer kill, which says nothing.
+          ...(options.pollBudgetMs > 0 ? { INBOX_POLL_TIMEOUT_MS: String(options.pollBudgetMs) } : {}),
+            ...(options.clear && options.clear !== "off" ? { INBOX_CLEAR: options.clear } : {}),
+            ...extraEnv,
+          },
+          timeout: options.timeoutMs,
+          windowsHide: true,
+          maxBuffer: 4 * 1024 * 1024,
         },
-        timeout: options.timeoutMs,
-        windowsHide: true,
-        maxBuffer: 4 * 1024 * 1024,
-      },
-      (error, stdout, stderr) => {
-        if (error) {
-          const detail = (stderr || stdout || "").trim().slice(0, 200);
-          // A kill for the elapsed budget is not the command failing: it never
-          // got to answer. Saying "Command failed" made a timeout look like a
-          // broken script, which is why 91 of them went unremarked.
-          const seconds = Math.round((options.timeoutMs ?? 0) / 100) / 10;
-          const timedOut = error.killed === true || error.signal === "SIGTERM";
-          const failure = new Error(
-            timedOut
-              ? `the poll did not finish inside ${seconds}s`
-              : `${error.message}${detail ? `: ${detail}` : ""}`,
-          );
-          // Exit codes are part of the command contract: 2 means "this command
-          // needs a person once" (the sweep needs a browser sign-in), which is
-          // not the same problem as a crashed command.
-          if (typeof error.code === "number") failure.exitCode = error.code;
-          // Keep the command's own words: a `--json` run may have answered while
-          // still exiting non-zero, and the answer is the better evidence.
-          failure.stdout = stdout ?? "";
-          failure.stderr = stderr ?? "";
-          reject(failure);
-          return;
-        }
-        resolve(stdout);
-      },
-    );
+        (error, stdout, stderr) => {
+          if (error) {
+            reject(commandFailure(error, { stdout, stderr }, options));
+            return;
+          }
+          resolve(stdout);
+        },
+      );
+    } catch (error) {
+      // A host that wraps `child_process` can throw before the callback runs;
+      // that spawn still failed, so it leaves through the same door.
+      reject(commandFailure(error, {}, options));
+    }
   });
 }
 
