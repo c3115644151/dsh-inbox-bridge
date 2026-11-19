@@ -209,7 +209,12 @@ const DEFAULTS = Object.freeze({
    * end polls once (see `apply`). Idle sessions cost nothing.
    */
   intervalMs: 60 * 1000,
-  timeoutMs: 45_000,
+  /**
+   * How long one poll may take. A poll of two repositories costs ~30 s of
+   * sequential `gh` calls, so the old 45 s ceiling killed a real cycle every
+   * forty minutes and logged it as a failed command — see `runCommand`.
+   */
+  timeoutMs: 120_000,
   maxEvents: 6,
   /** command the notice tells the agent to run; set it to your project's wrapper */
   ackHint: DEFAULT_ACK_HINT,
@@ -1706,7 +1711,7 @@ function identityEnv(identity) {
   };
 }
 
-function runCommand(spec, options, extraEnv = {}) {
+export function runCommand(spec, options, extraEnv = {}) {
   const command = spec.command ?? "node";
   const args = Array.isArray(spec.args) ? spec.args : [];
   // "node" — or the binary this plugin itself runs inside, which is Electron in
@@ -1743,7 +1748,16 @@ function runCommand(spec, options, extraEnv = {}) {
       (error, stdout, stderr) => {
         if (error) {
           const detail = (stderr || stdout || "").trim().slice(0, 200);
-          const failure = new Error(`${error.message}${detail ? `: ${detail}` : ""}`);
+          // A kill for the elapsed budget is not the command failing: it never
+          // got to answer. Saying "Command failed" made a timeout look like a
+          // broken script, which is why 91 of them went unremarked.
+          const seconds = Math.round((options.timeoutMs ?? 0) / 100) / 10;
+          const timedOut = error.killed === true || error.signal === "SIGTERM";
+          const failure = new Error(
+            timedOut
+              ? `the poll did not finish inside ${seconds}s`
+              : `${error.message}${detail ? `: ${detail}` : ""}`,
+          );
           // Exit codes are part of the command contract: 2 means "this command
           // needs a person once" (the sweep needs a browser sign-in), which is
           // not the same problem as a crashed command.

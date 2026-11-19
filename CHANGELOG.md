@@ -1,3 +1,8 @@
+## 未发布（等确认后定版本号）
+
+- **轮询不再因为时间预算被杀掉却只写一句 `Command failed`。** 默认 `timeoutMs` 45 秒 → 120 秒；超时在 `plugin.log` 里如实写成 `the poll did not finish inside 120s`。量出来的事实：两个仓库的一轮串行 `gh` 调用要 28.7 秒，45 秒的余量只剩 16 秒，63 小时里记了 91 次 `poll skipped`，平均 41.6 分钟丢一轮——通知器的沉默有一半来自这里，被一句像脚本崩了的日志盖住了。
+- **`runCommand` 现在是导出函数**，随包带着一条约定测试：`timeoutMs: 400` 的 5 秒命令必须报「没在 0.4s 内跑完」（不含 `Command failed`），`process.exit(2)` 必须保留 `exitCode === 2`（收口命令自己声明的契约）。
+
 ## 2.23.4
 
 - **别人开进我维护的仓库的 PR 与 issue，现在算我的事。** 只要仓库对我是 owner 或 admin，别人开的 PR（非草稿）与 issue 都会成为 `incoming` 事件，不必等他们指派我或 @ 我；通知写作 `[仓库里来了新 PR]`、`[仓库里来了新 issue]`。不是 owner/admin 的仓库一律不算——那里堆着的 PR 与我无关。这条能力 2.1.0 把事件收窄成「身份关系」时丢掉了，代价是 `c3115644151/dsh-inbox-bridge#10` 在仓库里躺了 16 小时：它是 `polang233` 修 tarball 缺 `scripts/key.mjs` 的补丁，一条真正的 P0。

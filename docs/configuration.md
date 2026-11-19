@@ -56,7 +56,7 @@ GitHub 的 Done 只有网页端点，所以归档要用插件自己的浏览器�
 | `repo` | 从 `origin` 推断 | 只盯这一个 `owner/name`；`INBOX_REPO` 环境变量可覆盖 |
 | `repos` | `[]` | 盯一组仓库：`["owner/one", "owner/two"]`；非空时优先于 `repo`，状态按仓库分片 |
 | `intervalMs` | `60000`（1 分钟） | **回合进行中**的轮询间隔；`wakeup` 下空闲时也按它取数，`quiet` 下空闲不轮询。CI 需要更快的返工就调小它（下限 5000），代价是每次轮询三个 `gh` 只读请求 |
-| `timeoutMs` | `45000` | 单次轮询命令的超时 |
+| `timeoutMs` | `120000` | 单次轮询命令的超时。两个仓库的一轮串行 `gh` 调用实测约 30 秒，所以给它四倍余量；超时会被日志如实写成「没在 120 秒内跑完」，而不是一句 `Command failed` |
 | `maxEvents` | `6` | 一条通知里最多列几条，其余指向 `list` |
 | `ackHint` | `node "<插件路径>/scripts/inbox-bridge.mjs" ack --done -- <key>` | 收口命令的示例文本；只在 `list`/文档里出现，**不注入通知** |
 | `resurfaceMs` | `21600000`（6 小时） | 标了 delivered 但没处理的，多久后再提一次 |

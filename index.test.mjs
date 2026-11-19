@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { DEFAULT_ACK_HINT, admissionVerdict, audienceFor, buildMessage, buildUiPayload, deliver, deliveryTargets, detectRepo, eventTier, filterUndelivered, formatEvents, itemIdentity, keyOf, mergeConfig, roleAllowed, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, sessionLabel, sessionTag, wakePlan } from "./index.js";
+import { DEFAULT_ACK_HINT, admissionVerdict, audienceFor, buildMessage, buildUiPayload, deliver, deliveryTargets, detectRepo, eventTier, filterUndelivered, formatEvents, itemIdentity, keyOf, mergeConfig, roleAllowed, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, runCommand, sessionLabel, sessionTag, wakePlan } from "./index.js";
 
 const idle = { status: "idle" };
 const running = { status: "running" };
@@ -1526,4 +1526,33 @@ test("the host decides who may read this instance, and nothing else counts", () 
   assert.equal(admissionVerdict(bare, { connection: null }), 403);
   assert.equal(admissionVerdict(sameOrigin, { connection: {} }), 403);
   assert.equal(admissionVerdict(sameOrigin, {}), 403);
+});
+
+test("a poll killed for its budget says so, and one that exits non-zero keeps its exit code", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "ib-runcommand-"));
+  try {
+    await assert.rejects(
+      () => runCommand(
+        { command: process.execPath, args: ["-e", "setTimeout(() => {}, 5000)"] },
+        { cwd, timeoutMs: 400 },
+      ),
+      (error) => {
+        assert.match(error.message, /the poll did not finish inside 0\.4s/u);
+        assert.doesNotMatch(error.message, /Command failed/u);
+        return true;
+      },
+    );
+    await assert.rejects(
+      () => runCommand(
+        { command: process.execPath, args: ["-e", "process.exit(2)"] },
+        { cwd, timeoutMs: 10_000 },
+      ),
+      (error) => {
+        assert.equal(error.exitCode, 2);
+        return true;
+      },
+    );
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
 });
