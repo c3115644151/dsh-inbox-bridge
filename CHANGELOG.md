@@ -1,3 +1,9 @@
+## 未发布（等确认后定版本号）
+
+- **别人开进我维护的仓库的 PR 与 issue，现在算我的事。** 只要仓库对我是 owner 或 admin，别人开的 PR（非草稿）与 issue 都会成为 `incoming` 事件，不必等他们指派我或 @ 我；通知写作 `[仓库里来了新 PR]`、`[仓库里来了新 issue]`。不是 owner/admin 的仓库一律不算——那里堆着的 PR 与我无关。这条能力 2.1.0 把事件收窄成「身份关系」时丢掉了，代价是 `c3115644151/dsh-inbox-bridge#10` 在仓库里躺了 16 小时：它是 `polang233` 修 tarball 缺 `scripts/key.mjs` 的补丁，一条真正的 P0。
+- **判据来自仓库自己，不是「谁在轮询它」。** 每次轮询对仓库做一次 `gh api repos/<repo>`（进程内缓存），`me` 是 owner 或 `permissions.admin` 才算维护者。投递仍按条目级：先给认领这条的会话，再给在这个仓库里干活的，再给接管者。一条 PR 只报一次「等你定」，检查变红、评审状态变化都不再重复。
+- **首次轮询不会倒出历史 issue。** 沿用铃铛那条时间窗：某仓库第一次被看到时，只认一天以内开的 issue；PR 不看时间窗——开着的 PR 本身就是待办。
+
 ## 2.23.3
 
 - **装上就能用：npm 包里重新有 `scripts/key.mjs` 了。** 2.22.0–2.23.2 的 tarball 里缺这个文件，而 `index.js` 与 `scripts/inbox-bridge.mjs` 都 import 它——任何人 `npm i` 之后都会 `ERR_MODULE_NOT_FOUND`，插件根本起不来。本地一直没暴露，因为桌面配置用 Junction 直接指向源码目录，从不碰打包后的文件。修复来自 `polang233` 的 #10，只把已有的文件列进 `files`。
