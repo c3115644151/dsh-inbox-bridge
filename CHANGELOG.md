@@ -1,4 +1,4 @@
-## 未发布（等确认后定版本号）
+## 2.23.3
 
 - **装上就能用：npm 包里重新有 `scripts/key.mjs` 了。** 2.22.0–2.23.2 的 tarball 里缺这个文件，而 `index.js` 与 `scripts/inbox-bridge.mjs` 都 import 它——任何人 `npm i` 之后都会 `ERR_MODULE_NOT_FOUND`，插件根本起不来。本地一直没暴露，因为桌面配置用 Junction 直接指向源码目录，从不碰打包后的文件。修复来自 `polang233` 的 #10，只把已有的文件列进 `files`。
 - **发布流水线多了一道护栏。** 新增 `scripts/packaging.test.mjs`：白名单里的每个模块，其相对 import 目标必须也被白名单覆盖；白名单不许列仓库里不存在的文件。反向验证时把 `scripts/key.mjs` 从 `files` 删掉，两条断言分别点名 `index.js` 与 `scripts/inbox-bridge.mjs`，正是这次漏掉的那个文件。
