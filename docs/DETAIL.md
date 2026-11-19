@@ -15,6 +15,7 @@ That is also why it only reads: its job is to make the agent aware. The work hap
 ## What it does
 
 - **Relevance comes from your identity.** It queries the repositories as your local `gh` login (or a configured App identity) and keeps only events where you are the author, the reviewer, the assignee, or are mentioned.
+- **What lands in a repository you maintain is yours too.** If the repository says you are its owner or an admin, a pull request or issue someone else opened there is a decision you owe — assignment and mentions are not required. Repositories where you are not an owner or admin are excluded.
 - **Your own work follows you.** Beyond the repositories you own, it searches everything the account can read for your own items: pull requests you opened elsewhere, issues assigned to you, comments that mention you. Those find you too.
 - **You own a repository.** The first session in a workspace automatically takes the repository it sits in; later sessions start without one, and the panel can add or release. An owner receives the repository-wide signals: default-branch CI, security alerts, releases.
 - **Two tiers of ownership.** Repository-level facts go to the owner; item-level facts (checks, reviews, assignments, mentions on one pull request or issue) go to whoever works in that repository. One fact wakes one session.

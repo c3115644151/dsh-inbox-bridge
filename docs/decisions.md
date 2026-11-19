@@ -95,3 +95,16 @@
 **2026-11-19。** 通知流只报「上一轮之后有变动」的线程；第一次拉取没有上一轮，就只信一天以内的变动。GitHub 的 reason `author`（你自己创建了这个线程）整条丢掉。
 
 替代的是「没读过的通知都是新闻」：装好插件的那一刻，`Noema-Harness/noema-agent` 铃铛里积了四天、10 条自己创建的 issue 全倒进接管它的会话。那些 issue 在装插件之前就存在，是我自己开的，既不是回音也不是待办。代价是：铃铛里躺了超过一天、又来不及在上一轮之后被看到的线程不会触发提醒——它们仍在队列与面板里，只是不喊人。
+
+## D-016 别人开进我仓库的 PR 与 issue 也算我的事
+
+**2026-11-19。** 角色判定的第三处来源：如果仓库对我是 owner 或 admin，别人开进来的 PR 与 issue 就是 `incoming`，不管有没有指派我、有没有 @我。判据来自 GitHub 自己（`gh api repos/<repo> --jq .permissions.admin` 与 `.owner.login`），进程内按仓库缓存一次。
+
+替代的是 2.1.0 起的纯身份口径：`e0e8c4c feat: route events by identity and role` 加进 `extractPrEvents` 的 `if (role === null) continue;` 把「watched 仓库里的 open PR」全部过滤掉了，`prRole` 只认 author / reviewer / assignee。代价在 2026-11-19 显形：`c3115644151/dsh-inbox-bridge#10`（`polang233` 修的 tarball 缺 `scripts/key.mjs`，是全量安装即崩的 P0）在仓库里躺了 16 小时，通知器一声没响。维护者的信息范围就是这个仓库里出现的东西，不是「别人对我做了动作」。
+
+两处刻意的克制：
+
+- **只按仓库归属判定，不按「谁在轮询它」**：`awesome-dsh-plugin/awesome-dsh-plugin`、`polang233/dsh-plugin-index` 这些 `admin=false` 的仓库里堆着别人的几百个 PR，按轮询范围算会把它们全变成待办。
+- **仍然是条目级投递，不是仓库级**：仓库级只给接管者，而维护者未必接管了自己的仓库（「接管」是会话行为，见 D-008）。条目级链路——认领 → 在此干活的 → 接管者 → 否则留队列——才真能送到人手里。`incoming` 的 key 里只有「等你定」这一个状态，检查变红不追加第二条：一次提出只需要一个决定。
+
+首次轮询沿用 D-015 的时间窗：新仓库里一天以前的 issue 当历史，免得装上的那一刻倒出历年积压。PR 不看时间窗——open PR 本身就是待办。

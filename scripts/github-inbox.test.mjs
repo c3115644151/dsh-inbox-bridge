@@ -22,6 +22,7 @@ import {
   extractSecurityEvents,
   filterRuns,
   formatEvent,
+  isMaintainer,
   mentionsLogin,
   mineSearches,
   prRole,
@@ -809,6 +810,70 @@ test("a review request addressed to someone else is not mine", () => {
     { me: ME },
   );
   assert.deepEqual(events, []);
+});
+
+// 2.1.0 narrowed events to identities and lost this: a PR proposed to my own
+// repository reached nobody, because nobody had asked *me* to look at it. It
+// stayed invisible for a day (polang233's fix to the tarball's `files`).
+test("a PR proposed to a repository I maintain is mine even unnamed", () => {
+  const theirs = pullRequest({ number: 10, author: { login: "polang233" } });
+  assert.equal(prRole(theirs, ME, { mine: true }), "incoming");
+  // The same PR in somebody else's repository stays theirs.
+  assert.equal(prRole(theirs, ME), null);
+
+  const [event] = extractPrEvents([theirs], { me: ME, mine: true });
+  assert.equal(event.role, "incoming");
+  assert.equal(event.kind, "pr");
+  assert.equal(event.number, 10);
+  assert.deepEqual(event.reasons, ["opened by @polang233"]);
+  // One decision, one key: a check turning red is not a second decision.
+  assert.equal(event.key, "pr:10:incoming:awaiting-decision");
+  const moved = extractPrEvents(
+    [{ ...theirs, statusCheckRollup: [{ ...checkRun(), conclusion: "failure" }] }],
+    { me: ME, mine: true },
+  );
+  assert.equal(moved[0].key, event.key);
+});
+
+test("a draft is not yet a change anybody owes a decision on", () => {
+  const draft = pullRequest({ number: 11, author: { login: "polang233" }, isDraft: true });
+  assert.deepEqual(extractPrEvents([draft], { me: ME, mine: true }), []);
+});
+
+test("maintaining a repository is decided by who owns it, not by asking nicely", () => {
+  assert.equal(isMaintainer({ owner: ME }, ME), true);
+  assert.equal(isMaintainer({ owner: "someone-else", admin: true }, ME), true);
+  assert.equal(isMaintainer({ owner: "someone-else", admin: false }, ME), false);
+  assert.equal(isMaintainer(null, ME), false);
+  // No identity: nothing can be attributed, so no repository is mine.
+  assert.equal(isMaintainer({ owner: ME }, null), false);
+});
+
+test("an issue filed against my repository belongs to me as well", () => {
+  const filed = (overrides = {}) => ({
+    number: 151,
+    title: "the window closes on the first keystroke",
+    html_url: "https://github.com/c3115644151/dsh-inbox-bridge/issues/151",
+    created_at: "2026-11-15T04:45:00Z",
+    updated_at: "2026-11-15T04:45:00Z",
+    user: { login: "polang233" },
+    assignees: [],
+    ...overrides,
+  });
+  const state = normalizeState({ lastPollAt: "2026-11-15T04:30:00Z" });
+  const [event] = extractIssueEvents([filed()], state, { me: ME, mine: true });
+  assert.equal(event.role, "incoming");
+  assert.match(event.key, /^issue:151:incoming:/u);
+  // Not my repository: a stranger's issue is not news.
+  assert.deepEqual(extractIssueEvents([filed()], state, { me: ME }), []);
+  // The first poll has no "after" to compare with, so the one-day window decides.
+  const old = filed({ number: 152, created_at: "2026-11-02T04:45:00Z" });
+  const firstPoll = extractIssueEvents([old], normalizeState({}), {
+    me: ME,
+    mine: true,
+    now: new Date("2026-11-15T05:00:00Z"),
+  });
+  assert.deepEqual(firstPoll, []);
 });
 
 test("mentions match the App handle without its [bot] suffix", () => {

@@ -259,7 +259,7 @@ const DEFAULTS = Object.freeze({
    * notification stream — the poller then reads repository feeds only.
    */
   identity: { kind: "user", login: null, token: null, tokenEnv: null },
-  /** Event roles this host accepts (`author`/`reviewer`/`assignee`/`mention`/`ci`); empty = all */
+  /** Event roles this host accepts (`author`/`reviewer`/`assignee`/`mention`/`incoming`/`ci`); empty = all */
   roles: [],
   /**
    * Which notification threads to mark read once a poll has read them: `"repo"`
@@ -1870,6 +1870,7 @@ function askOf(event = {}) {
   if (kind === "comment") return role === "mention" ? "有人 @ 你" : "有人回复";
   if (kind === "issue") {
     if (role === "assignee") return "指派给你的 issue";
+    if (role === "incoming") return "仓库里来了新 issue";
     if (role === "author" || /mine/u.test(key)) return "你的 issue 有动静";
     return "有 issue 有动静";
   }
@@ -1879,6 +1880,7 @@ function askOf(event = {}) {
       return "你的 PR 没动静";
     }
     if (role === "reviewer") return "请你评审";
+    if (role === "incoming") return "仓库里来了新 PR";
     if (/merge:DIRTY/u.test(key)) return "你的 PR 有冲突";
     if (/merge:BEHIND/u.test(key)) return "你的 PR 落后了";
     return "你的 PR 检查失败";

@@ -373,11 +373,18 @@ export function extractRunEvents(runs = [], state = {}) {
 
 /**
  * How `me` is involved in one pull request: `author`, `reviewer`, `assignee`,
- * or null (not involved). `me === null` means "no filter" and returns `any`.
+ * `incoming` (someone else's PR in a repository `me` maintains), or null (not
+ * involved). `me === null` means "no filter" and returns `any`.
  * Review requests arrive as `reviewRequests` from `gh pr list` and as
  * `requested_reviewers` from the REST API; both shapes are accepted.
+ *
+ * `incoming` is not an identity relation: a PR nobody asked `me` to look at is
+ * still a change proposed to a repository `me` owns, and the maintainer is who
+ * decides on it. It was reported that way until 2.1.0 narrowed events to
+ * identities; the repository's own additions are the maintainer's ledger, not a
+ * stranger's business.
  */
-export function prRole(pr, me) {
+export function prRole(pr, me, { mine = false } = {}) {
   if (!me) return "any";
   const login = (entry) => entry?.login ?? null;
   if (login(pr?.author) === me) return "author";
@@ -389,7 +396,18 @@ export function prRole(pr, me) {
   if (reviewers.some((entry) => login(entry) === me)) return "reviewer";
   if ((Array.isArray(pr?.assignees) ? pr.assignees : []).some((entry) => login(entry) === me))
     return "assignee";
-  return null;
+  return mine ? "incoming" : null;
+}
+
+/**
+ * Whether the repository being polled is one `me` maintains: I own it, or my
+ * permission on it is admin. `owner` is the account's login as GitHub reports
+ * it, which is the only answer that does not depend on `me` describing itself.
+ */
+export function isMaintainer(repoFact, me) {
+  if (!me) return false;
+  const owner = repoFact?.owner ?? null;
+  return owner === me || repoFact?.admin === true;
 }
 
 /**
@@ -404,20 +422,26 @@ export function mentionsLogin(text, login) {
   return new RegExp(`(^|[^\\w./-])@${escaped}(?![\\w-])`, "iu").test(String(text ?? ""));
 }
 
-export function extractPrEvents(prs = [], { me = null } = {}) {
+export function extractPrEvents(prs = [], { me = null, mine = false } = {}) {
   const events = [];
   for (const pr of Array.isArray(prs) ? prs : []) {
     const number = pr?.number;
     if (!number) continue;
-    const role = prRole(pr, me);
-    // An event belongs to an identity, not to a repository: the reviewer asked
-    // for me is my task, the author waiting for someone else is not.
+    const role = prRole(pr, me, { mine });
+    // An identity event is somebody's task: the reviewer asked for me is mine,
+    // the author waiting for someone else is not. A repository event is the
+    // maintainer's ledger instead — see `prRole`.
     if (role === null) continue;
     const review = String(pr?.reviewDecision ?? "").toUpperCase();
     const failing = failingCheckNames(pr);
     const blocker = mergeBlocker(pr);
     const reasons = [];
-    if (role === "reviewer") {
+    if (role === "incoming") {
+      // A draft is not yet a change proposed to anyone; it becomes news when the
+      // author asks for review, which is the same PR with the same number.
+      if (pr?.isDraft === true || pr?.draft === true) continue;
+      reasons.push(`opened by @${pr?.author?.login ?? "someone"}`);
+    } else if (role === "reviewer") {
       // Already reviewed: the ball is back with the author.
       if (review === "CHANGES_REQUESTED") continue;
       reasons.push("review requested from you");
@@ -431,8 +455,14 @@ export function extractPrEvents(prs = [], { me = null } = {}) {
     }
     if (reasons.length === 0) continue;
     // A reviewer's key must not move when checks change: it is the same review
-    // task until they actually review.
-    const digest = role === "reviewer" ? "review-requested" : prStatusDigest(pr);
+    // task until they actually review. An incoming PR is one decision for the
+    // maintainer until it is merged or closed, so its key carries no digest.
+    const digest =
+      role === "reviewer"
+        ? "review-requested"
+        : role === "incoming"
+          ? "awaiting-decision"
+          : prStatusDigest(pr);
     events.push({
       key: `pr:${number}:${role}:${digest}`,
       kind: "pr",
@@ -572,7 +602,7 @@ export function extractCommentEvents(comments = [], { me = null } = {}) {
   return events;
 }
 
-export function extractIssueEvents(issues = [], state = {}, { me = null } = {}) {
+export function extractIssueEvents(issues = [], state = {}, { me = null, mine = false, now = new Date() } = {}) {
   const since =
     typeof state?.lastPollAt === "string" && Number.isFinite(Date.parse(state.lastPollAt))
       ? Date.parse(state.lastPollAt)
@@ -589,13 +619,19 @@ export function extractIssueEvents(issues = [], state = {}, { me = null } = {}) 
           ? "assignee"
           : mentionsLogin(issue?.body, me)
             ? "mention"
-            : null
+            : mine
+              ? "incoming"
+              : null
       : "any";
     if (role === null) continue;
     // Only issues that started after the previous poll are news; an old issue
-    // that mentions me is caught by the comment feed when someone replies.
+    // that mentions me is caught by the comment feed when someone replies. An
+    // issue filed in my repository is the same rule, and the first poll has no
+    // "after" to compare with — the mine feed's one-day window decides, or a
+    // fresh install would report every issue the repository ever had.
     const createdAt = Date.parse(issue.created_at ?? issue.createdAt ?? "");
     if (since != null && Number.isFinite(createdAt) && createdAt <= since) continue;
+    if (since == null && !withinMineFresh(issue.created_at ?? issue.createdAt, now)) continue;
     events.push({
       key: `issue:${issue.number}:${role}:${issue.updated_at ?? issue.updatedAt ?? ""}`,
       kind: "issue",
@@ -846,15 +882,17 @@ export function extractEvents(
     mine = [],
   } = {},
   state = {},
-  { me = null } = {},
+  // `mineRepo` is whether the polled repository is one this identity maintains;
+  // `mine` above is the account-wide search feed. Two different facts.
+  { me = null, mineRepo = false, now = new Date() } = {},
 ) {
   const events = [
     ...extractRunEvents(runs, state),
-    ...extractPrEvents(prs, { me }),
+    ...extractPrEvents(prs, { me, mine: mineRepo }),
     ...extractReviewCommentEvents(reviews, { me, prs }),
     ...extractNotificationEvents(notifications),
     ...extractCommentEvents(comments, { me }),
-    ...extractIssueEvents(issues, state, { me }),
+    ...extractIssueEvents(issues, state, { me, mine: mineRepo, now }),
     ...extractSecurityEvents(security),
     ...extractMineEvents(mine),
   ];
@@ -864,6 +902,12 @@ export function extractEvents(
   return events.map((event) => ({
     repo: activeRepo,
     role: event.kind === "ci" || event.kind === "recovered" ? "ci" : "any",
+    // What appeared in my own repository is a decision I owe as its maintainer,
+    // but it is delivered like any other item: to whoever works in the repository
+    // and, if nobody does, to whoever took it over. Making it repository-tier
+    // instead would hand it only to a session that formally took the repository
+    // over — and a maintainer who is simply working in his own repository would
+    // then never hear about it.
     tier: ["ci", "recovered", "security"].includes(event.kind) ? "repo" : "item",
     ...event,
   }));
@@ -946,6 +990,7 @@ export function pollOnce({
   fetchSecurity,
   fetchReviews,
   fetchMine,
+  fetchRepo,
   markRead,
 } = {}) {
   const runsResult =
@@ -1014,7 +1059,15 @@ export function pollOnce({
   };
   const sinceAt = Date.parse(normalizeState(state).lastPollAt ?? "");
   const since = Number.isFinite(sinceAt) ? sinceAt : null;
-  const events = extractEvents(payload, state, { me }).filter(
+  // Whether this repository is mine decides if what appears in it is news: a PR
+  // proposed to my repository is a decision I owe, while a stranger's PR in
+  // somebody else's repository is not mine to read. One extra read per poll,
+  // cached for the process, and a failure only means "not mine" — the identity
+  // events are unaffected.
+  const repoFact =
+    typeof fetchRepo === "function" ? (fetchRepo()?.value ?? null) : null;
+  const mineRepo = isMaintainer(repoFact, me);
+  const events = extractEvents(payload, state, { me, mineRepo, now }).filter(
     (event) => event.source !== "notification" || notificationNews(event, since, now),
   );
   const fresh = sortEvents(repeat ? events : diffEvents(events, state));
@@ -1260,6 +1313,27 @@ function ghJson(args, { cwd, timeout = GH_TIMEOUT_MS } = {}) {
 }
 
 let cachedLogin;
+
+/**
+ * Who owns the repository being polled, and whether this identity is an admin
+ * there. Cached for the process: ownership does not change between two polls a
+ * minute apart, and a `gh` call per poll for a fact that decides one rule is a
+ * cost with nothing to show for it.
+ */
+const cachedRepos = new Map();
+
+export function fetchRepoFact(cwd, repo = activeRepo) {
+  const name = String(repo ?? "");
+  if (cachedRepos.has(name)) return { ok: true, value: cachedRepos.get(name) };
+  const result = ghJson(
+    ["api", `repos/${name}`, "--jq", "{owner: .owner.login, admin: .permissions.admin}"],
+    { cwd },
+  );
+  const fact =
+    result.ok && result.value && typeof result.value === "object" ? result.value : null;
+  if (fact) cachedRepos.set(name, fact);
+  return result.ok && fact ? { ok: true, value: fact } : { ok: false, value: null };
+}
 
 /**
  * The login the events are filtered against. An explicit `identity.login` wins;
@@ -1596,6 +1670,7 @@ function runPoll({ repoRoot, stateFile, pendingFile, state, options, now, me, re
       fetchFeed: (currentState) => fetchFeed(currentState, repoRoot),
       fetchSecurity: () => fetchSecurityAlerts(repoRoot),
       fetchReviews: () => fetchReviewComments(repoRoot),
+      fetchRepo: () => fetchRepoFact(repoRoot, repo),
       // Item facts are not per repository: one search answers for the whole account,
       // so they are collected once in `runPoll` and folded in after the loop.
       fetchMine: () => ({ ok: true, value: [], notes: [] }),

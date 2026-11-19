@@ -102,7 +102,8 @@
       <h2>它做什么</h2>
       <ul>
         <li><strong>按身份判断相关性。</strong>用它自己的身份查 GitHub，只留它是作者、评审人、指派对象或被提及的事。</li>
-        <li><strong>自己的工作跟人走。</strong>在别的仓库提的 PR、被指派的 issue、被 @ 的评论，也一样会送回来——不限于它所在的仓库。</li>
+        <li><strong>我维护的仓库里出现的东西也算我的。</strong>仓库对我是 owner 或 admin 时，别人开进来的 PR 与 issue 就是维护者该看的事，不必等我被指派或 @；别人的仓库不算。</li>
+<li><strong>自己的工作跟人走。</strong>在别的仓库提的 PR、被指派的 issue、被 @ 的评论，也一样会送回来——不限于它所在的仓库。</li>
         <li><strong>接管仓库。</strong>一个会话接管一个仓库之后，仓库级信号（默认分支的 CI、安全告警、新开的 issue）只给接管的会话；工作区里的第一个会话自动接管它所在的仓库。</li>
         <li><strong>两级归属。</strong>仓库级事实只给接管者；条目级事实给在仓库里干活的会话，没有就落到接管者、再落到最近说话的那个——同一条事实只叫一个会话。</li>
         <li><strong>轮询跟随回合。</strong>开始时一次、进行中每 1 分钟一次、结束时一次；没人接管的仓库不被访问。</li>
@@ -135,7 +136,7 @@ dsh plugin add ./dsh-inbox-bridge</pre>
         <tr><td><code>cwd</code></td><td>DSH 进程工作目录</td><td>状态文件位置；推断仓库的起点</td></tr>
         <tr><td><code>repo</code> / <code>repos</code></td><td>空</td><td>实例级接管；平时由会话自己接管，不用写</td></tr>
         <tr><td><code>delivery</code></td><td><code>quiet</code></td><td><code>quiet</code> 只注入；<code>wakeup</code> 空闲时也能开一轮</td></tr>
-        <tr><td><code>roles</code></td><td>空（全收）</td><td>只关心某些角色：<code>author</code>、<code>reviewer</code>、<code>assignee</code>…</td></tr>
+        <tr><td><code>roles</code></td><td>空（全收）</td><td>只关心某些角色：<code>author</code>、<code>reviewer</code>、<code>assignee</code>、<code>incoming</code>…</td></tr>
         <tr><td><code>clear</code></td><td><code>repo</code></td><td>读到的事件标已读：<code>repo</code> 自己的仓库、<code>all</code> 整个账号、<code>off</code> 不动</td></tr>
         <tr><td><code>sweep</code></td><td>开</td><td>有新的仓库级事实时把收件箱归档到 Done，需先登录一次浏览器</td></tr>
       </table>

@@ -212,6 +212,14 @@ test("each line says what is being asked of me", () => {
     "- [请你评审] owner/one#1 t",
   );
   assert.equal(
+    line({ key: "owner/one#pr:10:incoming:awaiting-decision", kind: "pr", role: "incoming", title: "t" }),
+    "- [仓库里来了新 PR] owner/one#10 t",
+  );
+  assert.equal(
+    line({ key: "owner/one#issue:11:incoming:open", kind: "issue", role: "incoming", title: "t" }),
+    "- [仓库里来了新 issue] owner/one#11 t",
+  );
+  assert.equal(
     line({ key: "owner/one#issue:2:assignee:2026", kind: "issue", role: "assignee", title: "t" }),
     "- [指派给你的 issue] owner/one#2 t",
   );
