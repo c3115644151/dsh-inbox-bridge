@@ -60,6 +60,10 @@ ack 命令从 `INBOX_BRIDGE_KEYS`（JSON 数组）接收 key，收到 `--done` �
 - **写 GitHub**：本插件只读；标已读、加标签、评论都不做。
 - **跨机器同步**：状态是本地 `.work/`，不同步到云端。
 
+## 待办
+
+- **CI 上的 install job 还没上**：本仓库用 `gh` 的 OAuth App 凭据推代码，它没有 `workflow` scope，改 `.github/workflows/*` 会被 GitHub 拒（`refusing to allow an OAuth App to create or update workflow`）。补上需要 `gh auth refresh -s workflow` 人工授权一次；在那之前，`scripts/verify-install.mjs` 仍由 `scripts/release.mjs` 在每次发布前执行，缺的只是「每次 push 也跑一遍」。
+
 ## 怎么算做到了
 
 - 任意来源的事件都能用同一个 `poll` / `ack` 契约接入，接入方式写在 README 里、有可运行的示例；

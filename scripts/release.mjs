@@ -44,6 +44,9 @@ const type = value("--type") ?? "feat";
 const subject = value("--subject");
 const dryRun = flag("--dry-run");
 const skipPublish = flag("--no-publish");
+// Only for probing the pipeline itself: a build that skips the install gate is
+// not publishable, and the flag says so in the log.
+const skipVerify = flag("--skip-verify");
 
 function log(message) {
   console.log(`[release] ${message}`);
@@ -140,6 +143,19 @@ writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`, "utf8");
 writeFileSync(changelogPath, changelog.replace(PENDING_HEADING, `## ${version}`), "utf8");
 log(`package.json ${current} -> ${version}; CHANGELOG heading -> ${version}`);
 
+// 5b. The artifact gate. 2.22.0-2.23.2 shipped four versions that nobody could
+// install; every other gate was green because none of them ever unpacked the
+// tarball. This one does: pack, install into an empty project, import by name,
+// run the CLI. It runs after the version bump so it tests what will be
+// published, and before the commit so a broken package leaves no trace.
+if (skipVerify) {
+  log("skipping the install verification as asked (do not publish this build)");
+} else {
+  log("verifying that the tarball installs, imports and runs");
+  npmCmd(["run", "verify:install"]);
+  log("install verification passed");
+}
+
 // 6. The documentation gate runs after the market rebuild (step 7), not here.
 // `docs:check` compares the version in package.json with the one pinned in
 // docs/index.json, and that pin cannot name the new version until the release
@@ -173,7 +189,7 @@ for (let attempt = 1; attempt <= 3 && !pushed; attempt += 1) {
     pushed = true;
   } catch {
     log(`push attempt ${attempt} failed; retrying`);
-    runLoud("cmd", ["/c", `timeout /t ${attempt * 5} >nul`]);
+    sleep(attempt * 5000);
   }
 }
 if (!pushed) stop("push failed three times; the release commits are local, push them by hand");

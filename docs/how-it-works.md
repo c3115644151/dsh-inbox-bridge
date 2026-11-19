@@ -126,6 +126,25 @@ DSH 插件 (index.js)        调度与投递：什么时候去取、取回来给
 
 `explain <key>` 回答一个更具体的问题：这件事走到哪一步了——没被报出、被 `roles` 挡住、这个仓库没有被任何会话接管、在等你这一轮、已投递还在重提窗口里，或者已经收口。
 
+## 承诺与验证
+
+这份文档说的每件事，都应该有一条能跑的红灯证明它没被改坏。用户报过的漏（自己开的 issue 的回复、铃铛旧线程、回音落错会话、外来 PR 没人管）都曾在这张表之外——那时的「承诺」只写在文档里，没有测试替它站岗。现在一条承诺没有对应的验证，就不算承诺。
+
+| 承诺 | 验证（都能在本地一条命令跑） |
+| --- | --- |
+| 只有宿主同意的读才能读三条路由 | `index.test.mjs` 的 `the host decides who may read this instance, and nothing else counts`；`admissionVerdict` 七种输入 → 200/401/403 |
+| 我在自己仓库里开的 issue，回复会被告知 | `github-inbox.test.mjs` 的 `the account's own searches cover issues it opened, with @me spelled out` |
+| 别人开进我维护仓库的 PR / issue 算我的事 | `github-inbox.test.mjs` 的 `a PR proposed to a repository I maintain is mine even unnamed` 与 `an issue filed against my repository belongs to me as well` |
+| 铃铛里没动过的旧线程不是新闻 | `github-inbox.test.mjs` 的 `the bell telling you that you wrote the issue is not a reply`、`the first poll of the bell only trusts what moved today`、`after the first poll, only threads that moved since it are news` |
+| 回音不落进无关会话 | `index.test.mjs` 的 `a repository fact belongs to its owner, an item fact to whoever works there` 与 `nothing owned means nothing is polled` |
+| 认领优先于工作区与接管 | `index.test.mjs` 的 `an item claim beats where anyone works or what anyone took over` |
+| 一次超时说的是秒数，不是 `Command failed` | `inbox-bridge.test.mjs` 的 `a poll that runs out of its budget names the budget, not the spawn layer`；`index.test.mjs` 的 `a poll killed for its budget says so, and one that exits non-zero keeps its exit code` 与 `a failure names who ended the run, because three different things wear the same message` |
+| 装上去就能 import 并跑起来 | `npm run verify:install`：打包 → 空目录安装 → 按包名 import → 跑 CLI；`packaging.test.mjs` 静态守住白名单与 import 一致 |
+| 市场索引钉的是这次发布提交 | `npm run market:check` |
+| 文档与版本一处一致 | `npm run docs:check` |
+
+`npm run verify` 把前四类串起来（测试 + 文档 + 干净安装），发布流水线自己会跑它。
+
 ## 已知边界
 
 - **只读 GitHub**：不改仓库、不评论、不合并；自动审批不该长在通知插件里。

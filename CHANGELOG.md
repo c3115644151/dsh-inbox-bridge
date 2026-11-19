@@ -1,3 +1,11 @@
+## 2.24.0
+
+- **发布合同改成四条能跑的检查，不再靠点头。** `npm run verify` = `npm test` + `docs:check` + `verify:install`；`scripts/release.mjs` 在版本写进 `package.json` 之后、提交之前跑安装验证，坏包留不下提交也到不了 registry；CI 多一条同样的 job。动因：11-15 至 11-20 五天发了 83 个版本（11-17 一天 65 个），2.22.0–2.23.2 的 tarball 缺 `scripts/key.mjs` 而四道门全绿——没有一道门拆过包。
+- **新增 `scripts/verify-install.mjs`。** 打包 → 空目录 `npm i <tgz>` → 按包名 `import` 并数导出 → 跑一次 `status --json`。反向验证：把 `scripts/key.mjs` 从 `files` 里删掉，它报 `ERR_MODULE_NOT_FOUND … scripts/key.mjs` 并退出 1，正是 2.22.0 起用户看到的那句。
+- **`docs/how-it-works.md` 多了一张「承诺与验证」表**：十条用户可见的承诺各自指向一条具体测试或命令；表外的承诺不算承诺。
+- **`docs/decisions.md` D-017** 记下这次治理取舍：为什么关卡要写进代码、为什么不设冷却期、`--skip-verify` 为何只用于验证流水线自身。
+- **发布流水线里最后一处 `timeout /t` 换成了 `sleep()`**：推送重试的等待不再依赖控制台 stdin。
+
 ## 2.23.6
 
 - **轮询时间预算只有一层，而且它在日志里说人话。** 2.23.5 放宽的是外层 `timeoutMs`，真正杀轮询的是内层：`scripts/inbox-bridge.mjs` 的 `pollSnapshot` 用 `execFileSync` 起抓取器，自带的 45 秒预算比外层短，超时只抛一句 `spawnSync … ETIMEDOUT`。现在预算是同一个数：宿主把 `timeoutMs - 5000` 通过 `INBOX_POLL_TIMEOUT_MS` 传下去，命令行单独跑时缺省 `POLL_TIMEOUT_MS = 45_000`；超时统一写成 `the poll did not finish inside 45s`，并附 `raw = { code, signal, killed }`。实跑证据：`INBOX_POLL_TIMEOUT_MS=2000 node scripts/inbox-bridge.mjs poll --json` → `{"skipped":"the poll did not finish inside 2s"}`。
