@@ -23,6 +23,7 @@ import {
   filterRuns,
   formatEvent,
   mentionsLogin,
+  mineSearches,
   prRole,
   pullsArgs,
   runsArgs,
@@ -754,6 +755,20 @@ test("issues are mine as author, assignee or mention — and only when new", () 
   assert.match(assigned[0].key, /^issue:150:assignee:/u);
   const mentioned = extractIssueEvents([issue({ body: "@noema-agent 负责这个" })], state, { me: ME });
   assert.equal(mentioned[0].role, "mention");
+});
+
+// An issue you opened is not assigned to you, so only a search for authors
+// finds the answer that lands in it. This is the regression that left a
+// maintainer's reply on polang233/dsh-plugin-index#527 unseen for a day.
+test("the account's own searches cover issues it opened, with @me spelled out", () => {
+  const queries = mineSearches("c3115644151").map((search) => search.q);
+  assert.ok(
+    queries.includes("is:issue author:c3115644151 archived:false"),
+    `no issue-author search in ${JSON.stringify(queries)}`,
+  );
+  for (const query of queries) assert.doesNotMatch(query, /@me/u);
+  // A bot login is indexed without its suffix.
+  assert.ok(mineSearches("dependabot[bot]").every((search) => !search.q.includes("[bot]")));
 });
 
 test("every event names its repository and role for the delivery filter", () => {

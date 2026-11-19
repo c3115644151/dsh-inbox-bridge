@@ -1410,60 +1410,22 @@ export function roleAllowed(roles, event) {
  * shell, which forwards the page's own fetch over its IPC bridge with the
  * browser's credentials attached.
  *
- * Older hosts have no such service. There the only evidence is what the browser
- * says about itself (see {@link fromHostPage}), and that has to stand in for the
- * credential check — weaker, which is why it is the fallback rather than the rule.
+ * When that service is absent, or throws, or is not the shape we expect, this
+ * refuses: a request header is not a credential, and a local process can forge
+ * one. There is no weaker path worth keeping — an instance whose host cannot
+ * vouch for a caller has nobody to let in.
  */
 export function admissionVerdict(request, { connection = null } = {}) {
   const judge = connection && typeof connection.requestRejection === "function" ? connection.requestRejection : null;
-  if (judge) {
-    let verdict;
-    try {
-      verdict = judge.call(connection, request);
-    } catch {
-      // A host that throws is not vouching for anybody; fall through to the
-      // header evidence rather than letting the request in.
-      verdict = undefined;
-      return fromHostPage(request) ? null : 403;
-    }
-    if (verdict === 401 || verdict === 403) return verdict;
-    return null;
+  if (!judge) return 403;
+  let verdict;
+  try {
+    verdict = judge.call(connection, request);
+  } catch {
+    return 403;
   }
-  return fromHostPage(request) ? null : 403;
-}
-
-/**
- * Who may read this instance, or change it: the page the host itself serves.
- *
- * A `WebResource` receives no peer over HTTP (the webserver hands one only to
- * in-process reads), so the only evidence is what the browser says about
- * itself. A fetch from the GUI marks its fetch site `same-origin`; a page from
- * anywhere else marks `cross-site`, and a bare `curl` marks nothing at all —
- * which is not the page either. When the caller names an origin it must be the
- * one this very request arrived on, so a proxied or forwarded host cannot be
- * spoofed by merely echoing its own header.
- */
-export function fromHostPage(request, { origin = null, self = null } = {}) {
-  const headers = request?.headers;
-  if (!headers || typeof headers.get !== "function") return false;
-  let here = self;
-  if (!here) {
-    try {
-      here = new URL(request.url).origin;
-    } catch {
-      here = null;
-    }
-  }
-  const site = headers.get("sec-fetch-site");
-  if (site === "cross-site" || site === "same-site") return false;
-  const claimed = headers.get("origin") ?? origin;
-  if (claimed) return Boolean(here) && claimed === here;
-  const referer = headers.get("referer");
-  if (referer) return Boolean(here) && (referer === here || referer.startsWith(`${here}/`));
-  // Nothing at all: not a browser page (a bare `curl`, a script). A browser
-  // fetch always says how it is fetched, even when it sends no origin.
-  const mode = headers.get("sec-fetch-mode") ?? headers.get("sec-fetch-dest");
-  return Boolean(mode) || site === "same-origin" || site === "none";
+  if (verdict === 401 || verdict === 403) return verdict;
+  return null;
 }
 
 function sourceLabel(options) {

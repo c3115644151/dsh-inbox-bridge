@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { DEFAULT_ACK_HINT, admissionVerdict, audienceFor, buildMessage, buildUiPayload, deliver, deliveryTargets, detectRepo, eventTier, filterUndelivered, formatEvents, fromHostPage, mergeConfig, roleAllowed, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, sessionLabel, sessionTag, wakePlan } from "./index.js";
+import { DEFAULT_ACK_HINT, admissionVerdict, audienceFor, buildMessage, buildUiPayload, deliver, deliveryTargets, detectRepo, eventTier, filterUndelivered, formatEvents, mergeConfig, roleAllowed, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, sessionLabel, sessionTag, wakePlan } from "./index.js";
 
 const idle = { status: "idle" };
 const running = { status: "running" };
@@ -1450,34 +1450,10 @@ test("a fact about my repository waits for me while I am mid-turn", async () => 
   }
 });
 
-// The route answers the page the host serves and nothing else: a local tab, a
-// script, a curl with a made-up fetch site all stay outside.
-test("only the host's own page may read or change this instance", () => {
-  const ask = (headers) =>
-    new Request("http://127.0.0.1:3281/inbox-bridge/status.json", { headers });
-  assert.equal(fromHostPage(ask({ "sec-fetch-site": "same-origin" })), true);
-  assert.equal(fromHostPage(ask({ "sec-fetch-site": "none" })), true);
-  assert.equal(fromHostPage(ask({ "sec-fetch-site": "cross-site" })), false);
-  assert.equal(fromHostPage(ask({ "sec-fetch-site": "same-site" })), false);
-  assert.equal(fromHostPage(ask({})), false);
-  // A browser fetch names how it is fetched even when it sends no origin --
-  // the desktop shell's own reads look like this, and they must keep working.
-  assert.equal(fromHostPage(ask({ "sec-fetch-mode": "cors" })), true);
-  assert.equal(fromHostPage(ask({ "sec-fetch-dest": "empty" })), true);
-  assert.equal(fromHostPage(ask({ origin: "http://127.0.0.1:3281" })), true);
-  assert.equal(fromHostPage(ask({ origin: "http://127.0.0.1:9999" })), false);
-  assert.equal(fromHostPage(ask({ referer: "http://127.0.0.1:3281/app/" })), true);
-  assert.equal(fromHostPage(ask({ referer: "http://elsewhere.test/app/" })), false);
-  // A page on another origin may not pass by naming its own origin either.
-  assert.equal(
-    fromHostPage(ask({ origin: "http://elsewhere.test" }), { origin: "http://elsewhere.test" }),
-    false,
-  );
-});
-
-// The host's own admission is the rule when it exists: it knows the peer's
-// credential and the host fence, which no header can stand in for.
-test("the host decides who may read this instance, and its header fence is the fallback", () => {
+// The host's own admission is the only rule: it knows the peer's credential and
+// the host fence, which no request header can stand in for. A host that cannot
+// answer, or throws, vouches for nobody — and a header is not a credential.
+test("the host decides who may read this instance, and nothing else counts", () => {
   const ask = (headers) =>
     new Request("http://127.0.0.1:3281/inbox-bridge/status.json", { headers });
   const bare = ask({});
@@ -1488,7 +1464,7 @@ test("the host decides who may read this instance, and its header fence is the f
   // The host vouching for a request outranks anything the request says about
   // itself -- the desktop shell forwards the page's fetch with no fetch site.
   assert.equal(admissionVerdict(bare, { connection: { requestRejection: () => undefined } }), null);
-  // A host that throws is not vouching for anybody.
+  // A host that throws is not vouching for anybody, so the answer is no.
   assert.equal(
     admissionVerdict(
       bare,
@@ -1502,7 +1478,9 @@ test("the host decides who may read this instance, and its header fence is the f
     ),
     403,
   );
-  // Older hosts have no service: the header fence stands in, weaker but honest.
+  // No service at all: same answer. A same-origin header would otherwise be a
+  // credential any local process could mint.
   assert.equal(admissionVerdict(bare, { connection: null }), 403);
-  assert.equal(admissionVerdict(sameOrigin, { connection: {} }), null);
+  assert.equal(admissionVerdict(sameOrigin, { connection: {} }), 403);
+  assert.equal(admissionVerdict(sameOrigin, {}), 403);
 });

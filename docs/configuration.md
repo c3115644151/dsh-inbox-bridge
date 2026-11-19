@@ -28,7 +28,7 @@ DSH 的插件配置里，一个 `dsh-inbox-bridge` 条目即可；等价写法�
 
 写这些改动走的是插件注册的同源路由 `GET /inbox-bridge/prefs?...`，带一个每次进程启动重新生成的 token（随状态一起下发）。这有两个原因：宿主的 webServer 路由只应答 GET/HEAD，所以改动只能走查询串；token 保证别的本地页面不能替你做决定。
 
-这个端口上的三条路由（状态、改配置、页面日志）先把请求交给宿主的准入：`ctx.connection.requestRejection(request)`（插件在 `inject` 里声明 `connection`）。它做两件我们做不到的事——Host/Origin 栅栏，以及凭据检查（浏览器会话或 API token）；没有凭据的裸 `curl` 拿到 **401**，跨源页面拿到 **403**。桌面壳把页面的 fetch 走自己的 IPC 桥送进来，凭据跟着来，所以它照常通过。宿主没有这个服务时（旧版本），退回按请求头判断：带 `Sec-Fetch-Site: cross-site`/`same-site`、`Origin` 不匹配的一律 403，没有任何浏览器标记的 403。写设置另外还要每次进程启动重新生成的 token，两道门都要过。
+这个端口上的三条路由（状态、改配置、页面日志）先把请求交给宿主的准入：`ctx.connection.requestRejection(request)`（插件在 `inject` 里声明 `connection`）。它做两件我们做不到的事——Host/Origin 栅栏，以及凭据检查（浏览器会话或 API token）；没有凭据的裸 `curl` 拿到 **401**，跨源页面拿到 **403**。桌面壳把页面的 fetch 走自己的 IPC 桥送进来，凭据跟着来，所以它照常通过。宿主没有这个服务、或它抛错时（旧版本、服务异常）一律 **403**：请求头不是凭据，本机进程可以伪造 `Sec-Fetch-Site`。写设置另外还要每次进程启动重新生成的 token，两道门都要过。
 
 覆盖层只存你动过的键。看着 `overlay` 就知道现在哪些设置来自页面：
 

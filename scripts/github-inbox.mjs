@@ -727,12 +727,40 @@ export function extractMineEvents(items = []) {
 /** How many changed items one poll may report, so a burst cannot flood a turn. */
 const MINE_BURST = 6;
 
+/**
+ * How recent an item's last change must be to count as news the first time a
+ * repository's slice is written. A day: long enough for a reply that landed
+ * while nobody was looking, short enough that an upgrade stays quiet.
+ */
+const MINE_FRESH_MS = 24 * 60 * 60 * 1000;
+
+function withinMineFresh(at, now) {
+  const when = Date.parse(at ?? "");
+  if (!Number.isFinite(when)) return false;
+  return now.getTime() - when <= MINE_FRESH_MS;
+}
+
 const MINE_SEARCHES = [
   { q: "is:pr author:@me archived:false", role: "author", kind: "pr" },
   { q: "is:pr review-requested:@me archived:false", role: "reviewer", kind: "pr" },
+  { q: "is:issue author:@me archived:false", role: "author", kind: "issue" },
+  // An issue you opened collects answers in a place nobody assigned to you: the
+  // maintainer replies, the comment count moves, and that is news. Without this
+  // query a filing like "please add my plugin" goes silent the moment it is sent.
   { q: "is:issue assignee:@me archived:false", role: "assignee", kind: "issue" },
   { q: "mentions:@me archived:false", role: "mention", kind: "item" },
 ];
+
+/**
+ * The search queries for one login, with `@me` spelled out.
+ *
+ * `@me` does not expand in the search API, so every query carries the real
+ * login; a bot suffix is dropped because search indexes the bare name.
+ */
+export function mineSearches(login) {
+  const me = String(login ?? "").replace(/\[bot\]$/u, "");
+  return MINE_SEARCHES.map((search) => ({ ...search, q: search.q.replace(/@me\b/u, me) }));
+}
 
 /** Search for the account's own items across every repository it can read. */
 export function fetchMyItems(cwd, { me = null } = {}) {
@@ -740,9 +768,9 @@ export function fetchMyItems(cwd, { me = null } = {}) {
   if (!login) return { ok: true, value: [], notes: [] };
   const items = [];
   const notes = [];
-  for (const search of MINE_SEARCHES) {
+  for (const search of mineSearches(login)) {
     // `@me` does not expand in search, so the login has to be spelled out.
-    const query = search.q.replace(/@me\b/u, login.replace(/\[bot\]$/u, ""));
+    const query = search.q;
     const result = ghJson(
       [
         "api",
@@ -1604,8 +1632,17 @@ function runPoll({ repoRoot, stateFile, pendingFile, state, options, now, me, re
       const seen = { ...known };
       for (const event of stillNew) seen[event.key] = toIso(now);
       nextRepos[repo] = { ...slice, seen, lastMinePoll: toIso(now) };
-      if (bootstrap || stillNew.length === 0) continue;
-      fresh.push(...stillNew.slice(0, MINE_BURST));
+      // A brand-new slice holds today's answer as well as years of backlog, and
+      // the search that first reaches a repository must not swallow the reply
+      // that made it worth reaching. Recent items are reported; older ones are
+      // the baseline. The window is a day: long enough for a reply that landed
+      // while nobody was looking, short enough that an upgrade cannot replay a
+      // repository's history.
+      const report = bootstrap
+        ? stillNew.filter((event) => withinMineFresh(event.at, now))
+        : stillNew;
+      if (report.length === 0) continue;
+      fresh.push(...report.slice(0, MINE_BURST));
     }
   }
 
