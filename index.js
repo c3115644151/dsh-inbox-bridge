@@ -692,8 +692,8 @@ export function apply(ctx, config) {
       // maintainer's ledger: only the sessions that took the repository over see them.
       // Item-tier facts hang on one PR or issue; they go to whoever is working in that
       // repository, because that is the session whose own action is being answered —
-      // and if nobody works there, to the maintainers, and if nobody maintains it, to
-      // the session that spoke last.
+      // and if nobody works there, to the sessions that took it over; if nobody took
+      // it over either, to nobody: the fact waits in the queue and on the panel.
       const audiences = new Map();
       // Ownership is decided by the whole roster, not by who happens to be idle:
       // a fact about my repository belongs to me even while I am mid-turn, and it
@@ -721,7 +721,6 @@ export function apply(ctx, config) {
                   return sessionReposOf(keyOf(agent)).some((entry) => String(entry).toLowerCase() === wanted);
                 },
                 repoNames,
-                recent: lastActive,
               }),
             ),
           );
@@ -734,15 +733,26 @@ export function apply(ctx, config) {
         const mine = events.filter((event) => audienceOf(event).has(keyOf(agent)) && roleAllows(agent, event));
         if (mine.length > 0) batches.set(agent, mine);
       }
+      const unclaimed = events.filter((event) => audienceOf(event).size === 0).length;
       const unassociated = ready.length - batches.size;
       if (batches.size === 0) {
         // A running tool loop must not be interrupted: keep the events pending
         // (no ack) and deliver them when the run goes idle.
-        log(
-          `held ${events.length} event(s): ${deferred.length} agent(s) running` +
-            (unassociated > 0 ? `, ${unassociated} not on ${sourceLabel(scoped)}` : ""),
-        );
+        const why = [
+          deferred.length > 0 ? `${deferred.length} agent(s) running` : "",
+          unclaimed > 0 ? `${unclaimed} in a repository nobody here works in or maintains` : "",
+          unassociated > 0 ? `${unassociated} not on ${sourceLabel(scoped)}` : "",
+        ]
+          .filter(Boolean)
+          .join(", ");
+        log(`held ${events.length} event(s): ${why || "no session claims them"}`);
         return;
+      }
+      if (unclaimed > 0) {
+        log(
+          `${unclaimed} event(s) wait: nobody here works in or maintains their repository` +
+            ` (take it over to be answered there)`,
+        );
       }
       const wake = wakePlan(batches, options, {
         streak: wakeStreak,
@@ -1363,7 +1373,7 @@ export function eventTier(event = {}) {
   return kind === "ci" || kind === "security" || kind === "recovered" ? "repo" : "item";
 }
 
-export function audienceFor(tier, repo, agents = [], { owns = () => false, repoNames = new Map(), recent = new Map() } = {}) {
+export function audienceFor(tier, repo, agents = [], { owns = () => false, repoNames = new Map() } = {}) {
   const key = (agent) => keyOf(agent);
   const wanted = String(repo ?? "").toLowerCase();
   // A source that names no repository (a custom poll command) is instance-wide:
@@ -1376,12 +1386,11 @@ export function audienceFor(tier, repo, agents = [], { owns = () => false, repoN
   if (working.length > 0) return working.map(key);
   const owners = agents.filter((agent) => owns(agent));
   if (owners.length > 0) return owners.map(key);
-  // Nobody works there and nobody maintains it: the session that spoke last is the
-  // person who was doing something, so their own event reaches them.
-  const latest = agents
-    .slice()
-    .sort((a, b) => (recent.get(key(b)) ?? 0) - (recent.get(key(a)) ?? 0))[0];
-  return latest ? [key(latest)] : [];
+  // Nobody works there and nobody maintains it: nobody is answered. Handing the fact
+  // to whoever spoke last puts another session's repository in this session's turn,
+  // which is a wrong answer dressed as a delivery. It stays in the queue and on the
+  // panel; a session that wants those replies takes the repository over.
+  return [];
 }
 
 /**

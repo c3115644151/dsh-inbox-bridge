@@ -1367,18 +1367,23 @@ test("a repository fact belongs to its owner, an item fact to whoever works ther
   // My own pull request in a repository I do not maintain reaches me, because I
   // am the one working there.
   assert.deepEqual(audienceFor("item", "owner/two", agents, { owns, repoNames }), ["b"]);
-  // Nobody works there and nobody owns it: the session that spoke last gets it,
-  // rather than all of them or none.
+  // Nobody works there and nobody owns it: nobody is answered. Handing it to
+  // whichever session spoke last drops another repository's news into an unrelated
+  // turn — issue #527 once woke a Noema session about polang233/dsh-plugin-index.
   assert.deepEqual(
     audienceFor("item", "owner/three", agents, {
       // Nobody owns this one: `owns` is bound to the event's repository by the
       // caller, so an owner of another repository is not an owner here.
       owns: () => false,
       repoNames,
-      recent: new Map([
-        ["a", 1],
-        ["b", 2],
-      ]),
+    }),
+    [],
+  );
+  // A repository nobody works in still answers the session that took it over.
+  assert.deepEqual(
+    audienceFor("item", "owner/four", agents, {
+      owns: (agent) => agent.session.id === "b",
+      repoNames,
     }),
     ["b"],
   );
