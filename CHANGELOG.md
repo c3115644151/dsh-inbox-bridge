@@ -1,4 +1,4 @@
-## 未发布（等确认后定版本号）
+## 2.23.5
 
 - **轮询不再因为时间预算被杀掉却只写一句 `Command failed`。** 默认 `timeoutMs` 45 秒 → 120 秒；超时在 `plugin.log` 里如实写成 `the poll did not finish inside 120s`。量出来的事实：两个仓库的一轮串行 `gh` 调用要 28.7 秒，45 秒的余量只剩 16 秒，63 小时里记了 91 次 `poll skipped`，平均 41.6 分钟丢一轮——通知器的沉默有一半来自这里，被一句像脚本崩了的日志盖住了。
 - **`runCommand` 现在是导出函数**，随包带着一条约定测试：`timeoutMs: 400` 的 5 秒命令必须报「没在 0.4s 内跑完」（不含 `Command failed`），`process.exit(2)` 必须保留 `exitCode === 2`（收口命令自己声明的契约）。
