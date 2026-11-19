@@ -485,6 +485,111 @@ test("comment fallback extracts comments; only issues created since the last pol
   );
 });
 
+// The bell is not a log: it keeps a thread until somebody reads it, so an
+// untouched bell holds weeks of history. None of that is news.
+
+test("the bell telling you that you wrote the issue is not a reply", () => {
+  const events = extractNotificationEvents([
+    notification({
+      reason: "author",
+      subject: {
+        title: "把 hook 换成 pre-commit",
+        type: "Issue",
+        url: "https://api.github.com/repos/Noema-Harness/noema-agent/issues/134",
+        latest_comment_url: null,
+      },
+    }),
+    notification({
+      id: "9",
+      reason: "subscribed",
+      subject: {
+        title: "有人回答了我开的 issue",
+        type: "Issue",
+        url: "https://api.github.com/repos/Noema-Harness/noema-agent/issues/152",
+        latest_comment_url: null,
+      },
+    }),
+  ]);
+  assert.deepEqual(
+    events.map((event) => event.key),
+    ["issue:152:mention:2026-11-15T04:10:00Z"],
+  );
+});
+
+test("the first poll of the bell only trusts what moved today", () => {
+  const result = pollOnce({
+    state: normalizeState({}),
+    now: new Date("2026-11-19T08:00:00Z"),
+    ...sources({
+      feed: {
+        ok: true,
+        source: "notifications",
+        notifications: [
+          notification({
+            id: "7",
+            updated_at: "2026-11-15T13:32:47Z",
+            subject: {
+              title: "很久以前就有的 issue",
+              type: "Issue",
+              url: "https://api.github.com/repos/Noema-Harness/noema-agent/issues/134",
+              latest_comment_url: null,
+            },
+          }),
+          notification({
+            id: "8",
+            updated_at: "2026-11-19T06:00:00Z",
+            subject: {
+              title: "刚有人回答",
+              type: "Issue",
+              url: "https://api.github.com/repos/Noema-Harness/noema-agent/issues/152",
+              latest_comment_url: null,
+            },
+          }),
+        ],
+        comments: [],
+      },
+    }),
+  });
+  assert.deepEqual(
+    result.fresh.map((event) => event.key),
+    ["issue:152:mention:2026-11-19T06:00:00Z"],
+  );
+});
+
+test("after the first poll, only threads that moved since it are news", () => {
+  const stale = notification({
+    id: "3",
+    updated_at: "2026-11-19T06:59:00Z",
+    subject: {
+      title: "上一轮已经看过的回答",
+      type: "Issue",
+      url: "https://api.github.com/repos/Noema-Harness/noema-agent/issues/150",
+      latest_comment_url: null,
+    },
+  });
+  const after = notification({
+    id: "4",
+    updated_at: "2026-11-19T07:30:00Z",
+    subject: {
+      title: "这一轮才出现的回答",
+      type: "Issue",
+      url: "https://api.github.com/repos/Noema-Harness/noema-agent/issues/151",
+      latest_comment_url: null,
+    },
+  });
+  const result = pollOnce({
+    state: normalizeState({ lastPollAt: "2026-11-19T07:00:00Z" }),
+    now: new Date("2026-11-19T08:00:00Z"),
+    ...sources({
+      feed: { ok: true, source: "notifications", notifications: [stale, after], comments: [] },
+    }),
+  });
+  assert.deepEqual(
+    result.fresh.map((event) => event.key),
+    ["issue:151:mention:2026-11-19T07:30:00Z"],
+  );
+});
+
 // ---------------------------------------------------------------------------
 // Graceful degradation: gh failures never throw and never notify
 // ---------------------------------------------------------------------------

@@ -502,6 +502,9 @@ export function extractNotificationEvents(notifications = [], { repo = REPO } = 
     // covered by the open-PR feed. Keep this feed for comments / issues only.
     if (subject.type !== "Issue" && subject.type !== "PullRequest") continue;
     if (notification.reason === "ci_activity") continue;
+    // `author` is GitHub saying "you created the thread". Telling somebody about
+    // their own filing is not an inbox; it is the bell reading itself.
+    if (notification.reason === "author") continue;
     const number = issueNumberFromApiUrl(subject.url);
     if (!number) continue;
     const commentId = commentIdFromApiUrl(subject.latest_comment_url);
@@ -515,6 +518,7 @@ export function extractNotificationEvents(notifications = [], { repo = REPO } = 
       events.push({
         key: `comment:${commentId}:${role}`,
         kind: "comment",
+        source: "notification",
         role,
         repo: repoFullName,
         label: "Comment",
@@ -527,6 +531,7 @@ export function extractNotificationEvents(notifications = [], { repo = REPO } = 
       events.push({
         key: `issue:${number}:${role}:${at ?? ""}`,
         kind: "issue",
+        source: "notification",
         role,
         repo: repoFullName,
         label: "Issue",
@@ -738,6 +743,22 @@ function withinMineFresh(at, now) {
   const when = Date.parse(at ?? "");
   if (!Number.isFinite(when)) return false;
   return now.getTime() - when <= MINE_FRESH_MS;
+}
+
+/**
+ * Whether a notification-feed event is news.
+ *
+ * The bell is not a log: GitHub keeps a thread in it until somebody reads it,
+ * so a bell nobody has rung for a week looks exactly like a busy day. Only a
+ * thread that moved after the previous poll is news; on the first poll there is
+ * no "after" to compare with, so the same one-day window the mine feed uses
+ * decides — anything older is history that was already there before the plugin.
+ */
+function notificationNews(event, since, now) {
+  const when = Date.parse(event?.at ?? "");
+  if (!Number.isFinite(when)) return false;
+  if (since == null) return withinMineFresh(event.at, now);
+  return when > since;
 }
 
 const MINE_SEARCHES = [
@@ -991,7 +1012,11 @@ export function pollOnce({
     reviews,
     mine,
   };
-  const events = extractEvents(payload, state, { me });
+  const sinceAt = Date.parse(normalizeState(state).lastPollAt ?? "");
+  const since = Number.isFinite(sinceAt) ? sinceAt : null;
+  const events = extractEvents(payload, state, { me }).filter(
+    (event) => event.source !== "notification" || notificationNews(event, since, now),
+  );
   const fresh = sortEvents(repeat ? events : diffEvents(events, state));
   const nextState = updateState(state, { ...payload, events, now });
   // Reading a thread and leaving it unread is what makes an inbox unusable:
