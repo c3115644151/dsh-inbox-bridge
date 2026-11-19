@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { DEFAULT_ACK_HINT, admissionVerdict, audienceFor, buildMessage, buildUiPayload, deliver, deliveryTargets, detectRepo, eventTier, filterUndelivered, formatEvents, mergeConfig, roleAllowed, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, sessionLabel, sessionTag, wakePlan } from "./index.js";
+import { DEFAULT_ACK_HINT, admissionVerdict, audienceFor, buildMessage, buildUiPayload, deliver, deliveryTargets, detectRepo, eventTier, filterUndelivered, formatEvents, itemIdentity, keyOf, mergeConfig, roleAllowed, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, sessionLabel, sessionTag, wakePlan } from "./index.js";
 
 const idle = { status: "idle" };
 const running = { status: "running" };
@@ -1042,6 +1042,36 @@ test("the page can tune how patient a wakeup is", () => {
   assert.equal(preferenceNext({}, "budget", "4", {}).wakesPerHour, 4);
   assert.equal(preferenceNext({}, "budget", "0", {}), null);
   assert.equal(preferenceNext({}, "budget", "2.5", {}), null);
+});
+
+test("a claim names one item, not a repository", () => {
+  const options = { sessionId: "s1" };
+  const identity = "owner/one#issue:527";
+  assert.equal(preferenceNext({}, "claim", "", options), null);
+  assert.equal(preferenceNext({}, "claim", "owner/one", options), null);
+  assert.equal(preferenceNext({}, "claim", "owner/one#issue:527:minedigest", options), null);
+  assert.equal(preferenceNext({}, "claim", identity, {}), null);
+  assert.deepEqual(preferenceNext({}, "unclaim", identity, options).claims, {});
+  const claimed = preferenceNext({}, "claim", identity, options);
+  assert.deepEqual(claimed.claims, { [identity]: "s1" });
+  // A second session claiming the same item takes it over: one item, one answer.
+  const taken = preferenceNext(claimed, "claim", identity, { sessionId: "s2" });
+  assert.deepEqual(taken.claims, { [identity]: "s2" });
+  const released = preferenceNext(claimed, "unclaim", identity, options);
+  assert.deepEqual(released.claims, {});
+  assert.equal(itemIdentity("owner/one#issue:527:mine:openc6"), identity);
+});
+
+test("an item claim beats where anyone works or what anyone took over", () => {
+  const a = { session: { id: "a" } };
+  const b = { session: { id: "b" } };
+  const agents = [a, b];
+  const owns = (agent) => keyOf(agent) === "b";
+  const repoNames = new Map([["a", "owner/one"]]);
+  assert.deepEqual(audienceFor("item", "owner/one", agents, { owns, repoNames }), ["a"]);
+  assert.deepEqual(audienceFor("item", "owner/one", agents, { owns, repoNames, claim: "b" }), ["b"]);
+  // A claim cannot divert a repository-level fact (a CI failure, an alert).
+  assert.deepEqual(audienceFor("repo", "owner/one", agents, { owns, repoNames, claim: "b" }), ["b"]);
 });
 
 test("how a session treats its facts is the session's own choice", () => {

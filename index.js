@@ -104,6 +104,19 @@ export function preferenceNext(current = {}, action = "", value = "", options = 
     next.sessionRepos = { ...(next.sessionRepos ?? {}), [sessionId]: list };
     return next;
   }
+  if (action === "claim" || action === "unclaim") {
+    // A claim names one item, not a repository: `owner/name#kind:number`. Taking a
+    // whole repository over is `own`, a different signal — this one only says who
+    // is answered about that one PR or issue when nobody works in its repository.
+    const identity = String(value ?? "").trim();
+    if (!/^[^\s#]+\/[^\s#]+#[a-z]+:\d+$/u.test(identity)) return null;
+    if (!sessionId) return null;
+    const claims = { ...(next.claims ?? {}) };
+    if (action === "unclaim") delete claims[identity];
+    else claims[identity] = sessionId;
+    next.claims = claims;
+    return next;
+  }
   if (action === "idle") {
     // How long a session must be quiet before a wakeup may open a turn. Minutes
     // in the page, milliseconds here; zero means "as soon as nobody is busy".
@@ -415,15 +428,42 @@ export function apply(ctx, config) {
           autonomy: prefs.autonomy?.[sessionId] ?? "act",
         }
       : null;
+    const base = buildUiPayload({
+      options,
+      queue: readJson(join(options.cwd, STATE_REL))?.events,
+      source: readJson(join(options.cwd, SOURCE_STATE_REL)),
+      recent,
+      session,
+      polled: polledRepos(),
+    });
+    // Where the routing rules reach nobody, the panel offers a claim; where a
+    // session already spoke for an item, the panel says who. Same computation as
+    // `audienceFor`, done once here so the page does not have to guess.
+    const workingRepos = new Set();
+    const ownedRepos = new Set();
+    for (const [id, agent] of agents) {
+      const found = repoOf(agent);
+      if (found) workingRepos.add(String(found).toLowerCase());
+      for (const entry of sessionReposOf(id)) ownedRepos.add(String(entry).toLowerCase());
+    }
+    const claims = prefs.claims ?? {};
+    const events = (base.events ?? []).map((event) => {
+      const identity = itemIdentity(event.key);
+      const named = /^[^\s#]+\/[^\s#]+#[a-z]+:\d+$/u.test(identity);
+      const repo = String(event.repo ?? "").toLowerCase();
+      const claimedBy = named ? claims[identity] ?? null : null;
+      return {
+        ...event,
+        claim: named ? identity : null,
+        claimedBy,
+        // Offered only where a claim would actually change the answer: a session
+        // that works in the repository or took it over is already answered.
+        claimable: named && !claimedBy && !workingRepos.has(repo) && !ownedRepos.has(repo),
+      };
+    });
     return {
-      ...buildUiPayload({
-        options,
-        queue: readJson(join(options.cwd, STATE_REL))?.events,
-        source: readJson(join(options.cwd, SOURCE_STATE_REL)),
-        recent,
-        session,
-        polled: polledRepos(),
-      }),
+      ...base,
+      events,
       // The page proves it is this process's page before it may change anything,
       // and shows which choices came from it rather than from the profile. The
       // token rides in this response only because the route that answers it
@@ -710,7 +750,11 @@ export function apply(ctx, config) {
       const audienceOf = (event) => {
         const repo = event?.repo ?? repoOfKey(event?.key) ?? scoped.repo ?? null;
         const tier = eventTier(event);
-        const cacheKey = `${tier}|${String(repo ?? "").toLowerCase()}`;
+        // A claim is the one thing a session says out loud about a single item, so it
+        // beats every inference about who is answered. Repository-tier facts are not
+        // claimable, so a stale claim can never divert a CI failure.
+        const claim = tier === "item" ? (prefs.claims ?? {})[itemIdentity(event?.key)] ?? null : null;
+        const cacheKey = `${tier}|${String(repo ?? "").toLowerCase()}|${claim ?? ""}`;
         if (!audiences.has(cacheKey)) {
           audiences.set(
             cacheKey,
@@ -721,6 +765,7 @@ export function apply(ctx, config) {
                   return sessionReposOf(keyOf(agent)).some((entry) => String(entry).toLowerCase() === wanted);
                 },
                 repoNames,
+                claim,
               }),
             ),
           );
@@ -1373,9 +1418,30 @@ export function eventTier(event = {}) {
   return kind === "ci" || kind === "security" || kind === "recovered" ? "repo" : "item";
 }
 
-export function audienceFor(tier, repo, agents = [], { owns = () => false, repoNames = new Map() } = {}) {
+/**
+ * The stable identity of an item fact: `owner/name#kind:number`, without the digest.
+ *
+ * A key grows a digest every time the item changes (`…:issue:527:mine:openc6`), so a
+ * claim written against it would expire on the first reply. The slot in front of the
+ * digest names the item itself, which is what a session claims.
+ */
+export function itemIdentity(key) {
+  const text = String(key ?? "");
+  const cut = text.lastIndexOf(":mine:");
+  return cut > 0 ? text.slice(0, cut) : text;
+}
+
+export function audienceFor(
+  tier,
+  repo,
+  agents = [],
+  { owns = () => false, repoNames = new Map(), claim = null } = {},
+) {
   const key = (agent) => keyOf(agent);
   const wanted = String(repo ?? "").toLowerCase();
+  // A claim is a session saying out loud "that item is mine"; everything below is
+  // inference from where a session works or what it took over. Say-so wins.
+  if (tier !== "repo" && claim) return [claim];
   // A source that names no repository (a custom poll command) is instance-wide:
   // there is nothing to compare, so every session is a legitimate reader.
   if (!wanted) return agents.map(key);

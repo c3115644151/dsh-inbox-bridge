@@ -93,6 +93,10 @@ window.__ModuleLoader__.load({
         waiting: (n) => `${n} 条待处理`,
         handed: (n) => `${n} 条已投递`,
         handedTip: "已经交给某一轮，等它处理；下次轮询若这条事实不再成立，它会自动结束",
+        claim: "认领",
+        claimed: "已认领",
+        claimTip: "这个仓库没有会话在工作、也没人接管它；认领之后这一条的回音只送来这里",
+        claimedTip: "这一条的回音只送到认领它的会话",
         synced: (text) => `${text}同步`,
         never: "尚未同步",
         asUser: (login) => `以 ${login} 读取`,
@@ -153,6 +157,10 @@ window.__ModuleLoader__.load({
         waiting: (n) => `${n} waiting`,
         handed: (n) => `${n} already delivered`,
         handedTip: "Already handed to a turn, waiting for it; the next poll closes it once the fact no longer holds",
+        claim: "claim",
+        claimed: "claimed",
+        claimTip: "Nobody works in this repository and nobody took it over; claim this one and its replies come here",
+        claimedTip: "This item's replies go only to the session that claimed it",
         synced: (text) => `synced ${text}`,
         never: "not synced yet",
         asUser: (login) => `as ${login}`,
@@ -404,6 +412,24 @@ window.__ModuleLoader__.load({
       // status word: the pill and the row would otherwise be spending width on
       // jargon the reader does not need to decode.
       linkDim: { color: "var(--dsw-alias-label-tertiary)" },
+      // The one action a row can carry: claiming an item whose repository nobody
+      // works in and nobody took over. Kept to the footer, so the list still reads
+      // as a list and not as a button bar.
+      chip: (busy, taken) => ({
+        flex: "0 0 auto",
+        marginLeft: "auto",
+        padding: "0 6px",
+        border: "1px solid var(--dsw-alias-border-l2)",
+        borderRadius: "9px",
+        background: "transparent",
+        color: taken ? "var(--dsw-alias-label-tertiary)" : "var(--dsw-alias-label-secondary)",
+        font: "inherit",
+        fontSize: "10.5px",
+        lineHeight: "15px",
+        whiteSpace: "nowrap",
+        cursor: taken ? "default" : busy ? "progress" : "pointer",
+        opacity: busy ? 0.6 : 1,
+      }),
       link: {
         color: "var(--dsw-alias-label-secondary)",
         textDecoration: "none",
@@ -646,8 +672,9 @@ window.__ModuleLoader__.load({
       );
     }
 
-    function Row({ event, text }) {
+    function Row({ event, text, sessionId, onClaim }) {
       const [hover, setHover] = React.useState(false);
+      const [busy, setBusy] = React.useState(false);
       const title = event.title || fallbackTitle(event.key);
       const delivered = event.status === "delivered";
       const body = event.url
@@ -665,6 +692,35 @@ window.__ModuleLoader__.load({
         : h("span", { style: { ...styles.link, ...(delivered ? styles.linkDim : {}) }, title }, title);
       const kind = event.role && event.role !== "any" ? event.role : event.kind;
       const kindLabel = text.roles[kind] ?? text.kinds?.[kind] ?? "";
+      // One action, and only where it changes the answer: an item whose repository
+      // nobody here works in and nobody took over. A claim already taken by this
+      // session can be given back; one taken elsewhere is only a label.
+      const claimedByMe = Boolean(event.claimedBy && sessionId && event.claimedBy === sessionId);
+      const action = event.claimable ? "claim" : claimedByMe ? "unclaim" : null;
+      const chip = action
+        ? h(
+            "button",
+            {
+              type: "button",
+              disabled: busy,
+              title: action === "claim" ? text.claimTip : text.claimedTip,
+              style: styles.chip(busy, false),
+              onClick: async (press) => {
+                press.preventDefault();
+                press.stopPropagation();
+                setBusy(true);
+                try {
+                  await onClaim(event);
+                } finally {
+                  setBusy(false);
+                }
+              },
+            },
+            action === "claim" ? text.claim : text.claimed,
+          )
+        : event.claimedBy
+          ? h("span", { style: styles.chip(false, true), title: text.claimedTip }, text.claimed)
+          : null;
       return h(
         "div",
         {
@@ -685,6 +741,7 @@ window.__ModuleLoader__.load({
           event.repo
             ? h("span", { style: styles.rowRepo, title: event.repo }, `· ${event.repo.split("/").pop()}`)
             : null,
+          chip,
         ),
       );
     }
@@ -1235,6 +1292,16 @@ window.__ModuleLoader__.load({
       const shown = events.slice(0, CARD_ROWS);
       const hidden = Math.max(0, events.length - shown.length);
 
+      // Claiming is a preference, so it goes through the same route as every other
+      // choice the page makes: the token proves this is the host's own page, and
+      // the session in the query is the one that will be answered.
+      const claimItem = async (event) => {
+        const action = event.claimedBy ? "unclaim" : "claim";
+        const result = await change(status, action, event.claim ?? "");
+        if (result.ok) reload();
+        return result;
+      };
+
       const panel = open
         ? h(
             "div",
@@ -1267,7 +1334,15 @@ window.__ModuleLoader__.load({
               ? h(
                   "div",
                   { style: styles.list },
-                  shown.map((event) => h(Row, { key: event.key, event, text })),
+                  shown.map((event) =>
+                    h(Row, {
+                      key: event.key,
+                      event,
+                      text,
+                      sessionId: status.sessionId,
+                      onClaim: claimItem,
+                    }),
+                  ),
                   hidden > 0 ? h("div", { style: styles.more }, text.more(hidden)) : null,
                 )
               : // The title already says "nothing waiting"; a second copy of the same
