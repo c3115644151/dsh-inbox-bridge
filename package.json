@@ -37,6 +37,7 @@
     "icon.svg",
     "scripts/github-inbox.mjs",
     "scripts/inbox-bridge.mjs",
+    "scripts/key.mjs",
     "scripts/clear-inbox.mjs",
     "docs/how-it-works.md",
     "docs/configuration.md",
