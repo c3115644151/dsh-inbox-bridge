@@ -1,4 +1,4 @@
-## 未发布（等确认后定版本号）
+## 2.23.6
 
 - **轮询时间预算只有一层，而且它在日志里说人话。** 2.23.5 放宽的是外层 `timeoutMs`，真正杀轮询的是内层：`scripts/inbox-bridge.mjs` 的 `pollSnapshot` 用 `execFileSync` 起抓取器，自带的 45 秒预算比外层短，超时只抛一句 `spawnSync … ETIMEDOUT`。现在预算是同一个数：宿主把 `timeoutMs - 5000` 通过 `INBOX_POLL_TIMEOUT_MS` 传下去，命令行单独跑时缺省 `POLL_TIMEOUT_MS = 45_000`；超时统一写成 `the poll did not finish inside 45s`，并附 `raw = { code, signal, killed }`。实跑证据：`INBOX_POLL_TIMEOUT_MS=2000 node scripts/inbox-bridge.mjs poll --json` → `{"skipped":"the poll did not finish inside 2s"}`。
 - **`index.js` 的失败对象带 `raw`。** `commandFailure(error, { stdout, stderr }, options)` 现在是导出函数，回调与同步抛错两条路共用；`spawnSync` 层抛出的同步异常也会被承诺接住，而不是穿出执行器。
