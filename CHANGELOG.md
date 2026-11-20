@@ -1,4 +1,4 @@
-## 未发布（等确认后定版本号）
+## 2.24.1
 
 - **点「打开登录窗口」不再把宿主一起带走。** 那是一句 `spawn(process.execPath, …)`，只挂了 `exit` 没挂 `error`；当 `process.execPath` 指向一个已经不存在的文件（App 重装、目录搬走），`spawn` 不是返回值失败而是抛 `error` 事件，没人接的 `error` 事件结束整个宿主进程——用户那台机器上看到的就是「应用无法启动或已意外停止」，`errno -4058 ENOENT`，`spawnargs: ['scripts/clear-inbox.mjs','--login','--json']`。
 - **`hostRuntime()` / `signInLaunch()` / `spawnSignIn()` 三个导出函数接住这件事。** 解释器按「自己 → `DSH_NODE_EXECUTABLE` → `DSH_EXE`」挑第一个真实存在的；归档脚本按 `cwd` 解析，找不到同名文件就退到包里自带的 `scripts/clear-inbox.mjs`；两者都没有就返回原因、只写一行日志，不 spawn。`spawnSignIn()` 同时挂 `error` 与 `exit`，只结算一次；`runCommand()` 也走同一个解释器解析，解释器缺席时报 `no JS runtime at <path>` 而不是 `ENOENT`。
