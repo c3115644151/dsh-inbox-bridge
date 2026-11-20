@@ -6,11 +6,12 @@ import assert from "node:assert/strict";
 // the sweep path itself is covered by tests that pass their own command.
 process.env.INBOX_NO_BROWSER = "1";
 import { execFileSync } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, isAbsolute } from "node:path";
 
-import { DEFAULT_ACK_HINT, admissionVerdict, audienceFor, buildMessage, buildUiPayload, commandFailure, deliver, deliveryTargets, detectRepo, eventTier, filterUndelivered, formatEvents, itemIdentity, keyOf, mergeConfig, roleAllowed, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, runCommand, sessionLabel, sessionTag, wakePlan } from "./index.js";
+import { DEFAULT_ACK_HINT, admissionVerdict, audienceFor, buildMessage, buildUiPayload, commandFailure, deliver, deliveryTargets, detectRepo, eventTier, filterUndelivered, formatEvents, hostRuntime, itemIdentity, keyOf, mergeConfig, roleAllowed, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, runCommand, sessionLabel, sessionTag, signInLaunch, spawnSignIn, wakePlan } from "./index.js";
 
 const idle = { status: "idle" };
 const running = { status: "running" };
@@ -847,6 +848,9 @@ test("a sweep that needs a person says so, instead of looking like a crash", asy
   const root = mkdtempSync(join(tmpdir(), "inbox-sweep-login-"));
   const logPath = join(root, ".work", "inbox-bridge", "plugin.log");
   try {
+    // The window the plugin opens has to be a file that is really there: a spawn
+    // of a missing script raises an `error` event, and nothing answers it.
+    writeFileSync(join(root, "sweeper.mjs"), "console.log('login');\n");
     const ctx = fakeContext([fakeAgent(root)]);
     const { apply } = await import("./index.js");
     apply(ctx, mergeConfig({
@@ -960,6 +964,79 @@ test("the sign-in window is a setting: six hours between tries, by default", () 
   assert.equal(mergeConfig({ signInCooldownMs: 1_000 }).signInCooldownMs, 1_000);
   assert.throws(() => mergeConfig({ signInCooldownMs: -1 }), /non-negative integer/u);
   assert.throws(() => mergeConfig({ signInCooldownMs: "soon" }), /non-negative integer/u);
+});
+
+test("the sign-in window spawns a runtime and a script that are both really there", () => {
+  const app = "C:\\app\\Harness.exe";
+  const node = "C:\\node\\node.exe";
+  const env = { DSH_NODE_EXECUTABLE: node, DSH_EXE: app };
+  // Nothing on disk: the caller is told why, so it logs instead of spawning a
+  // path whose missing `error` event used to take the host down with it.
+  assert.equal(hostRuntime({ runtime: app, env: {}, exists: () => false }), null);
+  assert.match(signInLaunch("scripts/clear-inbox.mjs", {}, { exists: () => false }).error, /no JS runtime at /u);
+  // The running binary wins; a moved installation falls back to the host's own paths.
+  assert.equal(hostRuntime({ runtime: app, env, exists: (path) => path === app || path === node }), app);
+  assert.equal(hostRuntime({ runtime: app, env, exists: (path) => path === node }), node);
+  assert.equal(hostRuntime({ runtime: app, env: { DSH_EXE: app }, exists: (path) => path === app }), app);
+  // A sweep command written relative to the plugin directory is checked there,
+  // and handed to the child unchanged so `cwd` keeps meaning what it meant.
+  const here = process.cwd();
+  const realOr = (app) => (path) => path === app || existsSync(path);
+  const relative = signInLaunch("scripts/clear-inbox.mjs", { cwd: here }, { runtime: app, env: {}, exists: realOr(app) });
+  assert.equal(relative.script, "scripts/clear-inbox.mjs");
+  assert.equal(relative.runtime, app);
+  // A copy that lost its scripts folder still archives with the file we ship.
+  const fallback = signInLaunch("scripts/clear-inbox.mjs", { cwd: join(here, "gone") }, {
+    runtime: app,
+    env: {},
+    exists: realOr(app),
+  });
+  assert.match(fallback.script, /clear-inbox\.mjs$/u);
+  assert.ok(isAbsolute(fallback.script));
+  // A script of the operator's own that is not there is named, never guessed at.
+  const custom = signInLaunch("my/sweep.mjs", { cwd: join(here, "gone") }, {
+    runtime: app,
+    env: {},
+    exists: realOr(app),
+  });
+  assert.match(custom.error, /no script at .*my.sweep\.mjs$/u);
+  assert.equal(custom.runtime, undefined);
+});
+
+test("a sign-in window that never starts reports it instead of ending the host", async () => {
+  const seen = [];
+  const failing = () => {
+    const child = new EventEmitter();
+    child.unref = () => {};
+    // Spawn ENOENT arrives as an event, not a throw: this is the shape that took
+    // a host down when the window was first opened on a reinstalled app.
+    queueMicrotask(() =>
+      child.emit("error", Object.assign(new Error("spawn C:\\gone\\Harness.exe ENOENT"), { code: "ENOENT" })),
+    );
+    return child;
+  };
+  assert.doesNotThrow(() =>
+    spawnSignIn({ runtime: "C:\\gone\\Harness.exe", script: "sweeper.mjs", cwd: process.cwd(), env: {} }, {
+      start: failing,
+      onClose: () => seen.push("closed"),
+      onError: (error) => seen.push(error.code),
+    }),
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(seen, ["closed", "ENOENT"]);
+  // A host that refuses the spawn before there is a child takes the other door.
+  assert.throws(
+    () => spawnSignIn({ runtime: "x", script: "y.mjs" }, { start: () => { throw new Error("no spawn"); } }),
+    /no spawn/u,
+  );
+  // The ordinary path settles once, whatever the child says on its way out.
+  const exiting = new EventEmitter();
+  exiting.unref = () => {};
+  const closes = [];
+  spawnSignIn({ runtime: "node", script: "s.mjs", env: {} }, { start: () => exiting, onClose: () => closes.push("closed") });
+  exiting.emit("exit", 0);
+  exiting.emit("exit", 1);
+  assert.deepEqual(closes, ["closed"]);
 });
 
 test("the page is told whether archiving can sign in yet", () => {

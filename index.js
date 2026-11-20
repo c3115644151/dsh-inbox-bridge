@@ -19,8 +19,8 @@
  */
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { repoOfKey, splitKey } from "./scripts/key.mjs";
 
@@ -578,26 +578,36 @@ export function apply(ctx, config) {
     signIn.attemptedAt = Date.now();
     signIn.open = true;
     signIn.signedIn = false;
+    const launch = signInLaunch(script, options);
+    if (launch.error) {
+      signIn.open = false;
+      log(`could not open the sign-in window: ${launch.error}`);
+      return false;
+    }
     try {
-      const child = spawn(process.execPath, [script, "--login", "--json"], {
-        cwd: options.cwd,
-        env: {
-          ...process.env,
-          // The window finishes the sweep after a sign-in; give it the same
-          // subscription the poll uses, or it would not know what to archive.
-          ...(polledRepos().length > 0 ? { INBOX_REPO: polledRepos().join(",") } : {}),
-          ELECTRON_RUN_AS_NODE: "1",
+      spawnSignIn(
+        {
+          runtime: launch.runtime,
+          script: launch.script,
+          cwd: options.cwd,
+          env: {
+            ...process.env,
+            // The window finishes the sweep after a sign-in; give it the same
+            // subscription the poll uses, or it would not know what to archive.
+            ...(polledRepos().length > 0 ? { INBOX_REPO: polledRepos().join(",") } : {}),
+            ELECTRON_RUN_AS_NODE: "1",
+          },
         },
-        // Detached so a twenty-minute sign-in never holds a poll open; visible
-        // because there has to be a window to sign in.
-        detached: true,
-        windowsHide: false,
-        stdio: "ignore",
-      });
-      child.once("exit", () => {
-        signIn.open = false;
-      });
-      child.unref?.();
+        {
+          onClose: () => {
+            signIn.open = false;
+          },
+          onError: (error) => {
+            signIn.open = false;
+            log(`could not open the sign-in window: ${describe(error)}`);
+          },
+        },
+      );
     } catch (error) {
       signIn.open = false;
       log(`could not open the sign-in window: ${describe(error)}`);
@@ -1758,6 +1768,78 @@ export function commandFailure(error, { stdout = "", stderr = "" } = {}, options
   return failure;
 }
 
+/**
+ * Where this plugin can run JS from: its own binary first, then the two paths a
+ * host publishes when that binary has been replaced or moved.
+ *
+ * Spawning a path that no longer exists does not fail quietly — Node emits an
+ * `error` event on the child, and an unhandled one ends the process that owns
+ * it. That happened in the host when the sign-in window was first opened on a
+ * machine whose app had been reinstalled elsewhere.
+ */
+export function hostRuntime({ exists = existsSync, runtime = process.execPath, env = process.env } = {}) {
+  const candidates = [runtime, env?.DSH_NODE_EXECUTABLE, env?.DSH_EXE].filter(
+    (entry) => typeof entry === "string" && entry !== "",
+  );
+  return candidates.find((entry) => exists(entry)) ?? null;
+}
+
+/**
+ * What the sign-in window runs, or the reason it cannot start.
+ *
+ * The configured sweep command is written relative to `cwd`, which is the
+ * plugin's own directory in the default configuration. A copy that lost its
+ * `scripts/` folder — or an operator who pointed `cwd` somewhere else — should
+ * get the archiver this package ships, not a window that never appears.
+ */
+export function signInLaunch(script, options = {}, { exists = existsSync, runtime = process.execPath, env = process.env, cwd = process.cwd } = {}) {
+  const exe = hostRuntime({ exists, runtime, env });
+  if (exe === null) return { error: `no JS runtime at ${runtime}` };
+  const where = options.cwd ?? cwd;
+  const absolute = (entry) => (isAbsolute(entry) ? entry : join(where, entry));
+  if (exists(absolute(script))) return { runtime: exe, script };
+  if (basename(script) === basename(SWEEP_SCRIPT) && exists(SWEEP_SCRIPT)) {
+    return { runtime: exe, script: SWEEP_SCRIPT };
+  }
+  return { error: `no script at ${absolute(script)}` };
+}
+
+/**
+ * Start the window that asks for a browser sign-in, and answer every way it can
+ * fail to start.
+ *
+ * The child is detached — a twenty-minute sign-in must not hold a poll open —
+ * and visible, because there has to be a window to sign in. A child that never
+ * started answers with an `error` event instead of an exit; with nothing
+ * listening, that event ends the process that owns it. That is how a host died
+ * when the archiver was missing on a machine whose app had been reinstalled.
+ */
+export function spawnSignIn(
+  { runtime, script, cwd, env = process.env },
+  { start = spawn, onClose = () => {}, onError = () => {} } = {},
+) {
+  const child = start(runtime, [script, "--login", "--json"], {
+    cwd,
+    env,
+    detached: true,
+    windowsHide: false,
+    stdio: "ignore",
+  });
+  let closed = false;
+  const settle = () => {
+    if (closed) return;
+    closed = true;
+    onClose();
+  };
+  child.once?.("error", (error) => {
+    settle();
+    onError(error);
+  });
+  child.once?.("exit", settle);
+  child.unref?.();
+  return child;
+}
+
 export function runCommand(spec, options, extraEnv = {}) {
   const command = spec.command ?? "node";
   const args = Array.isArray(spec.args) ? spec.args : [];
@@ -1766,14 +1848,22 @@ export function runCommand(spec, options, extraEnv = {}) {
   // binary only behaves like node once ELECTRON_RUN_AS_NODE is set, so both
   // spellings have to take the same branch.
   const useNode = command === "node" || command === process.execPath;
+  // The binary this plugin runs inside can be gone — a reinstalled app leaves
+  // `process.execPath` pointing at a file that no longer exists — so resolve it
+  // once and say so, instead of spawning a path that cannot exist.
+  const runtime = useNode ? hostRuntime() : command;
   const ackArgs =
     useNode && (spec.args ?? []).includes("ack")
       ? [...args, ...(extraEnv.INBOX_BRIDGE_DONE === "1" ? ["--done"] : [])]
       : args;
   return new Promise((resolve, reject) => {
+    if (useNode && runtime === null) {
+      reject(commandFailure({ code: "ENOENT", message: `no JS runtime at ${process.execPath}` }, {}, options));
+      return;
+    }
     try {
       execFile(
-        useNode ? process.execPath : command,
+        runtime,
         ackArgs,
         {
           cwd: options.cwd,
