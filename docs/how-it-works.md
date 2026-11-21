@@ -52,6 +52,8 @@ DSH 插件 (index.js)        调度与投递：什么时候去取、取回来给
 - 清单本身挂在自己建的一个全屏浮层里（`pointer-events: none`，卡片自己接收事件），外观取宿主菜单那一套（`--dsw-specific-menu` 表面 + 磨砂 + `--dsw-elevation-prominent` 阴影）。这么做是因为状态行所在的容器常常带着 `overflow: hidden`：把面板塞回那一行里，它会直接被裁掉——窗口一窄、侧边栏一开，就什么也看不见了。
 - 位置按胶囊的实测矩形算，再夹进视口，并按胶囊上方的剩余高度收窄（不够时内部滚动）。宿主自己的面板用的是 CSS `anchor()` 加一串 `position-try` 回退，那套规则插件复现不完整，照抄会把面板拉成满屏。
 - 内容只有：盯着的仓库、身份、投递方式、队列三种状态的数量、未收口的 20 条（标题与链接来自本轮真实看到的事件）、每个仓库上次轮询的时间。
+- 一条条目只占一行。同一个 issue 先回了你、后来又被关掉，会产生两个 key（摘要不同），面板按 `owner/name#kind:number` 去重，只留最新那条——否则同一个标题出现两遍，计数也跟着虚高。
+- 会话还没绑定（页面刚打开、宿主还没交出 `sessionId`）时，列表不铺别人的条目，只写「会话正在绑定，先不列别人的条目」；别的仓库里等着的条目不列行，只给一句「另有 N 条在别的仓库等你认领」。启动的第一秒不该满屏都是别人的待办。
 - 它不写回任何状态，也不替你 ack；读的就是 `scripts/inbox-bridge.mjs status` 那份事实。
 - 客户端代码是在页面里执行的：更新插件后要**重新打开一次应用**（桌面版没有刷新键），胶囊才会重新装上；在那之前它会先消失（不是坏了，是没有执行者）。
 - 卡片里的开关（提醒方式、节奏、接管的仓库）也走同源路由：`GET /inbox-bridge/prefs?token=…&set=…&value=…`。改动写进插件自己的覆盖层 `<cwd>/.work/inbox-bridge/prefs.json`，然后重新读一遍状态——显示的就是下一次轮询真要执行的东西，不做乐观更新。token 每次进程启动重新生成，随状态一起下发，防止别的本地页面替你改设置。三条路由先把请求交给宿主的准入 `ctx.connection.requestRejection(request)`：裸 `curl` 拿 401（没有凭据）、跨源页面拿 403（Host/Origin 栅栏），桌面壳的 IPC 桥带着页面凭据所以照常通过。宿主没有这个服务、或它抛错时一律 403——请求头不是凭据，本机进程可以随手伪造一个。
@@ -73,7 +75,9 @@ DSH 插件 (index.js)        调度与投递：什么时候去取、取回来给
 - **条目**：条目级事实天生属于「动手的人」。它挂在具体编号上（`#42`），谁在这个仓库里干活就给谁；这也是为什么「协作者不需要接管仓库」——只要他在这个仓库里工作，他做的事的回音就会到这里。
 - **维护者的视角**：仓库是我的（owner 或 admin），开进来的 PR 与 issue 就是我要处理的东西，哪怕我从没被指派、也从没被 @。这条事实仍然是条目级：在我这个仓库里干活的会话最该看到它，其次是接管者。别人的仓库不算——`admin=false` 的仓库里堆着几百个我无关的 PR，把它们当待办就是把噪音伪装成责任。
 - **一条事实只叫一个会话**：插件不仲裁并发行动，只保证「同一件事不会同时叫醒两个会话」。已经动手的两个 agent 之间它管不了。
-- **没人认领就不上人**：别的仓库里自己开的 issue 有了回音，而没有任何会话在那儿工作、也没人接管那个仓库时，这条事实不进任何会话——它留在队列与面板里，日志写「nobody here works in or maintains their repository」。面板在这类条目上给出「认领」按钮：认领的是**这一条**（`owner/name#kind:number`，不带摘要），回音只送来这个会话；接管仓库是另一件事，不该被当成条目回音的开关。插件宁可让用户自己去认领，也不把别人仓库的事塞进一个不相干的回合。
+- **没人认领就不上人**：别的仓库里自己开的 issue 有了回音，而没有任何会话在那儿工作、也没人接管那个仓库时，这条事实通常不进任何会话——它留在队列与面板里，日志写「nobody here works in or maintains their repository」。面板在这类条目上给出「认领」按钮：认领的是**这一条**（`owner/name#kind:number`，不带摘要），回音只送来这个会话；接管仓库是另一件事，不该被当成条目回音的开关。
+- **只有一个会话自己干活时，自己写的条目就归它**：这类「我在别人仓库里开的」条目（`role: author`）无法用工作区或接管去判归属，插件看不出是哪个会话去跑了 `gh`。所以当全部会话里**恰好有一个**是 `act`（直接处理）模式时，这些条目交给它——它本来就把收到的事实自己处理掉，不需要再点一次「认领」。有两个以上就继续等：二选一就是猜，而猜错正是把别人仓库的回音塞进不相干回合的原因；这时面板的「认领」按钮才是答案。日志写「n item(s) authored elsewhere handed to <会话>（the only session that handles facts by itself）」。
+- **会话自己也能认领**：`inbox_claim` 工具（会话侧的键盘版，见 `docs/configuration.md`）用 `item` 参数收一条 `owner/name#issue:527`，`action: "unclaim"` 释放。认领写进覆盖层的 `claims`，效果和面板上点一下一样。
 - **轮询的仓库 = 所有活着的会话接管的并集**（实例级 `repo`/`repos` 也算在内）。没人接管就不轮询，面板照实说明。
 
 ## 「跟我有关」怎么判断
@@ -137,7 +141,10 @@ DSH 插件 (index.js)        调度与投递：什么时候去取、取回来给
 | 别人开进我维护仓库的 PR / issue 算我的事 | `github-inbox.test.mjs` 的 `a PR proposed to a repository I maintain is mine even unnamed` 与 `an issue filed against my repository belongs to me as well` |
 | 铃铛里没动过的旧线程不是新闻 | `github-inbox.test.mjs` 的 `the bell telling you that you wrote the issue is not a reply`、`the first poll of the bell only trusts what moved today`、`after the first poll, only threads that moved since it are news` |
 | 回音不落进无关会话 | `index.test.mjs` 的 `a repository fact belongs to its owner, an item fact to whoever works there` 与 `nothing owned means nothing is polled` |
-| 认领优先于工作区与接管 | `index.test.mjs` 的 `an item claim beats where anyone works or what anyone took over` |
+| 认领优先于工作区与接管 | `index.test.mjs` 的 `an item claim beats where anyone works or what anyone took over` 与 `a claim names one item and survives as a preference`（`inbox_claim` 工具写进覆盖层） |
+| 一条条目只占一行，计数不虚高 | `index.test.mjs` 的 `one item is one row, however many times it changed` |
+| 没绑定会话时不铺别人的待办，只给一个数 | `index.test.mjs` 的 `a session sees its own queue, and a number for the rest` |
+| 自己写的条目在只有一个 `act` 会话时归它 | `index.test.mjs` 的 `an item I filed elsewhere reaches the one session that handles facts by itself` |
 | 一次超时说的是秒数，不是 `Command failed` | `inbox-bridge.test.mjs` 的 `a poll that runs out of its budget names the budget, not the spawn layer`；`index.test.mjs` 的 `a poll killed for its budget says so, and one that exits non-zero keeps its exit code` 与 `a failure names who ended the run, because three different things wear the same message` |
 | 装上去就能 import 并跑起来 | `npm run verify:install`：打包 → 空目录安装 → 按包名 import → 跑 CLI；`packaging.test.mjs` 静态守住白名单与 import 一致 |
 | 市场索引钉的是这次发布提交 | `npm run market:check` |

@@ -31,7 +31,7 @@ export const name = "inbox-bridge";
  * without it (a terminal-only run) still polls and delivers, just with no visual
  * surface.
  */
-export const inject = { agents: true, connection: false, webServer: false };
+export const inject = { agents: true, connection: false, webServer: false, tools: false };
 
 /** The bridge CLI that ships with this plugin; commands run it, not a project copy. */
 const CLI = fileURLToPath(new URL("./scripts/inbox-bridge.mjs", import.meta.url));
@@ -463,7 +463,7 @@ export function apply(ctx, config) {
         claimedBy,
         // Offered only where a claim would actually change the answer: a session
         // that works in the repository or took it over is already answered.
-        claimable: named && !claimedBy && !workingRepos.has(repo) && !ownedRepos.has(repo),
+        claimable: named && eventTier(event) === "item" && !claimedBy && !workingRepos.has(repo) && !ownedRepos.has(repo),
       };
     });
     return {
@@ -793,7 +793,34 @@ export function apply(ctx, config) {
         const mine = events.filter((event) => audienceOf(event).has(keyOf(agent)) && roleAllows(agent, event));
         if (mine.length > 0) batches.set(agent, mine);
       }
-      const unclaimed = events.filter((event) => audienceOf(event).size === 0).length;
+      // An item I authored lives in someone else's repository: nobody works there
+      // and nobody took it over, so the rules answer "nobody" and the fact would
+      // wait forever. The session that filed it is the one that wants the answer,
+      // and the only session that can be told without a click is the one that
+      // handles facts by itself — so when exactly one such session exists, it gets
+      // them. With two of them the choice would be a guess, and a guess is what
+      // put a stranger's reply in the wrong session; then they keep waiting and
+      // the page offers the claim instead.
+      const selfServing = ready.filter(
+        (agent) => (prefs.autonomy?.[keyOf(agent)] ?? "act") === "act",
+      );
+      const strays = events.filter(
+        (event) =>
+          audienceOf(event).size === 0 && eventTier(event) === "item" && (event.role ?? "") === "author",
+      );
+      const strayKeys = new Set();
+      if (strays.length > 0 && selfServing.length === 1) {
+        const [only] = selfServing;
+        batches.set(only, [...(batches.get(only) ?? []), ...strays]);
+        for (const event of strays) strayKeys.add(event.key);
+        log(
+          `${strays.length} item(s) authored elsewhere handed to ${sessionLabel(only)}·${sessionTag(only)}` +
+            ` (the only session that handles facts by itself)`,
+        );
+      }
+      const unclaimed = events.filter(
+        (event) => audienceOf(event).size === 0 && !strayKeys.has(event.key),
+      ).length;
       const unassociated = ready.length - batches.size;
       if (batches.size === 0) {
         // A running tool loop must not be interrupted: keep the events pending
@@ -1050,6 +1077,100 @@ export function apply(ctx, config) {
     for (const key of [...turnTimers.keys()]) stopTurn(key);
     agents.clear();
   });
+
+  /** An item name, from a bare identity or from any key that carries one. */
+  const claimableIdentity = (raw) => {
+    const identity = itemIdentity(String(raw ?? "").trim());
+    return /^[^\s#/]+\/[^\s#/]+#[a-z]+:\d+$/u.test(identity) ? identity : null;
+  };
+
+  /**
+   * The one place a session can say "that item is mine" without the page.
+   *
+   * A reply to an issue I filed arrives in a repository nobody here works in and
+   * nobody took over, so the routing rules have nothing to go on and the fact
+   * waits in the queue. The session that filed the issue is the only one that
+   * knows it did, so it says so once and gets the answer.
+   */
+  const claimFor = (sessionId, item, action = "claim") => {
+    const identity = claimableIdentity(item);
+    if (!identity) {
+      return {
+        ok: false,
+        text: `Not an item: ${item ?? "(empty)"}. Pass owner/name#issue:527 (a longer queue key works too).`,
+      };
+    }
+    if (!sessionId) return { ok: false, text: "No session here, so there is nobody to claim it for." };
+    const next = preferenceNext(prefs, action, identity, { sessionId });
+    if (!next) return { ok: false, text: `Nothing to ${action} for ${identity}.` };
+    try {
+      applyPrefs(next);
+    } catch (error) {
+      return { ok: false, text: `Could not save the claim: ${describe(error)}` };
+    }
+    const text =
+      action === "unclaim"
+        ? `${identity} is back in the queue: nobody here is answered about it.`
+        : `${identity} is yours. Its next fact is delivered to this session instead of waiting in the queue.`;
+    log(`inbox_claim ${action} ${identity} for ${sessionId}`);
+    return { ok: true, text };
+  };
+
+  // The page is the mouse version of this; a session that filed an issue needs the
+  // keyboard version, because by the time the answer arrives it cannot see a page.
+  let toolReady = false;
+  const registerClaimTool = () => {
+    if (toolReady) return;
+    let tools = null;
+    try {
+      tools = ctx.tools ?? null;
+    } catch {
+      tools = null;
+    }
+    if (!tools || typeof tools.register !== "function") return;
+    toolReady = true;
+    try {
+      ctx.effect(() =>
+        tools.register({
+          name: "inbox_claim",
+          description:
+            "Claim one GitHub item (owner/name#issue:527) for this session, so its next change is delivered here instead of waiting in the queue. Use action 'unclaim' to release it.",
+          parameters: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              item: {
+                type: "string",
+                description: "The item to claim: owner/name#issue:527. A queue key for the same item also works.",
+              },
+              action: {
+                type: "string",
+                enum: ["claim", "unclaim"],
+                description: "Defaults to claim.",
+              },
+            },
+            required: ["item"],
+          },
+          output: {
+            schema: {
+              type: "object",
+              additionalProperties: false,
+              properties: { text: { type: "string" } },
+            },
+            render: (_args, value) => [{ type: "text", text: String(value?.text ?? "") }],
+          },
+          async execute(args, exec) {
+            const said = claimFor(keyOf(exec?.agent), args?.item, args?.action ?? "claim");
+            return { text: said.text };
+          },
+        }),
+      );
+    } catch (error) {
+      toolReady = false;
+      log(`could not register inbox_claim: ${describe(error)}`);
+    }
+  };
+  registerClaimTool();
 
   // The page reads this route: it is the same origin as the GUI, so the view
   // needs no CORS, no second port, and no credentials. `webServer` is optional
@@ -1441,9 +1562,10 @@ export function eventTier(event = {}) {
  * digest names the item itself, which is what a session claims.
  */
 export function itemIdentity(key) {
-  const text = String(key ?? "");
-  const cut = text.lastIndexOf(":mine:");
-  return cut > 0 ? text.slice(0, cut) : text;
+  const { repo, inner } = splitKey(key);
+  const found = /^([a-z]+):(\d+)(?::|$)/u.exec(inner);
+  if (repo && found) return `${repo}#${found[1]}:${found[2]}`;
+  return String(key ?? "");
 }
 
 export function audienceFor(
@@ -2078,22 +2200,40 @@ export function buildUiPayload({
     return role === "any" || roles.includes(role);
   };
   const counts = { pending: 0, delivered: 0, done: 0 };
-  const rows = Object.entries(queue)
-    .map(([key, entry]) => ({
-      key,
-      repo: repoOfKey(key),
-      status: entry?.status ?? "unknown",
-      at: entry?.at ?? null,
-      ...(recent?.get?.(key) ?? {}),
-    }))
-    .filter(inScope);
+  const every = Object.entries(queue).map(([key, entry]) => ({
+    key,
+    repo: repoOfKey(key),
+    status: entry?.status ?? "unknown",
+    at: entry?.at ?? null,
+    ...(recent?.get?.(key) ?? {}),
+  }));
+  // One item produces a fact every time it changes — a reply, then a close — and
+  // each fact carries its own key. The panel lists items, not snapshots, so only
+  // the newest fact for an item survives. Otherwise one issue shows up twice with
+  // the same title and the count lies about how much is waiting.
+  const newestPerItem = (list) => {
+    const seen = new Set();
+    const kept = [];
+    const order = [...list].sort((left, right) =>
+      String(right.at ?? "").localeCompare(String(left.at ?? "")),
+    );
+    for (const event of order) {
+      const identity = itemIdentity(event.key);
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      kept.push(event);
+    }
+    return kept;
+  };
+  const rows = newestPerItem(every.filter(inScope));
   for (const event of rows) {
     if (event.status in counts) counts[event.status] += 1;
   }
-  const events = rows
-    .filter((event) => event.status !== "done")
-    .sort((left, right) => String(right.at ?? "").localeCompare(String(left.at ?? "")))
-    .slice(0, 20);
+  const events = rows.filter((event) => event.status !== "done").slice(0, 20);
+  // What waits in repositories this session does not watch belongs to somebody
+  // else's list: a number here, not a row. A session with no takeover at all sees
+  // an empty list and this count, never another session's queue.
+  const elsewhere = newestPerItem(every.filter((event) => !inScope(event) && event.status === "pending")).length;
   const identity = options.identity ?? DEFAULTS.identity;
   return {
     at: new Date(now).toISOString(),
@@ -2122,6 +2262,10 @@ export function buildUiPayload({
       perHour: options.wakesPerHour ?? DEFAULTS.wakesPerHour,
     },
     queue: counts,
+    // Pending facts in repositories nobody here watches: the page offers them as
+    // one line, so a session can see that something waits without reading rows
+    // that are not its business.
+    elsewhere,
     events: events.slice(0, 20),
     polls: repos.map((repo) => ({ repo, ...(source?.repos?.[repo]?.lastPoll ?? {}) })),
   };

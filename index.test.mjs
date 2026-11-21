@@ -1664,3 +1664,157 @@ test("a failure names who ended the run, because three different things wear the
   // `raw` counts what the command actually emitted, before trimming.
   assert.equal(answered.raw.stderr, "  needs a browser sign-in  \n".length);
 });
+
+// ---------------------------------------------------------------------------
+// One item, one row. An issue that changed twice produced two keys, so the panel
+// listed the same title twice and the badge counted two things waiting when only
+// one was. The identity is `owner/name#kind:number`, whatever the digest says.
+// ---------------------------------------------------------------------------
+test("one item is one row, however many times it changed", () => {
+  const snapshot = (title, at) => ({ title, role: "author", kind: "issue", url: "u527", at });
+  const payload = buildUiPayload({
+    options: { repos: ["a/b"], identity: { kind: "user", login: "me" } },
+    queue: {
+      "a/b#issue:527:mine:closedc6": { status: "pending", at: "2026-11-20T08:43:46.493Z" },
+      "a/b#issue:527:mine:closedc7": { status: "pending", at: "2026-11-20T08:45:46.49Z" },
+      "a/b#pr:9:reviewer": { status: "pending", at: "2026-11-20T09:00:00Z" },
+    },
+    recent: new Map([
+      ["a/b#issue:527:mine:closedc6", snapshot("旧标题", "2026-11-20T08:43:46.493Z")],
+      ["a/b#issue:527:mine:closedc7", snapshot("新标题", "2026-11-20T08:45:46.49Z")],
+    ]),
+  });
+
+  assert.equal(itemIdentity("a/b#issue:527:mine:closedc7"), "a/b#issue:527");
+  assert.equal(itemIdentity("a/b#pr:9:reviewer"), "a/b#pr:9");
+  // Newest first, and the snapshot that survives is the newest one.
+  assert.deepEqual(
+    payload.events.map((event) => event.key),
+    ["a/b#pr:9:reviewer", "a/b#issue:527:mine:closedc7"],
+  );
+  assert.equal(payload.events[1].title, "新标题");
+  assert.deepEqual(payload.queue, { pending: 2, delivered: 0, done: 0 });
+});
+
+test("a session sees its own queue, and a number for the rest", () => {
+  const queue = {
+    "a/b#pr:1:author": { status: "pending", at: "2026-11-20T08:00:00Z" },
+    "c/d#issue:527:mine:closedc6": { status: "pending", at: "2026-11-20T08:43:46.493Z" },
+    "c/d#issue:527:mine:closedc7": { status: "pending", at: "2026-11-20T08:45:46.49Z" },
+    "e/f#issue:3:mine:openc1": { status: "done", at: "2026-11-20T07:00:00Z" },
+  };
+  const options = { repos: ["a/b", "e/f"], identity: { kind: "user", login: "me" } };
+
+  const scoped = buildUiPayload({ options, queue, session: { id: "s1", repo: "a/b", repos: ["a/b"] } });
+  assert.equal(scoped.scope, "session");
+  assert.deepEqual(scoped.events.map((event) => event.key), ["a/b#pr:1:author"]);
+  // Two snapshots of one foreign item are still one item in the count.
+  assert.equal(scoped.elsewhere, 1);
+
+  // A session that has taken nothing over sees no rows at all. This is the case the
+  // panel got wrong at every startup: before the host hands over a session id the
+  // page asked for the instance view and listed the whole machine's queue.
+  const unbound = buildUiPayload({
+    options,
+    queue,
+    session: { id: "s1", repo: null, repos: [] },
+  });
+  assert.equal(unbound.scope, "unbound");
+  assert.deepEqual(unbound.events, []);
+  assert.equal(unbound.elsewhere, 2);
+  assert.deepEqual(unbound.queue, { pending: 0, delivered: 0, done: 0 });
+});
+
+test("a claim names one item and survives as a preference", async () => {
+  const root = mkdtempSync(join(tmpdir(), "inbox-claim-"));
+  try {
+    let registered = null;
+    const agent = fakeAgent(root, "s1");
+    const ctx = {
+      ...fakeContext([agent]),
+      tools: {
+        register: (definition) => {
+          registered = definition;
+          return () => {};
+        },
+      },
+    };
+    const { apply } = await import("./index.js");
+    apply(ctx, mergeConfig({ cwd: root, repo: "", delivery: "quiet", intervalMs: 600_000, sweep: null }));
+
+    assert.equal(registered?.name, "inbox_claim");
+    // A queue key names the same item as its canonical identity, digest and all:
+    // the claim has to land on `owner/name#kind:number` or the next fact misses it.
+    const claimed = await registered.execute({ item: "c/d#pr:12:author:failed" }, { agent });
+    assert.match(claimed.text, /c\/d#pr:12 is yours/u);
+    const prefsFile = join(root, ".work", "inbox-bridge", "prefs.json");
+    assert.deepEqual(JSON.parse(readFileSync(prefsFile, "utf8")).claims, { "c/d#pr:12": "s1" });
+
+    // A claim binds that one item and nothing else: a repository is `own`.
+    assert.equal(preferenceNext({}, "claim", "c/d", { sessionId: "s1" }), null);
+    const refused = await registered.execute({ item: "no item here" }, { agent });
+    assert.match(refused.text, /^Not an item: no item here/u);
+
+    const released = await registered.execute({ item: "c/d#pr:12", action: "unclaim" }, { agent });
+    assert.match(released.text, /back in the queue/u);
+    assert.deepEqual(JSON.parse(readFileSync(prefsFile, "utf8")).claims, {});
+  } finally {
+    removeTree(root);
+  }
+});
+
+test("an item I filed elsewhere reaches the one session that handles facts by itself", async () => {
+  const root = mkdtempSync(join(tmpdir(), "inbox-stray-"));
+  const one = join(root, "one");
+  const two = join(root, "two");
+  try {
+    git(root, ["init", "--quiet", "one"]);
+    git(one, ["remote", "add", "origin", "https://github.com/owner/one.git"]);
+    git(root, ["init", "--quiet", "two"]);
+    git(two, ["remote", "add", "origin", "https://github.com/owner/two.git"]);
+    mkdirSync(join(root, ".work", "inbox-bridge"), { recursive: true });
+    // Two sessions, one of which reports in `confirm` mode: only the other one is a
+    // candidate, so handing the item over is not a guess.
+    writeFileSync(
+      join(root, ".work", "inbox-bridge", "prefs.json"),
+      `${JSON.stringify({ autonomy: { b: "confirm" } }, null, 2)}\n`,
+    );
+
+    const heard = { a: [], b: [] };
+    const agentOn = (cwd, id, status) => ({
+      ...fakeAgent(cwd, id),
+      status,
+      inject: (text) => heard[id].push(text),
+      followup: () => heard[id].push("woke"),
+    });
+    const ctx = fakeContext([agentOn(one, "a", "idle"), agentOn(two, "b", "idle")]);
+    const { apply } = await import("./index.js");
+    apply(ctx, mergeConfig({
+      cwd: root,
+      delivery: "quiet",
+      intervalMs: 600_000,
+      repo: "",
+      poll: {
+        command: process.execPath,
+        args: [
+          "-e",
+          `console.log(JSON.stringify({ events: [
+            { key: "polang233/dsh-plugin-index#issue:527", repo: "polang233/dsh-plugin-index", role: "author", kind: "issue", title: "[plugin-add] dsh-inbox-bridge", url: "u527" }
+          ] }))`,
+        ],
+      },
+      ack: { command: process.execPath, args: ["-e", "console.log('{}')"] },
+      sweep: null,
+    }));
+    ctx.emit("session/event", { id: "a" }, { type: "user/message", data: { source: { kind: "user" } } });
+
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline && heard.a.length === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.match(heard.a.map((entry) => JSON.stringify(entry)).join("\n"), /\[plugin-add\] dsh-inbox-bridge/u);
+    assert.deepEqual(heard.b, [], "a session in confirm mode was handed someone else's item");
+  } finally {
+    removeTree(root);
+  }
+});

@@ -18,7 +18,7 @@ DSH 的插件配置里，一个 `dsh-inbox-bridge` 条目即可；等价写法�
 
 ## 在页面上改（覆盖层）
 
-输入框下面那颗胶囊浮出来的卡片里，可以直接改这几件事：提醒方式、节奏（空闲多久、每小时几次）、这个会话接管哪些仓库。这些改动不写回 DSH 的插件配置，而是记在插件自己的覆盖层里：
+输入框下面那颗胶囊浮出来的卡片里，可以直接改这几件事：提醒方式、处理方式、节奏（空闲多久、每小时几次）、这个会话接管哪些仓库、以及认领一条别人仓库里的条目。这些改动不写回 DSH 的插件配置，而是记在插件自己的覆盖层里：
 
 ```text
 <cwd>/.work/inbox-bridge/prefs.json
@@ -33,8 +33,19 @@ DSH 的插件配置里，一个 `dsh-inbox-bridge` 条目即可；等价写法�
 覆盖层只存你动过的键。看着 `overlay` 就知道现在哪些设置来自页面：
 
 ```json
-{ "delivery": "wakeup", "wakeOn": ["reviewer"], "sessionRepos": { "<sessionId>": ["owner/one"] } }
+{ "delivery": "wakeup", "wakeOn": ["reviewer"], "sessionRepos": { "<sessionId>": ["owner/one"] }, "claims": { "owner/name#issue:527": "<sessionId>" } }
 ```
+
+### 会话自己认领：`inbox_claim`
+
+面板上的「认领」是鼠标版；会话拿到通知时看不到页面，所以同一个动作也有工具版：
+
+```text
+inbox_claim { item: "owner/name#issue:527" }              # 认领这一条
+inbox_claim { item: "owner/name#issue:527", action: "unclaim" }  # 撤回
+```
+
+`item` 收条目身份 `owner/name#kind:number`；队列里的长 key（带摘要的，如 `owner/name#issue:527:mine:closedc7`）也认，插件会归一成同一个身份。认领写进覆盖层的 `claims`，效果和面板点一下完全一样：这条 PR/issue 的下一次变化只送给认领它的会话。它只作用于**条目级**事实——仓库级的 CI 与安全告警不看认领，免得一条过期的认领把失败挪走。仓库不是 `claim` 的对象（那是「接管」，见上）。
 
 ### 归档需要一次登录
 
@@ -68,7 +79,7 @@ GitHub 的 Done 只有网页端点，所以归档要用插件自己的浏览器�
 | `wakesPerHour` | `2` | 滚动一小时内最多唤醒几次；0 = 关闭 |
 | `maxConsecutiveWakes` | `3` | 一个会话在你下次发言前最多被唤醒几次，之后只排队 |
 | `autonomy` | 每会话，默认 `act` | 收到消息后怎么处理：`act`（默认）收到就动手；`confirm` 先做完手头的事，再把攒下的消息一起汇报给你，等你反馈（通知末尾会写明）。它**只改通知文字与 agent 的处理方式**，不影响送达与是否开新一轮——那由 `delivery`/`wakeOn` 决定。写在覆盖层的 `autonomy: { "<sessionId>": "confirm" }`，或在面板的「处理方式」里选 |
-| `claims` | `{ "<owner/name#kind:number>": "<sessionId>" }` | 条目级认领：某条 PR/issue 的回音只送给认领它的会话，不管别人在哪里工作、谁接管了仓库。只出现在路由规则都到不了人的条目上（面板给出「认领」按钮），优先级高于工作区与接管仓库；`unclaim` 撤回；key 不带摘要，回音变了也不会失效 |
+| `claims` | `{ "<owner/name#kind:number>": "<sessionId>" }` | 条目级认领：某条 PR/issue 的回音只送给认领它的会话，不管别人在哪里工作、谁接管了仓库。只出现在路由规则都到不了人的条目上（面板给出「认领」按钮，会话也可以调 `inbox_claim` 工具，见上），优先级高于工作区与接管仓库；`unclaim` 撤回；key 不带摘要，回音变了也不会失效 |
 | `identity` | `{ kind: "user" }` | 用哪个身份读 GitHub，见下 |
 | `roles` | `[]` | 只接收这些角色的事件；空 = 全收 |
 | `clear` | `"repo"` | 把这一轮读过的通知线程标为已读：`repo` 只清它读过的那些仓库，`off` 不碰收件箱。整个账号不在范围内——清别人的仓库属于人的决定，不是后台轮询的决定。旧配置里的 `"all"` 按 `"repo"` 载入。GitHub 没有「完成」API，所以清的是未读角标，历史仍在收件箱里 |

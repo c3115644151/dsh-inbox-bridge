@@ -107,6 +107,9 @@ window.__ModuleLoader__.load({
         sweep: "已归档到 Done",
         quiet: "不会主动开启对话",
         unwatched: (repo) => `还没有会话接管 ${repo}，插件不轮询它`,
+        elsewhere: (n) => `另有 ${n} 条在别的仓库等你认领`,
+        elsewhereTip: "这些条目在你的仓库之外，没有会话会收到它们；点了认领才会送到本会话",
+        unbound: "会话正在绑定，先不列别人的条目",
         scopeRead: "身份",
         scopeWatch: "接管的仓库",
         scopeSync: "上次轮询",
@@ -171,6 +174,9 @@ window.__ModuleLoader__.load({
         sweep: "archived to done",
         quiet: "never starts a turn",
         unwatched: (repo) => `${repo} is not owned by any session, so it is not polled`,
+        elsewhere: (n) => `${n} more in other repositories, waiting for a claim`,
+        elsewhereTip: "Outside your repositories, so no session receives them; claiming one sends it here",
+        unbound: "binding this session, so no other session's items are listed",
         scopeRead: "identity",
         scopeWatch: "repositories",
         scopeSync: "last poll",
@@ -1269,11 +1275,18 @@ window.__ModuleLoader__.load({
       if (missing || !status) return null;
 
       const queue = status.queue ?? { pending: 0, delivered: 0, done: 0 };
+      // Which session asked decides what counts. Before the host hands over a
+      // session id the answer describes the whole instance, and a badge built on
+      // that number burns for items this session will never be told about.
+      const unbound = status.scope !== "session";
       // Only what the agent has not been told yet counts as unread. An event
       // already sitting in a turn is "delivered": it stays listed, but it must
       // not keep a badge burning for hours.
-      const waiting = queue.pending ?? 0;
+      const waiting = unbound ? 0 : queue.pending ?? 0;
       const handed = queue.delivered ?? 0;
+      // Pendings in repositories this session does not watch. They are real facts
+      // waiting for an owner, so the panel says how many — as one line, not rows.
+      const elsewhere = status.elsewhere ?? 0;
       const events = status.events ?? [];
       // A session outside this instance's repositories gets an honest line
       // instead of an empty list that looks like "all quiet".
@@ -1328,7 +1341,9 @@ window.__ModuleLoader__.load({
               ),
             ),
             h("div", { style: styles.rule }),
-            unwatched
+            unbound
+              ? h("div", { style: styles.emptyLine }, text.unbound)
+              : unwatched
               ? h("div", { style: styles.emptyLine }, text.unwatched(unwatched))
               : events.length > 0
               ? h(
@@ -1348,6 +1363,9 @@ window.__ModuleLoader__.load({
               : // The title already says "nothing waiting"; a second copy of the same
                 // sentence was the loudest thing in an otherwise quiet panel.
                 null,
+            elsewhere > 0 && !unbound
+              ? h("div", { style: styles.more, title: text.elsewhereTip }, text.elsewhere(elsewhere))
+              : null,
             h(
               "div",
               { style: styles.meta },

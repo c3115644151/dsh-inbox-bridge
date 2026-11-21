@@ -1,3 +1,10 @@
+## 未发布（等确认后定版本号）
+
+- **启动时面板不再铺别人的待办。** 页面在拿到会话 id 之前先请求一次裸状态，服务端按「实例」口径回了整机的队列，于是每个会话在刚打开时都看到那几行和自己无关的条目，等绑定完成又消失。现在会话未绑定就只写一句「会话正在绑定」，别人的条目不再列行，只给「另有 N 条在别的仓库等你认领」。
+- **一条条目只占一行。** 同一个 issue 回了你、后来又被关掉，会产生两个 key（摘要不同），面板此前把同一个标题列两遍、计数也跟着虚高。现在按 `owner/name#kind:number` 去重，只留最新那条；`itemIdentity` 因此改成规范形（`splitKey` + `kind:number`），认领与去重共用同一个身份。
+- **会话可以自己认领一条条目。** 新增 `inbox_claim` 工具（`item` + 可选 `action: claim|unclaim`），写进覆盖层的 `claims`，效果和面板上的「认领」一样；面板的认领仍只出现在条目级事实上。
+- **自己写的条目，交给唯一那个自己干活的会话。** `role: author`、无人认领、没人工作/没人接管那个仓库的条目，此前只入队（D-014）。现在当全部会话里恰好有一个是 `act` 模式时交给它，日志写「n item(s) authored elsewhere handed to …（the only session that handles facts by itself）」；有两个以上继续等，不猜。`docs/decisions.md` 新增 D-018 记录取舍与代价。
+
 ## 2.24.1
 
 - **点「打开登录窗口」不再把宿主一起带走。** 那是一句 `spawn(process.execPath, …)`，只挂了 `exit` 没挂 `error`；当 `process.execPath` 指向一个已经不存在的文件（App 重装、目录搬走），`spawn` 不是返回值失败而是抛 `error` 事件，没人接的 `error` 事件结束整个宿主进程——用户那台机器上看到的就是「应用无法启动或已意外停止」，`errno -4058 ENOENT`，`spawnargs: ['scripts/clear-inbox.mjs','--login','--json']`。
