@@ -73,6 +73,22 @@ export function repoFromInput(value) {
  */
 export { repoOfKey, splitKey };
 
+/**
+ * The profile owns `wakeOn`; the panel has no control for it. A value left behind
+ * in the preferences by an earlier delivery switch must not replace what the
+ * profile says — that is how a correct `[author, reviewer]` profile ended up
+ * waking on `reviewer` alone. Only when the profile is silent do we keep the
+ * overlay's value, so a fresh install that just switched to `wakeup` still wakes
+ * somebody instead of silently waking nobody (`no-role`).
+ */
+export function overlayPreferences(baseConfig = {}, prefs = {}) {
+  const merged = { ...baseConfig, ...prefs };
+  if (Array.isArray(baseConfig.wakeOn) && baseConfig.wakeOn.length > 0) {
+    merged.wakeOn = baseConfig.wakeOn;
+  }
+  return merged;
+}
+
 export function preferenceNext(current = {}, action = "", value = "", options = {}) {
   const next = { ...current };
   const sessionId = options.sessionId ?? null;
@@ -301,7 +317,7 @@ export function apply(ctx, config) {
   const uiToken = randomUUID();
   let prefs = readJsonSync(prefsFile) ?? {};
   const applyPrefs = (next) => {
-    const merged = mergeConfig({ ...baseConfig, ...next });
+    const merged = mergeConfig(overlayPreferences(baseConfig, next));
     prefs = next;
     mkdirSync(dirname(prefsFile), { recursive: true });
     writeFileSync(prefsFile, `${JSON.stringify(next, null, 2)}\n`);
@@ -322,7 +338,7 @@ export function apply(ctx, config) {
   };
   if (Object.keys(prefs).length > 0) {
     try {
-      Object.assign(options, mergeConfig({ ...baseConfig, ...prefs }));
+      Object.assign(options, mergeConfig(overlayPreferences(baseConfig, prefs)));
     } catch (error) {
       // An overlay that cannot be merged must not stop the instance, but it also
       // must not vanish without a word: whatever it asked for is not happening.
@@ -793,34 +809,13 @@ export function apply(ctx, config) {
         const mine = events.filter((event) => audienceOf(event).has(keyOf(agent)) && roleAllows(agent, event));
         if (mine.length > 0) batches.set(agent, mine);
       }
-      // An item I authored lives in someone else's repository: nobody works there
-      // and nobody took it over, so the rules answer "nobody" and the fact would
-      // wait forever. The session that filed it is the one that wants the answer,
-      // and the only session that can be told without a click is the one that
-      // handles facts by itself — so when exactly one such session exists, it gets
-      // them. With two of them the choice would be a guess, and a guess is what
-      // put a stranger's reply in the wrong session; then they keep waiting and
-      // the page offers the claim instead.
-      const selfServing = ready.filter(
-        (agent) => (prefs.autonomy?.[keyOf(agent)] ?? "act") === "act",
-      );
-      const strays = events.filter(
-        (event) =>
-          audienceOf(event).size === 0 && eventTier(event) === "item" && (event.role ?? "") === "author",
-      );
-      const strayKeys = new Set();
-      if (strays.length > 0 && selfServing.length === 1) {
-        const [only] = selfServing;
-        batches.set(only, [...(batches.get(only) ?? []), ...strays]);
-        for (const event of strays) strayKeys.add(event.key);
-        log(
-          `${strays.length} item(s) authored elsewhere handed to ${sessionLabel(only)}·${sessionTag(only)}` +
-            ` (the only session that handles facts by itself)`,
-        );
-      }
-      const unclaimed = events.filter(
-        (event) => audienceOf(event).size === 0 && !strayKeys.has(event.key),
-      ).length;
+      // An item I filed in someone else's repository has no audience: nobody works
+      // there and nobody took it over, so `audienceFor` answers "nobody". It stays in
+      // the queue and on the panel until a session claims the item or takes the
+      // repository over. There is no fallback recipient: guessing "the only session
+      // that handles facts by itself" put a stranger's reply in the wrong session
+      // repeatedly, so no audience means no delivery — never a guess.
+      const unclaimed = events.filter((event) => audienceOf(event).size === 0).length;
       const unassociated = ready.length - batches.size;
       if (batches.size === 0) {
         // A running tool loop must not be interrupted: keep the events pending

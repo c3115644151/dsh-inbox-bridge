@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, isAbsolute } from "node:path";
 
-import { DEFAULT_ACK_HINT, admissionVerdict, audienceFor, buildMessage, buildUiPayload, commandFailure, deliver, deliveryTargets, detectRepo, eventTier, filterUndelivered, formatEvents, hostRuntime, itemIdentity, keyOf, mergeConfig, roleAllowed, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, runCommand, sessionLabel, sessionTag, signInLaunch, spawnSignIn, wakePlan } from "./index.js";
+import { DEFAULT_ACK_HINT, admissionVerdict, audienceFor, buildMessage, buildUiPayload, commandFailure, deliver, deliveryTargets, detectRepo, eventTier, filterUndelivered, formatEvents, hostRuntime, itemIdentity, keyOf, mergeConfig, overlayPreferences, roleAllowed, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, runCommand, sessionLabel, sessionTag, signInLaunch, spawnSignIn, wakePlan } from "./index.js";
 
 const idle = { status: "idle" };
 const running = { status: "running" };
@@ -291,6 +291,22 @@ test("the removed wake key and malformed delivery settings fail loudly", () => {
   assert.throws(() => mergeConfig({ maxConsecutiveWakes: -1 }), /non-negative integer/u);
   assert.throws(() => mergeConfig({ maxConsecutiveWakes: 1.5 }), /non-negative integer/u);
   assert.equal(mergeConfig({ delivery: "wakeup", maxConsecutiveWakes: 0 }).delivery, "wakeup");
+});
+
+test("the profile's wakeOn wins over a stale value left in the preferences", () => {
+  // The panel has no wakeOn control (`preferenceNext` does not handle it), so a
+  // leftover from an earlier delivery switch is the only way prefs can name roles.
+  // The profile is authoritative: its [author, reviewer] must not be replaced by
+  // a stale ["reviewer"], or author events stop waking anyone.
+  const profile = { delivery: "wakeup", wakeOn: ["author", "reviewer", "assignee"] };
+  const stale = { wakeOn: ["reviewer"], sessionRepos: { s: ["o/r"] } };
+  const merged = overlayPreferences(profile, stale);
+  assert.deepEqual(merged.wakeOn, ["author", "reviewer", "assignee"]);
+  assert.deepEqual(merged.sessionRepos, stale.sessionRepos, "other preference keys still apply");
+  // When the profile is silent, the overlay's value survives: a fresh install that
+  // just switched to wakeup still wakes somebody instead of waking nobody.
+  const silent = overlayPreferences({ delivery: "wakeup" }, { wakeOn: ["reviewer"] });
+  assert.deepEqual(silent.wakeOn, ["reviewer"]);
 });
 
 test("wake settings are validated and only mean something in wakeup mode", () => {
@@ -1763,7 +1779,7 @@ test("a claim names one item and survives as a preference", async () => {
   }
 });
 
-test("an item I filed elsewhere reaches the one session that handles facts by itself", async () => {
+test("an item I filed elsewhere waits for a claim instead of going to a stranger", async () => {
   const root = mkdtempSync(join(tmpdir(), "inbox-stray-"));
   const one = join(root, "one");
   const two = join(root, "two");
@@ -1773,14 +1789,9 @@ test("an item I filed elsewhere reaches the one session that handles facts by it
     git(root, ["init", "--quiet", "two"]);
     git(two, ["remote", "add", "origin", "https://github.com/owner/two.git"]);
     mkdirSync(join(root, ".work", "inbox-bridge"), { recursive: true });
-    // Two sessions, one of which reports in `confirm` mode: only the other one is a
-    // candidate, so handing the item over is not a guess.
-    writeFileSync(
-      join(root, ".work", "inbox-bridge", "prefs.json"),
-      `${JSON.stringify({ autonomy: { b: "confirm" } }, null, 2)}\n`,
-    );
 
     const heard = { a: [], b: [] };
+    const ackLog = join(root, "acked.txt");
     const agentOn = (cwd, id, status) => ({
       ...fakeAgent(cwd, id),
       status,
@@ -1789,6 +1800,7 @@ test("an item I filed elsewhere reaches the one session that handles facts by it
     });
     const ctx = fakeContext([agentOn(one, "a", "idle"), agentOn(two, "b", "idle")]);
     const { apply } = await import("./index.js");
+    const eventKey = "polang233/dsh-plugin-index#issue:527";
     apply(ctx, mergeConfig({
       cwd: root,
       delivery: "quiet",
@@ -1799,21 +1811,30 @@ test("an item I filed elsewhere reaches the one session that handles facts by it
         args: [
           "-e",
           `console.log(JSON.stringify({ events: [
-            { key: "polang233/dsh-plugin-index#issue:527", repo: "polang233/dsh-plugin-index", role: "author", kind: "issue", title: "[plugin-add] dsh-inbox-bridge", url: "u527" }
+            { key: "${eventKey}", repo: "polang233/dsh-plugin-index", role: "author", kind: "issue", title: "[plugin-add] dsh-inbox-bridge", url: "u527" }
           ] }))`,
         ],
       },
-      ack: { command: process.execPath, args: ["-e", "console.log('{}')"] },
+      // Record every key the plugin tries to ack; a fact nobody receives must never
+      // be acknowledged, or it would vanish from the queue without being answered.
+      ack: {
+        command: process.execPath,
+        args: ["-e", `require('fs').appendFileSync(${JSON.stringify(ackLog)}, (process.env.INBOX_BRIDGE_KEYS || '') + '\\n')`],
+      },
       sweep: null,
     }));
     ctx.emit("session/event", { id: "a" }, { type: "user/message", data: { source: { kind: "user" } } });
 
     const deadline = Date.now() + 5_000;
-    while (Date.now() < deadline && heard.a.length === 0) {
+    while (Date.now() < deadline && heard.a.length === 0 && heard.b.length === 0) {
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    assert.match(heard.a.map((entry) => JSON.stringify(entry)).join("\n"), /\[plugin-add\] dsh-inbox-bridge/u);
-    assert.deepEqual(heard.b, [], "a session in confirm mode was handed someone else's item");
+    // Nobody works in that repository and nobody claimed the item, so no session is
+    // guessed: the fact lands in nobody's turn and is never acked — it stays pending.
+    assert.deepEqual(heard.a, [], "a foreign repository's item reached an unrelated session");
+    assert.deepEqual(heard.b, [], "a foreign repository's item reached an unrelated session");
+    const acked = existsSync(ackLog) ? readFileSync(ackLog, "utf8") : "";
+    assert.equal(acked.includes(eventKey), false, "an undelivered item must not be acked");
   } finally {
     removeTree(root);
   }

@@ -74,7 +74,7 @@ GitHub 的 Done 只有网页端点，所以归档要用插件自己的浏览器�
 | `offlineReminderMs` | `43200000`（12 小时） | 工作区连不上仓库时，最多多久提醒一次 |
 | `injectWhileRunning` | `false` | 允许打断正在跑的工具循环；默认只在回合边界注入 |
 | `delivery` | `"quiet"` | `quiet` 只在下一次注入点交给你；`wakeup` 还会在够安静时替你开一轮（受下面五道门约束，门没过时照常注入） |
-| `wakeOn` | `[]` | 允许唤醒的角色白名单；空 = 永不唤醒。若设了非空值，`delivery` 必须是 `wakeup` |
+| `wakeOn` | `[]` | 允许唤醒的角色白名单；空 = 永不唤醒。若设了非空值，`delivery` 必须是 `wakeup`。这一项**由 profile 拥有**，面板没有控件；profile 里给了非空值时优先于覆盖层里的遗留值，避免早先切换留下的旧白名单把正确的角色盖掉 |
 | `wakeAfterIdleMs` | `900000`（15 分钟） | 会话静默多久后才允许唤醒 |
 | `wakesPerHour` | `2` | 滚动一小时内最多唤醒几次；0 = 关闭 |
 | `maxConsecutiveWakes` | `3` | 一个会话在你下次发言前最多被唤醒几次，之后只排队 |

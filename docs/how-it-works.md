@@ -76,7 +76,7 @@ DSH 插件 (index.js)        调度与投递：什么时候去取、取回来给
 - **维护者的视角**：仓库是我的（owner 或 admin），开进来的 PR 与 issue 就是我要处理的东西，哪怕我从没被指派、也从没被 @。这条事实仍然是条目级：在我这个仓库里干活的会话最该看到它，其次是接管者。别人的仓库不算——`admin=false` 的仓库里堆着几百个我无关的 PR，把它们当待办就是把噪音伪装成责任。
 - **一条事实只叫一个会话**：插件不仲裁并发行动，只保证「同一件事不会同时叫醒两个会话」。已经动手的两个 agent 之间它管不了。
 - **没人认领就不上人**：别的仓库里自己开的 issue 有了回音，而没有任何会话在那儿工作、也没人接管那个仓库时，这条事实通常不进任何会话——它留在队列与面板里，日志写「nobody here works in or maintains their repository」。面板在这类条目上给出「认领」按钮：认领的是**这一条**（`owner/name#kind:number`，不带摘要），回音只送来这个会话；接管仓库是另一件事，不该被当成条目回音的开关。
-- **只有一个会话自己干活时，自己写的条目就归它**：这类「我在别人仓库里开的」条目（`role: author`）无法用工作区或接管去判归属，插件看不出是哪个会话去跑了 `gh`。所以当全部会话里**恰好有一个**是 `act`（直接处理）模式时，这些条目交给它——它本来就把收到的事实自己处理掉，不需要再点一次「认领」。有两个以上就继续等：二选一就是猜，而猜错正是把别人仓库的回音塞进不相干回合的原因；这时面板的「认领」按钮才是答案。日志写「n item(s) authored elsewhere handed to <会话>（the only session that handles facts by itself）」。
+- **猜不出归属就不猜**：这类「我在别人仓库里开的」条目（`role: author`）无法用工作区或接管去判归属，插件看不出是哪个会话去跑了 `gh`。它**不会**被随手交给「唯一那个自己干活的会话」——那等于拿会话数当判据，实测把不相干仓库的回音塞进了错误回合。没有认领、没人工作、没人接管，就谁也不给：留在队列与面板里，等面板上的「认领」按钮指定归属，或某会话接管那个仓库。
 - **会话自己也能认领**：`inbox_claim` 工具（会话侧的键盘版，见 `docs/configuration.md`）用 `item` 参数收一条 `owner/name#issue:527`，`action: "unclaim"` 释放。认领写进覆盖层的 `claims`，效果和面板上点一下一样。
 - **轮询的仓库 = 所有活着的会话接管的并集**（实例级 `repo`/`repos` 也算在内）。没人接管就不轮询，面板照实说明。
 
@@ -140,11 +140,12 @@ DSH 插件 (index.js)        调度与投递：什么时候去取、取回来给
 | 我在自己仓库里开的 issue，回复会被告知 | `github-inbox.test.mjs` 的 `the account's own searches cover issues it opened, with @me spelled out` |
 | 别人开进我维护仓库的 PR / issue 算我的事 | `github-inbox.test.mjs` 的 `a PR proposed to a repository I maintain is mine even unnamed` 与 `an issue filed against my repository belongs to me as well` |
 | 铃铛里没动过的旧线程不是新闻 | `github-inbox.test.mjs` 的 `the bell telling you that you wrote the issue is not a reply`、`the first poll of the bell only trusts what moved today`、`after the first poll, only threads that moved since it are news` |
-| 回音不落进无关会话 | `index.test.mjs` 的 `a repository fact belongs to its owner, an item fact to whoever works there` 与 `nothing owned means nothing is polled` |
+| 回音不落进无关会话 | `index.test.mjs` 的 `a repository fact belongs to its owner, an item fact to whoever works there`、`nothing owned means nothing is polled` 与 `an item I filed elsewhere waits for a claim instead of going to a stranger` |
 | 认领优先于工作区与接管 | `index.test.mjs` 的 `an item claim beats where anyone works or what anyone took over` 与 `a claim names one item and survives as a preference`（`inbox_claim` 工具写进覆盖层） |
 | 一条条目只占一行，计数不虚高 | `index.test.mjs` 的 `one item is one row, however many times it changed` |
 | 没绑定会话时不铺别人的待办，只给一个数 | `index.test.mjs` 的 `a session sees its own queue, and a number for the rest` |
-| 自己写的条目在只有一个 `act` 会话时归它 | `index.test.mjs` 的 `an item I filed elsewhere reaches the one session that handles facts by itself` |
+| 无人认领的外来条目留给认领，不猜会话 | `index.test.mjs` 的 `an item I filed elsewhere waits for a claim instead of going to a stranger`（反向验证：把 `audienceFor` 改回「猜一个会话」即红） |
+| profile 的 wakeOn 不被 prefs 遗留值盖掉 | `index.test.mjs` 的 `the profile's wakeOn wins over a stale value left in the preferences` |
 | 一次超时说的是秒数，不是 `Command failed` | `inbox-bridge.test.mjs` 的 `a poll that runs out of its budget names the budget, not the spawn layer`；`index.test.mjs` 的 `a poll killed for its budget says so, and one that exits non-zero keeps its exit code` 与 `a failure names who ended the run, because three different things wear the same message` |
 | 装上去就能 import 并跑起来 | `npm run verify:install`：打包 → 空目录安装 → 按包名 import → 跑 CLI；`packaging.test.mjs` 静态守住白名单与 import 一致 |
 | 市场索引钉的是这次发布提交 | `npm run market:check` |

@@ -1,3 +1,8 @@
+## 未发布（等确认后定版本号）
+
+- **外来条目不再猜会话，没人认领就留在队列。** 2.25.0 加的「唯一 `act` 会话兜底」把无人认领的 `author` 条目交给「恰好一个自己干活的会话」，实测把 `c3115644151/chronicle-framework-agent#134` 塞进了毫不相关的 `session-d179ace2`——拿会话数当归属判据本身就是猜，而 `?? "act"` 让几乎所有会话都算「自己干活」，兜底极易命中错误的那个。现在删掉这段兜底：没有认领、没人工作、没人接管，就谁也不给，事实留在队列与面板里等显式认领。`docs/decisions.md` 废止 D-018、新增说明；承诺表指向新测试 `an item I filed elsewhere waits for a claim instead of going to a stranger`，反向验证把 `audienceFor` 改回「猜一个会话」即红。
+- **profile 的 `wakeOn` 不再被遗留覆盖层盖掉。** profile 配的是 `[author, reviewer, assignee]`，但早先切换 delivery 时 `preferenceNext` 往 `prefs.json` 塞了 `["reviewer"]`，加载时覆盖层盖过 profile，于是 author 类既不唤醒、又撞上上面的错投兜底。面板没有 wakeOn 控件，用户无从在 UI 修正。新增 `overlayPreferences(base, prefs)`：profile 给了非空 `wakeOn` 就优先，沉默时才用覆盖层；启动加载与 `applyPrefs` 写回都走它，堵住「认领一条 PR 时把旧值写回」的路径。`docs/decisions.md` 新增 D-019。
+
 ## 2.25.0
 
 - **启动时面板不再铺别人的待办。** 页面在拿到会话 id 之前先请求一次裸状态，服务端按「实例」口径回了整机的队列，于是每个会话在刚打开时都看到那几行和自己无关的条目，等绑定完成又消失。现在会话未绑定就只写一句「会话正在绑定」，别人的条目不再列行，只给「另有 N 条在别的仓库等你认领」。
