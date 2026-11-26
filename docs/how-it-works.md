@@ -146,6 +146,7 @@ DSH 插件 (index.js)        调度与投递：什么时候去取、取回来给
 | 没绑定会话时不铺别人的待办，只给一个数 | `index.test.mjs` 的 `a session sees its own queue, and a number for the rest` |
 | 无人认领的外来条目留给认领，不猜会话 | `index.test.mjs` 的 `an item I filed elsewhere waits for a claim instead of going to a stranger`（反向验证：把 `audienceFor` 改回「猜一个会话」即红） |
 | profile 的 wakeOn 不被 prefs 遗留值盖掉 | `index.test.mjs` 的 `the profile's wakeOn wins over a stale value left in the preferences` |
+| 落后版本会被发现，但插件不自动升级 | `index.test.mjs` 的 `a stale copy learns a newer version exists, but current and unknown stay quiet` 与 `a failed or offline version check is silently unknown`（反向验证：去掉比较判断，当前版本也误报即红） |
 | 一次超时说的是秒数，不是 `Command failed` | `inbox-bridge.test.mjs` 的 `a poll that runs out of its budget names the budget, not the spawn layer`；`index.test.mjs` 的 `a poll killed for its budget says so, and one that exits non-zero keeps its exit code` 与 `a failure names who ended the run, because three different things wear the same message` |
 | 装上去就能 import 并跑起来 | `npm run verify:install`：打包 → 空目录安装 → 按包名 import → 跑 CLI；`packaging.test.mjs` 静态守住白名单与 import 一致 |
 | 市场索引钉的是这次发布提交 | `npm run market:check` |

@@ -38,6 +38,78 @@ const CLI = fileURLToPath(new URL("./scripts/inbox-bridge.mjs", import.meta.url)
 /** The browser sweep that archives the GitHub inbox; the page can turn it on. */
 const SWEEP_SCRIPT = fileURLToPath(new URL("./scripts/clear-inbox.mjs", import.meta.url));
 
+/** Where the plugin asks which version is current. Overridable for offline tests. */
+export const UPDATE_URL = "https://registry.npmjs.org/dsh-inbox-bridge/latest";
+/** How often to re-check (six hours); cheap, and a running host must not be upgraded mid-turn. */
+export const UPDATE_CHECK_MS = 6 * 60 * 60 * 1000;
+/** The version this copy was published as, read once from its own manifest. */
+export const SELF_VERSION = (() => {
+  try {
+    const value = JSON.parse(readFileSync(fileURLToPath(new URL("./package.json", import.meta.url)), "utf8"));
+    return typeof value?.version === "string" ? value.version : "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+})();
+
+/**
+ * Compare two dotted versions numerically. Returns -1/0/1, or null when either
+ * side is not a clean `major.minor.patch` (prerelease suffixes are ignored for
+ * the comparison itself — a stable release is what "latest" names). Kept pure so
+ * the "are we behind?" decision is testable without a network.
+ */
+export function compareVersions(a, b) {
+  const parse = (value) => {
+    if (typeof value !== "string") return null;
+    const m = /^v?(\d+)\.(\d+)\.(\d+)/u.exec(value.trim());
+    return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+  };
+  const left = parse(a);
+  const right = parse(b);
+  if (!left || !right) return null;
+  for (let i = 0; i < 3; i += 1) {
+    if (left[i] < right[i]) return -1;
+    if (left[i] > right[i]) return 1;
+  }
+  return 0;
+}
+
+/**
+ * The update hint for the panel, or null when this copy is current or the two
+ * versions cannot be compared. `command` is a sentence to paste into a session —
+ * upgrading a running DSH plugin is an agent action (plugin_manager / pnpm), not
+ * something a web page can safely do, so the plugin only reports, never applies.
+ */
+export function updateNotice(current = SELF_VERSION, latest = null) {
+  if (typeof latest !== "string" || !latest) return null;
+  if (compareVersions(current, latest) !== -1) return null;
+  return {
+    current,
+    latest,
+    behind: true,
+    command: `请升级 dsh-inbox-bridge：当前 ${current}，最新 ${latest}。用 plugin_manager 安装 @dsh-inbox-bridge@${latest}（若提示已安装，先 remove_bundle 再装）。`,
+  };
+}
+
+/** Ask the registry for the published version; any failure is a silent "unknown". */
+export async function checkLatestVersion({ fetchImpl = fetch, url = UPDATE_URL, timeoutMs = 8_000 } = {}) {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let response;
+    try {
+      response = await fetchImpl(url, { signal: controller.signal, cache: "no-store" });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!response?.ok) return null;
+    const body = await response.json();
+    return typeof body?.version === "string" ? body.version : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The next overlay for one choice the page made, or `null` for an unknown action.
  *
@@ -346,6 +418,10 @@ export function apply(ctx, config) {
       prefs = {};
     }
   }
+  // The published version this copy should tell the user about. Filled by a
+  // background check; a failed/offline check simply leaves it unknown. Never
+  // applied automatically — upgrading a running plugin is an agent/user action.
+  let updateInfo = null;
   const agents = new Map();
   /** One re-poll timer per session that is currently running a turn. */
   const turnTimers = new Map();
@@ -364,6 +440,26 @@ export function apply(ctx, config) {
   let lastOfflineNoticeAt = 0;
   /** Said once per process, so "nothing is subscribed" is visible but not noisy. */
   let warnedNoSubscription = false;
+
+  // Check for a newer published version in the background. It reports only; the
+  // first check runs shortly after boot, then every six hours. A check that fails
+  // (offline, blocked registry) leaves `updateInfo` null and says nothing.
+  const refreshUpdate = async () => {
+    const latest = await checkLatestVersion();
+    const notice = updateNotice(SELF_VERSION, latest);
+    if (notice && (!updateInfo || updateInfo.latest !== notice.latest)) {
+      log(`a newer dsh-inbox-bridge is published: ${latest} (this copy ${SELF_VERSION}); reporting it in the panel`);
+    }
+    updateInfo = notice;
+  };
+  const updateTimer = setTimeout(() => {
+    void refreshUpdate();
+    const timer = setInterval(() => void refreshUpdate(), UPDATE_CHECK_MS);
+    timer.unref?.();
+    ctx.effect(() => () => clearInterval(timer));
+  }, 5_000);
+  updateTimer.unref?.();
+  ctx.effect(() => () => clearTimeout(updateTimer));
 
   /**
    * Everything worth reading: the repositories the live sessions subscribe to,
@@ -498,6 +594,7 @@ export function apply(ctx, config) {
       },
       sweepOn: Boolean(options.sweep),
       sessionId,
+      update: updateInfo,
     };
   };
 

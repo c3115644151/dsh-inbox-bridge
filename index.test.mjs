@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, isAbsolute } from "node:path";
 
-import { DEFAULT_ACK_HINT, admissionVerdict, audienceFor, buildMessage, buildUiPayload, commandFailure, deliver, deliveryTargets, detectRepo, eventTier, filterUndelivered, formatEvents, hostRuntime, itemIdentity, keyOf, mergeConfig, overlayPreferences, roleAllowed, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, runCommand, sessionLabel, sessionTag, signInLaunch, spawnSignIn, wakePlan } from "./index.js";
+import { DEFAULT_ACK_HINT, admissionVerdict, audienceFor, buildMessage, buildUiPayload, checkLatestVersion, commandFailure, compareVersions, deliver, deliveryTargets, detectRepo, eventTier, filterUndelivered, formatEvents, hostRuntime, itemIdentity, keyOf, mergeConfig, overlayPreferences, roleAllowed, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, runCommand, sessionLabel, sessionTag, signInLaunch, spawnSignIn, updateNotice, wakePlan } from "./index.js";
 
 const idle = { status: "idle" };
 const running = { status: "running" };
@@ -1838,4 +1838,43 @@ test("an item I filed elsewhere waits for a claim instead of going to a stranger
   } finally {
     removeTree(root);
   }
+});
+
+test("a stale copy learns a newer version exists, but current and unknown stay quiet", () => {
+  // Numeric comparison, not lexicographic: 2.10.0 > 2.9.0.
+  assert.equal(compareVersions("2.9.0", "2.10.0"), -1);
+  assert.equal(compareVersions("2.25.0", "2.25.0"), 0);
+  assert.equal(compareVersions("2.25.1", "2.25.0"), 1);
+  assert.equal(compareVersions("2.24.0", "v2.25.0"), -1, "a leading v is tolerated");
+  assert.equal(compareVersions("nonsense", "2.25.0"), null, "unparseable versions are not compared");
+
+  const stale = updateNotice("2.24.0", "2.25.0");
+  assert.equal(stale.behind, true);
+  assert.match(stale.command, /2\.25\.0/u);
+  assert.match(stale.command, /remove_bundle/u, "the retry path for an existing install is spelled out");
+  // Current, newer, and an unknown latest never produce a notice — an offline
+  // registry must not nag the user or claim an update that may not exist.
+  assert.equal(updateNotice("2.25.0", "2.25.0"), null);
+  assert.equal(updateNotice("2.26.0", "2.25.0"), null);
+  assert.equal(updateNotice("2.24.0", null), null);
+  assert.equal(updateNotice("2.24.0", "garbage"), null);
+});
+
+test("a failed or offline version check is silently unknown", async () => {
+  const failing = await checkLatestVersion({
+    fetchImpl: async () => { throw new Error("offline"); },
+  });
+  assert.equal(failing, null);
+  const httpError = await checkLatestVersion({
+    fetchImpl: async () => ({ ok: false, status: 503 }),
+  });
+  assert.equal(httpError, null);
+  const ok = await checkLatestVersion({
+    fetchImpl: async () => ({ ok: true, json: async () => ({ version: "2.25.0" }) }),
+  });
+  assert.equal(ok, "2.25.0");
+  const malformed = await checkLatestVersion({
+    fetchImpl: async () => ({ ok: true, json: async () => ({}) }),
+  });
+  assert.equal(malformed, null);
 });

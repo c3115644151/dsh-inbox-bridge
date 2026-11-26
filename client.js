@@ -110,6 +110,8 @@ window.__ModuleLoader__.load({
         elsewhere: (n) => `另有 ${n} 条在别的仓库等你认领`,
         elsewhereTip: "这些条目在你的仓库之外，没有会话会收到它们；点了认领才会送到本会话",
         unbound: "会话正在绑定，先不列别人的条目",
+        updateAvailable: (latest, current) => `发现新版本 ${latest}（当前 ${current}）`,
+        updateTip: "旧版本可能带着未修复的问题。请在会话里让 agent 升级，插件本身不会自动改动正在运行的版本。",
         scopeRead: "身份",
         scopeWatch: "接管的仓库",
         scopeSync: "上次轮询",
@@ -177,6 +179,8 @@ window.__ModuleLoader__.load({
         elsewhere: (n) => `${n} more in other repositories, waiting for a claim`,
         elsewhereTip: "Outside your repositories, so no session receives them; claiming one sends it here",
         unbound: "binding this session, so no other session's items are listed",
+        updateAvailable: (latest, current) => `new version ${latest} available (you have ${current})`,
+        updateTip: "An older copy may carry unfixed bugs. Ask the agent in a session to upgrade; the plugin never changes a running version by itself.",
         scopeRead: "identity",
         scopeWatch: "repositories",
         scopeSync: "last poll",
@@ -1365,6 +1369,16 @@ window.__ModuleLoader__.load({
                 null,
             elsewhere > 0 && !unbound
               ? h("div", { style: styles.more, title: text.elsewhereTip }, text.elsewhere(elsewhere))
+              : null,
+            status.update?.behind
+              ? h(
+                  "div",
+                  {
+                    style: { ...styles.more, color: "var(--dsw-alias-label-warning, inherit)", cursor: "default" },
+                    title: text.updateTip,
+                  },
+                  text.updateAvailable(status.update.latest, status.update.current),
+                )
               : null,
             h(
               "div",
