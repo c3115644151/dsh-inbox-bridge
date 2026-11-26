@@ -120,6 +120,37 @@ test("wakeup needs a listed role, an idle gap, and room in both budgets", () => 
   assert.equal(ok.why, "ok");
 });
 
+test("a new PR or issue opened in my repository can wake its maintainer", () => {
+  // A maintainer's own repository getting a PR/issue from someone else is the
+  // one fact most worth waking for. It carries role "incoming"; when the host
+  // lists that role in wakeOn it must pass the wake gate like any other role.
+  // It went silent for seven hours once because incoming was missing from the
+  // profile's wakeOn — this pins the mechanism so a config slip is visible.
+  const now = 1_000_000;
+  const maintainer = { ...idle };
+  const incoming = { key: "c3115644151/dsh-inbox-bridge#pr:11:incoming", role: "incoming" };
+  const batches = new Map([[maintainer, [incoming]]]);
+  const base = {
+    delivery: "wakeup",
+    wakeOn: ["incoming"],
+    wakeAfterIdleMs: 60_000,
+    wakesPerHour: 2,
+    maxConsecutiveWakes: 2,
+  };
+  const quietSince = new Map([[maintainer, now - 120_000]]);
+  const plan = wakePlan(batches, base, { now, lastActive: quietSince });
+  assert.equal(plan.agent, maintainer);
+  assert.equal(plan.event.key, incoming.key);
+  assert.equal(plan.why, "ok");
+
+  // The same event stays queued — never wakes — when nobody asked to be woken
+  // for incoming. This is the exact configuration that hid PR #11.
+  assert.equal(
+    wakePlan(batches, { ...base, wakeOn: ["reviewer"] }, { now, lastActive: quietSince }).why,
+    "no-match",
+  );
+});
+
 test("a session names the repository its own workspace points at", () => {
   withRepos(({ repo, plain }) => {
     const mine = { status: "idle", session: { header: { cwd: repo } } };
