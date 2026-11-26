@@ -1315,9 +1315,9 @@ export function apply(ctx, config) {
           },
         },
       );
-    const refusalOf = (request) => admissionVerdict(request, { connection });
-    const turnAway = (request) => {
-      const verdict = refusalOf(request);
+    const refusalOf = (request, peer) => admissionVerdict(request, { connection, peer });
+    const turnAway = (request, peer) => {
+      const verdict = refusalOf(request, peer);
       if (verdict === null) return null;
       refusedCount += 1;
       if (refusedCount === 1 || refusedCount % 10 === 0) {
@@ -1330,11 +1330,11 @@ export function apply(ctx, config) {
         server.register({
           kind: "exact",
           path: UI_ROUTE,
-          resource: async (request) => {
+          resource: async (request, peer) => {
             served += 1;
             // Only the page the host serves reads this: another tab on the same
             // machine must not learn which repositories this instance watches.
-            const turnedAway = turnAway(request);
+            const turnedAway = turnAway(request, peer);
             if (turnedAway) return turnedAway;
             // Which session asked decides what is shown: two sessions in
             // different repositories must not read the same list.
@@ -1374,7 +1374,7 @@ export function apply(ctx, config) {
         server.register({
           kind: "exact",
           path: PREFS_ROUTE,
-          resource: async (request) => {
+          resource: async (request, peer) => {
             const reply = (status, body) =>
               new Response(`${JSON.stringify(body)}\n`, {
                 status,
@@ -1391,7 +1391,7 @@ export function apply(ctx, config) {
             }
             // Changing this instance is the host page's privilege twice over:
             // it must be that page, and it must carry this process's token.
-            const turnedAway = turnAway(request);
+            const turnedAway = turnAway(request, peer);
             if (turnedAway) return turnedAway;
             if (url.searchParams.get("token") !== uiToken) {
               return reply(403, { ok: false, error: "token" });
@@ -1441,10 +1441,10 @@ export function apply(ctx, config) {
         server.register({
           kind: "exact",
           path: CLIENT_LOG_ROUTE,
-          resource: async (request) => {
+          resource: async (request, peer) => {
             // The log is not a surface for other pages: only our own may write
             // to it, or any local tab could fill it with whatever it likes.
-            const turnedAway = turnAway(request);
+            const turnedAway = turnAway(request, peer);
             if (turnedAway) return turnedAway;
             // Routes answer GET/HEAD only, so the page reports through the query
             // string; a JSON body is still accepted when a caller sends one.
@@ -1707,29 +1707,58 @@ export function roleAllowed(roles, event) {
  * Whether this request may reach the instance: `401`/`403` to refuse, `null` to
  * let it through.
  *
- * The host knows better than we can: `connection.requestRejection` applies the
- * Host/Origin fence and then checks the caller's signed browser or API
- * credential, so it refuses a rebound hostname, a cross-site page, and a bare
- * client that has no session at all — and admits the GUI, including the desktop
- * shell, which forwards the page's own fetch over its IPC bridge with the
- * browser's credentials attached.
+ * The host knows better than we can. Where DSH exposes
+ * `connection.requestRejection`, that applies the Host/Origin fence and then
+ * checks the caller's signed browser or API credential, so it refuses a
+ * rebound hostname, a cross-site page, and a bare client that has no session at
+ * all — and admits the GUI, including the desktop shell, which forwards the
+ * page's own fetch over its IPC bridge with the browser's credentials attached.
  *
- * When that service is absent, or throws, or is not the shape we expect, this
+ * DSH 0.2.x does not expose `requestRejection`. There the web server admits the
+ * request before it reaches a route and hands the resulting `PeerScope` to the
+ * resource; a Peer is the host's own answer and is accepted first. When a Peer
+ * is not available but `connection.admit` is, that is the same admission in its
+ * public `PeerAdmission` shape. When none of these can vouch for a caller, this
  * refuses: a request header is not a credential, and a local process can forge
  * one. There is no weaker path worth keeping — an instance whose host cannot
  * vouch for a caller has nobody to let in.
  */
-export function admissionVerdict(request, { connection = null } = {}) {
+export function admissionVerdict(request, { connection = null, peer = null } = {}) {
+  // The web server already ran its admission for this request and handed us the
+  // Peer it admitted. Nothing a header says can outrank that.
+  if (peer) return null;
+
   const judge = connection && typeof connection.requestRejection === "function" ? connection.requestRejection : null;
-  if (!judge) return 403;
-  let verdict;
-  try {
-    verdict = judge.call(connection, request);
-  } catch {
+  if (judge) {
+    let verdict;
+    try {
+      verdict = judge.call(connection, request);
+    } catch {
+      return 403;
+    }
+    if (verdict === 401 || verdict === 403) return verdict;
+    return null;
+  }
+
+  // DSH 0.2.x: the same host admission exposed as `admit()`.
+  if (connection && typeof connection.admit === "function") {
+    let verdict;
+    try {
+      verdict = connection.admit({
+        headers: request?.headers ?? {},
+        method: request?.method,
+        url: request?.url,
+        signal: request?.signal,
+      });
+    } catch {
+      return 403;
+    }
+    if (verdict && verdict.peer) return null;
+    if (verdict && verdict.rejection === 401) return 401;
     return 403;
   }
-  if (verdict === 401 || verdict === 403) return verdict;
-  return null;
+
+  return 403;
 }
 
 function sourceLabel(options) {

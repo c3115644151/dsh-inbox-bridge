@@ -1650,6 +1650,30 @@ test("the host decides who may read this instance, and nothing else counts", () 
   assert.equal(admissionVerdict(bare, { connection: null }), 403);
   assert.equal(admissionVerdict(sameOrigin, { connection: {} }), 403);
   assert.equal(admissionVerdict(sameOrigin, {}), 403);
+
+  // DSH 0.2.x: the web server admits the request before the route runs and
+  // hands the resulting Peer to the resource. That Peer is the host's answer.
+  assert.equal(admissionVerdict(bare, { peer: { id: "peer" } }), null);
+  // `connection.admit` carries the same decision when no Peer is at hand.
+  assert.equal(
+    admissionVerdict(bare, { connection: { admit: () => ({ peer: { id: "peer" } }) } }),
+    null,
+  );
+  assert.equal(admissionVerdict(bare, { connection: { admit: () => ({ rejection: 401 }) } }), 401);
+  assert.equal(admissionVerdict(bare, { connection: { admit: () => ({ rejection: 403 }) } }), 403);
+  assert.equal(
+    admissionVerdict(
+      bare,
+      {
+        connection: {
+          admit: () => {
+            throw new Error("boom");
+          },
+        },
+      },
+    ),
+    403,
+  );
 });
 
 test("a poll killed for its budget says so, and one that exits non-zero keeps its exit code", async () => {
