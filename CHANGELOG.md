@@ -1,5 +1,7 @@
 ## 未发布（等确认后定版本号）
 
+- **别人开进我仓库的 PR / issue 会唤醒管理者了。** PR #11 在 2026-11-26 13:21Z 创建，抓取层 20 分钟后就生成了 `dsh-inbox-bridge#pr:11:incoming:awaiting-decision` 事件，却整整静音到用户手动来问——根因是 profile 的 `wakeOn` 里唯独没有 `incoming`，而唤醒的第一道门就是 `if (!wakeOn.includes(role)) continue`。incoming 是"主用机的仓库里来了新东西"，正是维护者最该看到的。profile 的 `wakeOn` 补上 `incoming`；新增测试 `a new PR or issue opened in my repository can wake its maintainer` 坐实机制，反向验证（拿掉 incoming → 唤醒落空）变红。
+- **0.2.3 宿主上胶囊不再全程 403（合并 PR #11，作者 abworks-dev）。** DSH 0.2.x 不暴露 `connection.requestRejection`，只给 `connection.admit()` + webServer 传入的 Peer；插件原来只认前者，于是每次面板读都被拒、`client.js` 两次失败后隐藏。现在按顺序兜底：宿主传入的 Peer → `requestRejection`（旧宿主）→ `admit()`（新宿主）→ 都没有仍 403。安全边界不变：裸请求拿不到 peer、`admit()` 抛错或拒绝一律 403。合并前在含本地未推送提交的分支上零冲突、`npm test` 164 全绿、`verify:install` 通过；已用中文回复 PR。
 - **面板会提醒你落后版本，但不会自己升级。** 插件每 6 小时查一次 npm 的 latest，落后时在面板显示「发现新版本 X（当前 Y）」和升级命令。根因：另一台机器卡在 2.24.0（latest 已 2.25.0），全程没有任何提示，直到点归档登录按钮崩在 2.24.1 才修掉的 `spawn` bug 上——`spawn` 的 `error` 事件没人接，直接结束宿主。自检只报告不自动升级：升级正在运行的插件可能崩宿主，版本号也是对外承诺，由会话里的 agent 或用户执行。联网失败/离线时静默当「未知」，不打扰。`compareVersions` 数值比较（2.10.0 > 2.9.0）、容忍前导 `v`；承诺登记在 `docs/how-it-works.md` 验证表，两条测试 + 反向验证。
 
 - **外来条目不再猜会话，没人认领就留在队列。** 2.25.0 加的「唯一 `act` 会话兜底」把无人认领的 `author` 条目交给「恰好一个自己干活的会话」，实测把 `c3115644151/chronicle-framework-agent#134` 塞进了毫不相关的 `session-d179ace2`——拿会话数当归属判据本身就是猜，而 `?? "act"` 让几乎所有会话都算「自己干活」，兜底极易命中错误的那个。现在删掉这段兜底：没有认领、没人工作、没人接管，就谁也不给，事实留在队列与面板里等显式认领。`docs/decisions.md` 废止 D-018、新增说明；承诺表指向新测试 `an item I filed elsewhere waits for a claim instead of going to a stranger`，反向验证把 `audienceFor` 改回「猜一个会话」即红。
