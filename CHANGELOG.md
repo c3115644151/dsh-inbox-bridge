@@ -1,4 +1,4 @@
-## 未发布（等确认后定版本号）
+## 2.26.0
 
 - **别人开进我仓库的 PR / issue 会唤醒管理者了。** PR #11 在 2026-11-26 13:21Z 创建，抓取层 20 分钟后就生成了 `dsh-inbox-bridge#pr:11:incoming:awaiting-decision` 事件，却整整静音到用户手动来问——根因是 profile 的 `wakeOn` 里唯独没有 `incoming`，而唤醒的第一道门就是 `if (!wakeOn.includes(role)) continue`。incoming 是"主用机的仓库里来了新东西"，正是维护者最该看到的。profile 的 `wakeOn` 补上 `incoming`；新增测试 `a new PR or issue opened in my repository can wake its maintainer` 坐实机制，反向验证（拿掉 incoming → 唤醒落空）变红。
 - **0.2.3 宿主上胶囊不再全程 403（合并 PR #11，作者 abworks-dev）。** DSH 0.2.x 不暴露 `connection.requestRejection`，只给 `connection.admit()` + webServer 传入的 Peer；插件原来只认前者，于是每次面板读都被拒、`client.js` 两次失败后隐藏。现在按顺序兜底：宿主传入的 Peer → `requestRejection`（旧宿主）→ `admit()`（新宿主）→ 都没有仍 403。安全边界不变：裸请求拿不到 peer、`admit()` 抛错或拒绝一律 403。合并前在含本地未推送提交的分支上零冲突、`npm test` 164 全绿、`verify:install` 通过；已用中文回复 PR。
