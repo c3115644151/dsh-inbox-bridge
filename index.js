@@ -325,9 +325,14 @@ export function startScopeFix({
   return new Promise((resolve) => {
     let settled = false;
     let buffer = "";
+    // The wait for the code must hold the event loop: an unref'd timer lets a
+    // host with nothing else pending exit while this promise is still open, and
+    // a caller then waits forever for an answer nobody can produce.
+    let timer = null;
     const finish = (answer) => {
       if (settled) return;
       settled = true;
+      if (timer) clearTimeout(timer);
       resolve(answer);
     };
     let child = null;
@@ -361,9 +366,9 @@ export function startScopeFix({
         reason: buffer.trim() || `gh auth refresh exited with ${code}`,
       });
     });
-    // The device code arrives in well under a second; wait a little without
-    // holding the page, then answer so the button can say something.
-    const timer = setTimeout(() => {
+    // The device code arrives in well under a second; answer within a bound either
+    // way so the button always gets something to say.
+    timer = setTimeout(() => {
       const match = /One-time code \(([A-Za-z0-9-]{4,})\)/u.exec(buffer);
       finish(
         match
@@ -371,7 +376,6 @@ export function startScopeFix({
           : { ok: false, code: null, url: null, reason: "gh did not print a one-time code", child },
       );
     }, codeWaitMs);
-    timer.unref?.();
   });
 }
 
