@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, isAbsolute } from "node:path";
 
-import { DEFAULT_ACK_HINT, admissionVerdict, audienceFor, buildMessage, buildUiPayload, checkLatestVersion, commandFailure, compareVersions, deliver, deliveryTargets, detectRepo, ensureDir, eventTier, filterUndelivered, formatEvents, formatOfflineNotice, hostRuntime, itemIdentity, keyOf, markReadVerdict, mergeConfig, overlayPreferences, roleAllowed, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, runCommand, sessionLabel, sessionTag, setupChecklist, probeSetup, updateNotice, wakePlan, writeFailure } from "./index.js";
+import { DEFAULT_ACK_HINT, admissionVerdict, audienceFor, buildMessage, buildUiPayload, checkLatestVersion, commandFailure, compareVersions, deliver, deliveryTargets, detectRepo, ensureDir, eventTier, filterUndelivered, formatEvents, formatOfflineNotice, hostRuntime, itemIdentity, keyOf, markReadVerdict, mergeConfig, overlayPreferences, roleAllowed, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, runCommand, sessionLabel, sessionTag, setupChecklist, probeSetup, startScopeFix, updateNotice, wakePlan, writeFailure } from "./index.js";
 
 const idle = { status: "idle" };
 const running = { status: "running" };
@@ -1799,3 +1799,55 @@ test("the probe reads version, login and scopes from gh, and stops where gh stop
   assert.equal(setupChecklist({ ...full, repos: ["a/b"] }).filter((item) => !item.ok).length, 0);
 });
 
+
+test("the scope row can fetch its own permission, in one click", async () => {
+  // gh auth refresh --clipboard prints the one-time code on stderr and waits
+  // for a person to approve it. The plugin's job is the rest: start it, read
+  // the code, hand it to the page.
+  const children = [];
+  const fake = () => {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    children.push(child);
+    return child;
+  };
+  const started = startScopeFix({ start: fake, codeWaitMs: 200 });
+  // The code arrives on stderr, exactly as gh prints it.
+  setTimeout(() => {
+    children[0].stderr.emit("data", "! One-time code (94cd-b4b5) copied to clipboard\n");
+  }, 10);
+  const answer = await started;
+  assert.equal(answer.ok, true);
+  assert.equal(answer.code, "94CD-B4B5");
+  assert.equal(answer.url, "https://github.com/login/device");
+  assert.equal(answer.reason, null);
+});
+
+test("a device flow that never prints a code says so instead of hanging", async () => {
+  const fake = () => {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    return child;
+  };
+  const answer = await startScopeFix({ start: fake, codeWaitMs: 40 });
+  assert.equal(answer.ok, false);
+  assert.equal(answer.code, null);
+  assert.match(answer.reason, /did not print a one-time code/u);
+
+  const refused = await startScopeFix({
+    start: () => {
+      throw new Error("spawn gh ENOENT");
+    },
+  });
+  assert.equal(refused.ok, false);
+  assert.match(refused.reason, /ENOENT/u);
+});
+
+test("nothing is claimed about a machine that has not been probed", () => {
+  // The panel opens before the first poll; an empty checklist is honest, and
+  // "no gh" would be a statement about something nobody looked at.
+  assert.deepEqual(setupChecklist({ probed: false }), []);
+  assert.ok(setupChecklist({ probed: true }).length > 0);
+});

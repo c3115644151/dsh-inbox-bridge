@@ -121,6 +121,10 @@ window.__ModuleLoader__.load({
             repository: "还没有接管仓库：粘贴仓库链接，或在这个仓库里开会话",
             storage: "状态写不进去",
           })[id] ?? id,
+        setupFixOne: "一键补",
+        setupFixing: "已发出…",
+        setupFixCode: (code) => `在浏览器输入 ${code}`,
+        setupFixOpen: "打开 github.com/login/device",
         markReadTip: (reason) =>
           `${reason}。一次性补上：gh auth refresh -h github.com -s notifications —— 补完 30 分钟内会自动重试`,
         storageTip: (root, reason) =>
@@ -200,6 +204,10 @@ window.__ModuleLoader__.load({
             repository: "no repository taken yet: paste a link, or open a session in that repository",
             storage: "state cannot be written",
           })[id] ?? id,
+        setupFixOne: "fix it",
+        setupFixing: "asked…",
+        setupFixCode: (code) => `type ${code} in your browser`,
+        setupFixOpen: "open github.com/login/device",
         markReadTip: (reason) =>
           `${reason}. One fix: gh auth refresh -h github.com -s notifications — it retries within 30 minutes once the scope is there`,
         storageTip: (root, reason) =>
@@ -418,6 +426,8 @@ window.__ModuleLoader__.load({
         fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
         color: "var(--dsw-alias-label-secondary)",
       },
+      setupHint: { marginTop: "2px", fontSize: "11px", color: "var(--dsw-alias-label-secondary)" },
+      setupLink: { marginLeft: "6px", color: "var(--dsw-alias-label-link, inherit)", textDecoration: "underline" },
       list: { display: "grid", gap: "6px", minWidth: 0 },
       row: {
         // Two lines per fact: the title is what the reader scans, so it gets the
@@ -865,6 +875,11 @@ window.__ModuleLoader__.load({
       // wakeup mode, and keeping them always open doubles the panel height for a
       // setting most people never touch.
       const [showWake, setShowWake] = React.useState(false);
+      // The device-flow answer: its one-time code and where to type it. Kept in
+      // the component because the panel polls every 20 s and the code is useless
+      // after that long.
+      const [fix, setFix] = React.useState(null);
+      const [fixing, setFixing] = React.useState(false);
       const pick = text.pick;
       const send = async (set, value) => {
         if (busy) return;
@@ -876,6 +891,22 @@ window.__ModuleLoader__.load({
           setError(result.error ?? "failed");
           return;
         }
+        reload();
+      };
+      // One click asks GitHub for the scope; the approval still happens in the
+      // person's own browser, which is the part nobody can do for them.
+      const requestScope = async () => {
+        if (busy || fixing) return;
+        setFixing(true);
+        setError(null);
+        const result = await change(status, "fixscope", "1");
+        setFixing(false);
+        if (!result.ok) {
+          setError(result.error ?? "failed");
+          return;
+        }
+        setFix(result.fix ?? null);
+        if (result.fix && result.fix.ok === false) setError(result.fix.reason ?? "failed");
         reload();
       };
       const seg = (label, options, current, set, key) =>
@@ -1358,8 +1389,39 @@ window.__ModuleLoader__.load({
                         "span",
                         { style: styles.setupText },
                         text.setupItem(item.id),
-                        item.command
-                          ? h("code", { style: styles.setupCommand }, item.command)
+                        // The scope is the one row the plugin can do for the user:
+                        // a device flow needs their approval and nothing else.
+                        item.id === "scope" && item.command
+                          ? h(
+                              "button",
+                              {
+                                type: "button",
+                                disabled: busy || fixing,
+                                style: styles.seg,
+                                title: item.command,
+                                onClick: () => void requestScope(),
+                              },
+                              fixing ? text.setupFixing : text.setupFixOne,
+                            )
+                          : item.command
+                            ? h("code", { style: styles.setupCommand }, item.command)
+                            : null,
+                        fix?.code
+                          ? h(
+                              "div",
+                              { style: styles.setupHint },
+                              text.setupFixCode(fix.code),
+                              h(
+                                "a",
+                                {
+                                  href: fix.url ?? "https://github.com/login/device",
+                                  target: "_blank",
+                                  rel: "noreferrer",
+                                  style: styles.setupLink,
+                                },
+                                text.setupFixOpen,
+                              ),
+                            )
                           : null,
                       ),
                     ),

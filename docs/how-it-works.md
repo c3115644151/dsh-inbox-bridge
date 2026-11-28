@@ -48,7 +48,8 @@ GitHub 网页上的「Done」没有公开接口（`POST /notifications/beta/arch
 
 输入框下面那行状态里的胶囊来自本包自带的 `client.js`，它不参与判断，只展示：
 
-- **第一屏是「还差几步」。** 装完打开面板，先看到的不是事件列表，而是一张小清单：`gh` 在不在、登录了谁、接管了哪个仓库、令牌能不能标已读、状态写不写得进去。每一行只在**没做到**时出现，做到就消失；带命令的行把命令直接写在旁边（`gh auth login`、`gh auth refresh -h github.com -s notifications`）。事实由 Host 侧探针提供（`probeSetup`：三次 `gh` 调用，每 10 分钟最多一次，读状态不走探针），文案在 `client.js` 里分中英两份——清单是给「第一次看到这个插件的人」看的，所以它说下一步，不说机制。
+- **第一屏是「还差几步」。** 装完打开面板，先看到的不是事件列表，而是一张小清单：`gh` 在不在、登录了谁、接管了哪个仓库、令牌能不能标已读、状态写不写得进去。每一行只在**没做到**时出现，做到就消失；带命令的行把命令直接写在旁边（`gh auth login`、`gh auth refresh -h github.com -s notifications`）。事实由 Host 侧探针提供（`probeSetup`：三次 `gh` 调用，每 10 分钟最多一次，**启动后 1.5 秒也探一次**，读状态不走探针，没探过就不下结论——空清单比「本机没有 gh」诚实），文案在 `client.js` 里分中英两份——清单是给「第一次看到这个插件的人」看的，所以它说下一步，不说机制。
+- **令牌权限那一行有个按钮。** `gh auth refresh -h github.com -s notifications --clipboard` 不需要终端：码打在同一条 stderr 上，人只要在自己的浏览器里点一次同意。所以这一行不要求复制命令：点「一键补」，Host 起进程、读出 `One-time code (XXXX-XXXX)`、把码和 `github.com/login/device` 交给页面；人同意后进程退出，Host 立刻重探，那一行自己消失。**其余各行没有按钮**：装 `gh` 是装软件，`gh auth login` 要选认证方式并贴一次密码，都不是替人点一下能完成的。
 
 - Host 把状态挂在同源路由 `GET /inbox-bridge/status.json` 上（`ctx.webServer` 的命名路由，只读、无凭据、无第二个端口）。
 - 页面每 20 秒拉一次，切回窗口时也拉一次；拉不到就什么都不显示——插件没在跑时页面不会留一个空壳。

@@ -59,7 +59,7 @@ gh auth refresh -h github.com -s notifications
 
 走的是设备码流程：在**你自己的浏览器**里输入它给的 8 位码、点授权，不用把密码敲进任何别的地方。加权限是叠加的，原来的 `repo` / `gist` 等不受影响。
 
-少这一项时 PATCH 会回 404，正文是 `This API operation needs the "notifications" scope`——读起来像插件坏了，其实是令牌少了一次授权。三处会说这件事：`node scripts/inbox-bridge.mjs doctor` 的 `notifications` 项（detail 里就是上面那条命令）、面板上一行「读过的通知还留在 GitHub 收件箱里」、日志里**每个原因只写一次**（不是每线程每轮一次）。同时轮询**停止重试 30 分钟**：同一个 404 不值得每分钟再发一遍，补上权限后 30 分钟内会自动恢复。
+少这一项时 PATCH 会回 404，正文是 `This API operation needs the "notifications" scope`——读起来像插件坏了，其实是令牌少了一次授权。三处会说这件事：`node scripts/inbox-bridge.mjs doctor` 的 `notifications` 项（detail 里就是上面那条命令）、面板第一屏那行（**旁边有「一键补」按钮**：Host 起 `gh auth refresh -h github.com -s notifications --clipboard`，把设备码和 `github.com/login/device` 显示在面板上，你同意后那一行自己消失）、日志里**每个原因只写一次**（不是每线程每轮一次）。同时轮询**停止重试 30 分钟**：同一个 404 不值得每分钟再发一遍，补上权限后 30 分钟内会自动恢复。
 
 GitHub 网页上的「Done」没有公开接口（`POST /notifications/beta/archive` 要网页会话 + CSRF），所以插件不追求那个状态：对轮询器来说已读与 Done 等价，两者都不再出现在 `/notifications` 的未读流里。想让它在网页收件箱里彻底消失，那一步得你自己点。
 

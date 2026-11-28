@@ -17,7 +17,7 @@
  * run goes idle. Does not own: fetching the source (the configured poller does)
  * or the meaning of "handled" (the ack command decides).
  */
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -302,6 +302,80 @@ export function ensureDir(dir) {
 }
 
 /**
+ * Ask GitHub for the one scope that makes read-marking work, from the panel.
+ *
+ * `gh auth refresh -h github.com -s notifications --clipboard` prints a one-time
+ * code and waits for a person to approve it in their own browser — the
+ * approval is the part nobody can do for them, and everything else (the flow,
+ * the code, the retry) is the plugin's job. Without a terminal it still runs:
+ * the code arrives on stderr and the plugin hands it to the page.
+ *
+ * `spawn` is injectable so the tests can drive a fake child.
+ */
+export const DEVICE_URL = "https://github.com/login/device";
+
+export function startScopeFix({
+  cwd = process.cwd(),
+  env = process.env,
+  start = spawn,
+  host = "github.com",
+  scopes = "notifications",
+  codeWaitMs = 12_000,
+} = {}) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let buffer = "";
+    const finish = (answer) => {
+      if (settled) return;
+      settled = true;
+      resolve(answer);
+    };
+    let child = null;
+    try {
+      child = start("gh", ["auth", "refresh", "-h", host, "-s", scopes, "--clipboard"], {
+        cwd,
+        env,
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) {
+      finish({ ok: false, code: null, url: null, reason: String(error?.message ?? error) });
+      return;
+    }
+    const read = (chunk) => {
+      buffer += String(chunk);
+      const match = /One-time code \(([A-Za-z0-9-]{4,})\)/u.exec(buffer);
+      if (match) finish({ ok: true, code: match[1].toUpperCase(), url: DEVICE_URL, reason: null, child });
+    };
+    child?.stdout?.on?.("data", read);
+    child?.stderr?.on?.("data", read);
+    child?.once?.("error", (error) => {
+      finish({ ok: false, code: null, url: null, reason: String(error?.message ?? error) });
+    });
+    child?.once?.("exit", (code) => {
+      // An exit before a code is a refusal worth showing: gh says why on stderr.
+      finish({
+        ok: false,
+        code: null,
+        url: null,
+        reason: buffer.trim() || `gh auth refresh exited with ${code}`,
+      });
+    });
+    // The device code arrives in well under a second; wait a little without
+    // holding the page, then answer so the button can say something.
+    const timer = setTimeout(() => {
+      const match = /One-time code \(([A-Za-z0-9-]{4,})\)/u.exec(buffer);
+      finish(
+        match
+          ? { ok: true, code: match[1].toUpperCase(), url: DEVICE_URL, reason: null, child }
+          : { ok: false, code: null, url: null, reason: "gh did not print a one-time code", child },
+      );
+    }, codeWaitMs);
+    timer.unref?.();
+  });
+}
+
+/**
  * What a first run is missing, in the order it has to be fixed.
  *
  * Facts only — which step is done, and the command that does it. The words
@@ -318,7 +392,11 @@ export function setupChecklist({
   repos = [],
   storage = { ok: true },
   identity = "user",
+  // Nothing has been asked yet: an empty list is honest, "no gh" would be a
+  // claim about a machine that was never probed.
+  probed = true,
 } = {}) {
+  if (!probed) return [];
   const list = Array.isArray(repos) ? repos : [];
   const items = [{ id: "gh", ok: Boolean(gh), detail: gh }];
   // Without `gh` there is nothing to log into: a login row would be advice for a
@@ -697,6 +775,28 @@ export function apply(ctx, config) {
   const refreshSetup = () => {
     setupFacts = { ...probeSetup({ cwd: options.cwd }), at: Date.now(), probed: true };
   };
+  /**
+   * The last attempt at the device flow, kept only to be shown: the code, where
+   * to type it, and — after the approval lands — that it worked.
+   */
+  let scopeFix = { at: 0, ok: null, code: null, url: null, reason: null };
+  const watchScopeFix = (child) => {
+    child?.once?.("exit", (code) => {
+      scopeFix = { ...scopeFix, ok: code === 0, reason: code === 0 ? null : scopeFix.reason };
+      if (code === 0) {
+        // Ask again right now: the row should turn green without waiting for the
+        // next probe window.
+        try {
+          refreshSetup();
+        } catch {
+          // A probe never breaks the host.
+        }
+        log("the notifications scope was granted");
+      } else {
+        log(`the device flow ended without the scope (exit ${code})`);
+      }
+    });
+  };
 
   const uiPayload = (sessionId = null) => {
     const agent = sessionId ? agents.get(sessionId) : null;
@@ -778,7 +878,11 @@ export function apply(ctx, config) {
         repos: polledRepos(),
         storage: state,
         identity: options.identity.kind,
+        probed: setupFacts.probed,
       }),
+      // The device-flow attempt behind the scope row: its code, and whether the
+      // approval has landed. `null` when nobody has tried.
+      setupFix: scopeFix.at > 0 ? scopeFix : null,
       // What the migration copied the first time a newer root was used.
       storageMoved: state.migrated?.copied?.length ? state.migrated.copied : null,
     };
@@ -1190,6 +1294,18 @@ export function apply(ctx, config) {
     register(payload.agent);
   });
   const subscribedNow = polledRepos();
+  // Ask once at startup, off the load path: a panel that opens before the first
+  // poll must not claim the machine has no `gh` — it has not looked yet.
+  ctx.effect(() => {
+    const timer = setTimeout(() => {
+      try {
+        refreshSetup();
+      } catch {
+        // A probe never breaks the host.
+      }
+    }, 1_500);
+    return () => clearTimeout(timer);
+  });
   log(
     `started: ${agents.size} agent(s), poll every ${pollLabel(options.intervalMs)} ` +
       `while a turn runs, delivery ${options.delivery}, cleaning ${options.clear}` +
@@ -1496,6 +1612,28 @@ export function apply(ctx, config) {
             // "unsubscribe the last one" know what the default is.
             const sessionRepo = sessionId ? repoOf(agents.get(sessionId)) : null;
             try {
+              if (action === "fixscope") {
+                // The one step a checklist row can perform for the user: GitHub's
+                // device flow needs their approval, nothing else. Answers with the
+                // code as soon as `gh` prints it, so the page never says "cliked".
+                const answer = await startScopeFix({ cwd: options.cwd, env: process.env });
+                scopeFix = {
+                  at: Date.now(),
+                  ok: answer.ok,
+                  code: answer.code,
+                  url: answer.url,
+                  reason: answer.reason,
+                };
+                if (answer.ok) {
+                  log(`asked GitHub for the notifications scope: one-time code ${answer.code}`);
+                } else {
+                  log(`could not ask for the notifications scope: ${answer.reason}`);
+                }
+                // The approval happens in a browser; watch for the moment it lands
+                // so the row turns green on its own.
+                watchScopeFix(answer.child);
+                return reply(200, { ok: true, fix: scopeFix, status: uiPayload(sessionId) });
+              }
               if (action === "reset") {
                 persistPrefs({});
                 prefs = {};
