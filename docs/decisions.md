@@ -144,3 +144,15 @@ npm run verify:install（打包 → 空目录安装 → 按包名 import → 跑
 **2026-11-25。** profile（`cordis.patch.yml`）已配 `wakeOn: [author, reviewer, assignee]`，但 `prefs.json` 里留着一份陈旧的 `["reviewer"]`（早先切换 delivery 时 `preferenceNext` 硬塞的默认），加载时 `mergeConfig({...baseConfig, ...prefs})` 让覆盖层盖掉了 profile，于是 author 类事件既不唤醒、又因 stray 兜底误投。面板没有 wakeOn 控件，`preferenceNext` 也不处理它，用户无从在 UI 里修正。
 
 判据：`overlayPreferences(base, prefs)` 让 base 的非空 `wakeOn` 胜过 prefs 的值；base 沉默时才保留覆盖层（保证刚切到 wakeup 的新装机仍能唤醒某人，而不是 `no-role`）。两个加载点（启动时 `Object.assign(options, …)` 与 `applyPrefs` 写回）都走这个函数，堵住「认领一条 PR 时把旧 wakeOn 连同旧值写回」的路径。
+
+## D-020 接不住的事实只记账，不排队
+
+**2026-11-28。** 账号范围内的条目搜索（`author:@me` 等五条）会扫到所有能读的仓库，而投递只可能发生在本机「有会话在那里干活」或「有人订阅」的仓库里。两者不匹配时，事实照样入队，于是永远 pending：一台不干那件事的机器，每收到一次回复就攒一条送不出去的通知。实测：一台机器四天积了 41 条，日志每轮都在说 `30 in a repository nobody here works in`，面板上那行提醒跟着一直消不掉，而真正在做那个项目的另一台机器与此无关——通知是每台机器各自去取、各自清，跨机没有协议。
+
+判据：`foldMineEvents` 把搜索命中的事实按仓库折叠，**只有本机能接住的仓库产生待办**；接不住的那些仍然推进 bookmark（`seen` 与 `lastMinePoll` 照写），所以将来真有人在那里开工时，历史是历史，不会一次倒出来，而轮询会留一行 `items: N change(s) … recorded, not queued` 说明忽略了多少。
+
+替代的选项与它们为什么不够：
+
+- **留着等认领**：认领是人的动作，一台根本不参与那个项目的机器上没人会去认领；这条路径只把积压变成常态。
+- **只把搜索限定到已订阅仓库**：等价于把「有没有接收方」的判断藏进查询串里，日志就再也说不清被丢掉的是什么。折叠时拒绝并计数，判断留在代码里、留在日志里。
+- **给事件加过期时间**：治的是症状，还得决定过期多久；而且「四天后忽然开始有人干这个仓库」时，意图应当是历史归历史，不是补发。

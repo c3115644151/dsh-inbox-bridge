@@ -15,13 +15,15 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const DEFAULT_PORT = 9333;
 const NOTIFICATIONS = "https://github.com/notifications";
-const PROFILE_REL = join(".work", "browser-profile");
+const PROFILE_REL = join(".work", "inbox-bridge", "browser-profile");
+// Where versions up to 2.26 kept the same profile, inside disposable scratch.
+const LEGACY_PROFILE_REL = join(".work", "browser-profile");
 
 /** The notification view for one repository, or the whole inbox for `null`. */
 export function inboxUrlFor(repo) {
@@ -277,7 +279,23 @@ async function main(argv) {
   }
 
   const root = process.cwd();
-  const profileDir = resolve(root, PROFILE_REL);
+  // The profile holds a GitHub login, so it belongs with the plugin's state and
+  // not in disposable scratch: `.work/` is where experiments and throwaway
+  // copies live, and a clean-up of it would log the user out. Profiles written
+  // by earlier versions lived one level up; move one over when it is the only
+  // one present rather than asking for the login again.
+  const legacyDir = resolve(root, LEGACY_PROFILE_REL);
+  const profileDir = process.env.INBOX_PROFILE_DIR
+    ? resolve(root, process.env.INBOX_PROFILE_DIR)
+    : resolve(root, PROFILE_REL);
+  if (profileDir !== legacyDir && !existsSync(profileDir) && existsSync(legacyDir)) {
+    try {
+      mkdirSync(dirname(profileDir), { recursive: true });
+      renameSync(legacyDir, profileDir);
+    } catch {
+      // A profile we cannot move is one the user will sign into again.
+    }
+  }
   // Chromium keeps cookies under Network/ since v96; older builds used Default/.
   const cookieFiles = [
     join(profileDir, "Default", "Network", "Cookies"),

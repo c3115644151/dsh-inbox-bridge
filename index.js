@@ -282,6 +282,43 @@ function readJsonSync(file) {
   }
 }
 
+/**
+ * Makes sure `dir` exists, asking the file system for it only when it does not.
+ *
+ * `mkdirSync(dir, { recursive: true })` on a directory that already exists is
+ * normally a no-op, but it still asks Windows to create it — and Windows says
+ * `EPERM: operation not permitted` when the create is refused rather than the
+ * path being absent. Two ordinary situations refuse it while the directory is
+ * perfectly usable: a sandbox or antivirus re-applying its rules mid-boot, and
+ * another process holding the directory open. Checking first means the panel
+ * keeps working through both instead of reporting a bare `EPERM` about a
+ * directory the user can see in Explorer.
+ */
+export function ensureDir(dir) {
+  if (existsSync(dir)) return;
+  try {
+    mkdirSync(dir, { recursive: true });
+  } catch (error) {
+    // Lost a race with another writer, or the create was refused but the
+    // directory was there all along: only a still-missing path is a failure.
+    if (!existsSync(dir)) throw writeFailure(error, dir);
+  }
+}
+
+/**
+ * Names the path a write could not reach, because the raw message leaves the
+ * user with `EPERM` and no idea which of their own directories is involved.
+ */
+export function writeFailure(error, target) {
+  const detail = error instanceof Error ? error.message : String(error);
+  const code = error?.code ? `${error.code}: ` : "";
+  const named = new Error(`could not write ${target} — ${code}${detail.replace(/^[A-Z]+: /, "")}`);
+  named.code = error?.code ?? "EWRITE";
+  named.target = target;
+  named.cause = error;
+  return named;
+}
+
 const DEFAULTS = Object.freeze({
   // One name everywhere: the pill, the panel title and the market entry all say
   // "GitHub 收件箱". The panel used to be titled differently from the pill it
@@ -388,11 +425,21 @@ export function apply(ctx, config) {
   const prefsFile = join(options.cwd, PREFS_REL);
   const uiToken = randomUUID();
   let prefs = readJsonSync(prefsFile) ?? {};
+  const persistPrefs = (next) => {
+    ensureDir(dirname(prefsFile));
+    try {
+      writeFileSync(prefsFile, `${JSON.stringify(next, null, 2)}\n`);
+    } catch (error) {
+      throw writeFailure(error, prefsFile);
+    }
+  };
   const applyPrefs = (next) => {
     const merged = mergeConfig(overlayPreferences(baseConfig, next));
+    // Persist first: a choice the instance cannot write down is a choice it
+    // must not start honouring, or the panel shows a setting that is gone on
+    // the next reload.
+    persistPrefs(next);
     prefs = next;
-    mkdirSync(dirname(prefsFile), { recursive: true });
-    writeFileSync(prefsFile, `${JSON.stringify(next, null, 2)}\n`);
     Object.assign(options, merged);
     return merged;
   };
@@ -480,7 +527,7 @@ export function apply(ctx, config) {
 
   const log = (line) => {
     try {
-      mkdirSync(dirname(logPath), { recursive: true });
+      ensureDir(dirname(logPath));
       appendFileSync(logPath, `${new Date().toISOString()} ${line}\n`);
     } catch {
       // Logging must never break polling.
@@ -512,7 +559,7 @@ export function apply(ctx, config) {
     }
     while (recent.size > RECENT_LIMIT) recent.delete(recent.keys().next().value);
     try {
-      mkdirSync(dirname(labelsFile), { recursive: true });
+      ensureDir(dirname(labelsFile));
       writeFileSync(labelsFile, `${JSON.stringify(Object.fromEntries(recent), null, 0)}\n`);
     } catch {
       // The view is a convenience; never let it break a poll.
@@ -591,6 +638,9 @@ export function apply(ctx, config) {
         signedIn: signIn.signedIn,
         open: signIn.open,
         attemptedAt: signIn.attemptedAt ? new Date(signIn.attemptedAt).toISOString() : null,
+        // Why the last click did not open a window. A button that silently does
+        // nothing is the same failure as an error nobody reads.
+        reason: signIn.reason,
       },
       sweepOn: Boolean(options.sweep),
       sessionId,
@@ -602,7 +652,7 @@ export function apply(ctx, config) {
   // effective config without secrets, plus where the state lives.
   const writeRuntime = () => {
     try {
-      mkdirSync(stateDir, { recursive: true });
+      ensureDir(stateDir);
       writeFileSync(
         join(stateDir, "runtime.json"),
         `${JSON.stringify(
@@ -665,7 +715,7 @@ export function apply(ctx, config) {
   // operator should never have to run a command in a terminal to fix that:
   // choosing the archive mode — or the archive finding no sign-in on its own —
   // opens the window that asks for it.
-  const signIn = { signedIn: null, open: false, attemptedAt: 0 };
+  const signIn = { signedIn: null, open: false, attemptedAt: 0, reason: null };
 
   const sweepScript = () => {
     const args = options.sweep?.args ?? [];
@@ -675,27 +725,29 @@ export function apply(ctx, config) {
 
   const minutesSince = (at) => Math.max(1, Math.round((Date.now() - at) / 60_000));
 
-  const openSignIn = (reason) => {
+  // A click that opens nothing must say why. Every refusal below records a code
+  // the panel can turn into words, because "I pressed it and nothing happened"
+  // is the one answer this button must never give.
+  const openSignIn = (why) => {
+    const refuse = (code, detail = null) => {
+      signIn.reason = { code, detail };
+      log(`sign-in window not opened (${code}${detail === null ? "" : `: ${detail}`}) — ${why}`);
+      return { ok: false, code, detail };
+    };
     const script = sweepScript();
-    if (!script) return false;
-    if (signIn.open) {
-      log("sign-in window is already open");
-      return false;
-    }
+    if (!script) return refuse("no-script");
+    if (signIn.open) return refuse("already-open");
     if (signIn.attemptedAt && Date.now() - signIn.attemptedAt < options.signInCooldownMs) {
-      log(
-        `sign-in window not reopened: one was opened ${minutesSince(signIn.attemptedAt)} minutes ago`,
-      );
-      return false;
+      return refuse("cooldown", minutesSince(signIn.attemptedAt));
     }
     signIn.attemptedAt = Date.now();
     signIn.open = true;
     signIn.signedIn = false;
+    signIn.reason = null;
     const launch = signInLaunch(script, options);
     if (launch.error) {
       signIn.open = false;
-      log(`could not open the sign-in window: ${launch.error}`);
-      return false;
+      return refuse("launch-failed", launch.error);
     }
     try {
       spawnSignIn(
@@ -717,17 +769,17 @@ export function apply(ctx, config) {
           },
           onError: (error) => {
             signIn.open = false;
+            signIn.reason = { code: "launch-failed", detail: describe(error) };
             log(`could not open the sign-in window: ${describe(error)}`);
           },
         },
       );
     } catch (error) {
       signIn.open = false;
-      log(`could not open the sign-in window: ${describe(error)}`);
-      return false;
+      return refuse("launch-failed", describe(error));
     }
-    log(`opened the sign-in window (${reason}); archiving resumes once you sign in`);
-    return true;
+    log(`opened the sign-in window (${why}); archiving resumes once you sign in`);
+    return { ok: true, code: null, detail: null };
   };
 
   const checkSignIn = async () => {
@@ -1404,9 +1456,8 @@ export function apply(ctx, config) {
             const sessionRepo = sessionId ? repoOf(agents.get(sessionId)) : null;
             try {
               if (action === "reset") {
+                persistPrefs({});
                 prefs = {};
-                mkdirSync(dirname(prefsFile), { recursive: true });
-                writeFileSync(prefsFile, "{}\n");
                 Object.assign(options, mergeConfig(baseConfig));
                 log("preferences reset to the profile");
                 writeRuntime();
@@ -1418,9 +1469,21 @@ export function apply(ctx, config) {
                 sessionRepo,
               });
               if (action === "signin") {
-                // Not a setting: open the window that archiving needs.
+                // Not a setting: open the window that archiving needs. A refusal
+                // comes back as a code the panel turns into words, so pressing
+                // this button can never look like pressing nothing.
                 const opened = openSignIn("you asked for it in the panel");
-                return reply(200, { ok: true, opened, status: uiPayload(sessionId) });
+                if (!opened.ok) {
+                  return reply(200, {
+                    ok: false,
+                    opened: false,
+                    code: opened.code,
+                    detail: opened.detail,
+                    error: `sign-in did not open: ${opened.code}`,
+                    status: uiPayload(sessionId),
+                  });
+                }
+                return reply(200, { ok: true, opened: true, status: uiPayload(sessionId) });
               }
               if (next === null) {
                 return reply(400, { ok: false, error: `unknown setting: ${action || "-"}` });

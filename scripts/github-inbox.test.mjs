@@ -21,6 +21,7 @@ import {
   extractReviewCommentEvents,
   extractSecurityEvents,
   filterRuns,
+  foldMineEvents,
   formatEvent,
   isMaintainer,
   mentionsLogin,
@@ -1318,4 +1319,52 @@ test("an answered item is news again, an untouched one is not", () => {
   // so the answer reaches the session instead of being swallowed by "seen".
   assert.notEqual(once({ state: "open", comments: 0 }), once({ state: "closed", merged: true, comments: 0 }));
   assert.notEqual(once({ state: "open", comments: 0 }), once({ state: "open", comments: 1 }));
+});
+
+test("an item search reports only the repositories something here can answer", () => {
+  const now = Date.parse("2026-11-28T02:00:00Z");
+  const at = "2026-11-28T01:30:00Z";
+  const events = [
+    { repo: "me/mine", key: "me/mine#issue:1:mine:openc0", at },
+    { repo: "other/theirs", key: "other/theirs#issue:2:mine:openc0", at },
+  ];
+  const folded = foldMineEvents(events, { servable: new Set(["me/mine"]), now });
+  assert.deepEqual(
+    folded.fresh.map((event) => event.key),
+    ["me/mine#issue:1:mine:openc0"],
+  );
+  assert.equal(folded.withheld, 1);
+  // The unserved repository still gets its bookmark, so its history will not
+  // arrive as news the day a session does work there.
+  const slice = folded.slices["other/theirs"];
+  assert.equal(slice.lastMinePoll, "2026-11-28T02:00:00.000Z");
+  assert.equal(slice.seen["other/theirs#issue:2:mine:openc0"], "2026-11-28T02:00:00.000Z");
+
+  // Reverse check: the same fact is news once something can answer it.
+  const served = foldMineEvents(events, {
+    servable: new Set(["me/mine", "other/theirs"]),
+    now,
+  });
+  assert.equal(served.fresh.length, 2);
+  assert.equal(served.withheld, 0);
+});
+
+test("a served repository reports what changed since the bookmark, and nothing older", () => {
+  const now = Date.parse("2026-11-28T02:00:00Z");
+  const first = foldMineEvents(
+    [{ repo: "me/mine", key: "me/mine#issue:1:mine:openc0", at: "2026-11-28T01:00:00Z" }],
+    { servable: new Set(["me/mine"]), now },
+  );
+  assert.equal(first.fresh.length, 1);
+  const later = foldMineEvents(
+    [
+      { repo: "me/mine", key: "me/mine#issue:1:mine:openc0", at: "2026-11-28T01:00:00Z" },
+      { repo: "me/mine", key: "me/mine#issue:1:mine:openc1", at: "2026-11-28T02:05:00Z" },
+    ],
+    { slices: first.slices, servable: new Set(["me/mine"]), now: now + 300_000 },
+  );
+  assert.deepEqual(
+    later.fresh.map((event) => event.key),
+    ["me/mine#issue:1:mine:openc1"],
+  );
 });

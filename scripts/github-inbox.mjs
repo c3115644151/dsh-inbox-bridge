@@ -1644,6 +1644,61 @@ function identityFromEnv(env = process.env) {
   return { kind, login, token };
 }
 
+/**
+ * Fold the account-wide item search into per-repository slices.
+ *
+ * The search answers for every repository the identity can read, but a fact is
+ * only worth queueing where something can answer it: a session works there, or
+ * a subscription speaks for it. A repository this instance cannot serve still
+ * gets its slice advanced, so the day a session does work there the history
+ * stays history instead of arriving as one burst of backlog.
+ *
+ * `bootstrap` marks the first look at a repository's items: the backlog that
+ * already existed is a baseline, and only the last day of it is news — long
+ * enough for a reply that landed while nobody was looking, short enough that an
+ * upgrade cannot replay years of closed pull requests.
+ *
+ * @returns {{ slices: Record<string, object>, fresh: object[], withheld: number }}
+ *   `withheld` counts what was recorded but not reported, so a poll can say it.
+ */
+export function foldMineEvents(
+  events,
+  { slices = {}, servable = new Set(), now = Date.now(), burst = MINE_BURST } = {},
+) {
+  // `now` may arrive as a Date from the poller or as milliseconds from a caller
+  // that only has a number; `withinMineFresh` wants a Date either way.
+  const moment = now instanceof Date ? now : new Date(now ?? Date.now());
+  const byRepo = new Map();
+  for (const event of Array.isArray(events) ? events : []) {
+    if (!event?.repo) continue;
+    if (!byRepo.has(event.repo)) byRepo.set(event.repo, []);
+    byRepo.get(event.repo).push(event);
+  }
+  const next = { ...slices };
+  const fresh = [];
+  let withheld = 0;
+  for (const [repo, list] of byRepo) {
+    const slice = next[repo] ?? normalizeState({});
+    const known = slice.seen ?? {};
+    const stillNew = list.filter((event) => !known[event.key]);
+    const digestMarks = Object.keys(known).filter((key) => key.includes(":mine:"));
+    const bootstrap = !slice.lastMinePoll || digestMarks.length === 0;
+    const seen = { ...known };
+    for (const event of stillNew) seen[event.key] = toIso(moment);
+    next[repo] = { ...slice, seen, lastMinePoll: toIso(moment) };
+    const report = bootstrap
+      ? stillNew.filter((event) => withinMineFresh(event.at, moment))
+      : stillNew;
+    if (!servable.has(repo)) {
+      withheld += report.length;
+      continue;
+    }
+    if (report.length === 0) continue;
+    fresh.push(...report.slice(0, burst));
+  }
+  return { slices: next, fresh, withheld };
+}
+
 function runPoll({ repoRoot, stateFile, pendingFile, state, options, now, me, repos }) {
   const fresh = [];
   const skipped = [];
@@ -1702,47 +1757,25 @@ function runPoll({ repoRoot, stateFile, pendingFile, state, options, now, me, re
     };
   }
 
-  // The account's own items can live in repositories this instance does not poll:
-  // a pull request opened elsewhere still deserves its answer here. One search
-  // answers for the whole account, so it runs once and its facts are attributed to
-  // the repository each item belongs to — including slices for repositories that
-  // are only watched through these items.
+  // The account's own items can live in repositories this instance does not poll.
+  // One search answers for the whole account, so it runs once; `foldMineEvents`
+  // attributes every fact to its own repository and hands back only the ones this
+  // instance has somewhere to put.
   const mineResult = fetchMyItems(repoRoot, { me });
   for (const note of mineResult.notes ?? []) notices.push(`items: ${note}`);
   const mineEvents = extractMineEvents(mineResult.value ?? []);
   if (mineEvents.length > 0) {
-    const byRepo = new Map();
-    for (const event of mineEvents) {
-      if (!byRepo.has(event.repo)) byRepo.set(event.repo, []);
-      byRepo.get(event.repo).push(event);
-    }
-    for (const [repo, events] of byRepo) {
-      const slice = nextRepos[repo] ?? normalizeState({});
-      const known = slice.seen ?? {};
-      const stillNew = events.filter((event) => !known[event.key]);
-      // The first look at the account's items is a baseline, not news: the
-      // backlog of every pull request this identity ever opened would otherwise
-      // arrive as one burst. Record what exists, report what changes next. The
-      // bookmark is written on every poll, even one that finds nothing new, or
-      // the baseline would never be established. A slice that predates the
-      // bookmark (or one recorded before keys carried their digest) is also a
-      // baseline: an upgrade must not replay years of closed pull requests.
-      const digestMarks = Object.keys(known).filter((key) => key.includes(":mine:"));
-      const bootstrap = !slice.lastMinePoll || digestMarks.length === 0;
-      const seen = { ...known };
-      for (const event of stillNew) seen[event.key] = toIso(now);
-      nextRepos[repo] = { ...slice, seen, lastMinePoll: toIso(now) };
-      // A brand-new slice holds today's answer as well as years of backlog, and
-      // the search that first reaches a repository must not swallow the reply
-      // that made it worth reaching. Recent items are reported; older ones are
-      // the baseline. The window is a day: long enough for a reply that landed
-      // while nobody was looking, short enough that an upgrade cannot replay a
-      // repository's history.
-      const report = bootstrap
-        ? stillNew.filter((event) => withinMineFresh(event.at, now))
-        : stillNew;
-      if (report.length === 0) continue;
-      fresh.push(...report.slice(0, MINE_BURST));
+    const folded = foldMineEvents(mineEvents, {
+      slices: nextRepos,
+      servable: new Set(repos),
+      now,
+    });
+    Object.assign(nextRepos, folded.slices);
+    fresh.push(...folded.fresh);
+    if (folded.withheld > 0) {
+      notices.push(
+        `items: ${folded.withheld} change(s) in repositories nothing here works in — recorded, not queued`,
+      );
     }
   }
 

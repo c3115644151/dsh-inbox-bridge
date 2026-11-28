@@ -132,6 +132,10 @@ window.__ModuleLoader__.load({
           signInWaiting: "已打开登录窗口，登录后自动生效。",
           signInOpen: "打开登录窗口",
           signInTip: "在插件自己的浏览器配置里登录一次；之后归档会自动运行，失效时会再打开这个窗口。",
+          signInNoScript: "没法打开：插件没配上归档脚本（sweep.args 里没有 .mjs）。",
+          signInAlreadyOpen: "登录窗口已经开着，去任务栏找一下它（可能被别的窗口挡住）。",
+          signInCooldown: (minutes) => `刚试过，冷却中：${minutes} 分钟后可以再点。`,
+          signInLaunchFailed: (detail) => `窗口没起来：${detail}`,
           autonomy: "处理方式",
           autonomyTip: "收到消息后怎么处理；与提醒方式（是否开新一轮）无关。",
           act: "直接处理",
@@ -201,6 +205,10 @@ window.__ModuleLoader__.load({
           signInWaiting: "The sign-in window is open; archiving resumes when you finish.",
           signInOpen: "open sign-in",
           signInTip: "Sign in once in this plugin's own browser profile; afterwards archiving runs on its own and reopens this window if the session expires.",
+          signInNoScript: "Cannot open it: the plugin has no archiving script (sweep.args names no .mjs).",
+          signInAlreadyOpen: "The sign-in window is already open — look for it on the taskbar; another window may be covering it.",
+          signInCooldown: (minutes) => `Just tried: try again in ${minutes} minute(s).`,
+          signInLaunchFailed: (detail) => `The window did not start: ${detail}`,
           autonomy: "handling",
           autonomyTip: "What to do with a fact after it arrives; independent of delivery (which decides if a turn opens).",
           act: "act now",
@@ -856,6 +864,29 @@ window.__ModuleLoader__.load({
         }
         reload();
       };
+      // Opening the sign-in window answers one of two things: a window opened, or
+      // a reason it did not. "I pressed it and nothing happened" is the one answer
+      // this button must never give.
+      const openSignInWindow = async () => {
+        if (busy) return;
+        setBusy(true);
+        setError(null);
+        const result = await change(status, "signin", "1");
+        setBusy(false);
+        if (!result.ok) {
+          const detail = result.detail ?? null;
+          setError(
+            result.code === "no-script"
+              ? pick.signInNoScript
+              : result.code === "already-open"
+                ? pick.signInAlreadyOpen
+                : result.code === "cooldown"
+                  ? pick.signInCooldown(detail ?? 1)
+                  : pick.signInLaunchFailed(detail ?? result.error ?? "unknown"),
+          );
+        }
+        reload();
+      };
       const seg = (label, options, current, set, key) =>
         h(
           "div",
@@ -997,7 +1028,7 @@ window.__ModuleLoader__.load({
                       type: "button",
                       disabled: busy,
                       title: pick.signInTip,
-                      onClick: () => void send("signin", "1"),
+                      onClick: () => void openSignInWindow(),
                       style: styles.seg,
                     },
                     pick.signInOpen,

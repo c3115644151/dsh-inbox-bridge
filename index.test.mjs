@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, isAbsolute } from "node:path";
 
-import { DEFAULT_ACK_HINT, admissionVerdict, audienceFor, buildMessage, buildUiPayload, checkLatestVersion, commandFailure, compareVersions, deliver, deliveryTargets, detectRepo, eventTier, filterUndelivered, formatEvents, hostRuntime, itemIdentity, keyOf, mergeConfig, overlayPreferences, roleAllowed, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, runCommand, sessionLabel, sessionTag, signInLaunch, spawnSignIn, updateNotice, wakePlan } from "./index.js";
+import { DEFAULT_ACK_HINT, admissionVerdict, audienceFor, buildMessage, buildUiPayload, checkLatestVersion, commandFailure, compareVersions, deliver, deliveryTargets, detectRepo, ensureDir, eventTier, filterUndelivered, formatEvents, hostRuntime, itemIdentity, keyOf, mergeConfig, overlayPreferences, roleAllowed, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, runCommand, sessionLabel, sessionTag, signInLaunch, spawnSignIn, updateNotice, wakePlan, writeFailure } from "./index.js";
 
 const idle = { status: "idle" };
 const running = { status: "running" };
@@ -1174,6 +1174,51 @@ test("the page can tune how patient a wakeup is", () => {
   assert.equal(preferenceNext({}, "budget", "4", {}).wakesPerHour, 4);
   assert.equal(preferenceNext({}, "budget", "0", {}), null);
   assert.equal(preferenceNext({}, "budget", "2.5", {}), null);
+});
+
+test("an existing state directory is left alone, because asking is what fails", () => {
+  const root = mkdtempSync(join(tmpdir(), "inbox-ensure-"));
+  try {
+    const dir = join(root, ".work", "inbox-bridge");
+    mkdirSync(dir, { recursive: true });
+    // The directory a panel reports EPERM about is there, usable, and holds
+    // files: ensuring it must be a no-op rather than a second create request.
+    writeFileSync(join(dir, "prefs.json"), "{}\n");
+    assert.equal(ensureDir(dir), undefined);
+    assert.equal(readFileSync(join(dir, "prefs.json"), "utf8"), "{}\n");
+    // A missing path still gets made, parents and all.
+    ensureDir(join(root, "fresh", "deeper"));
+    assert.equal(existsSync(join(root, "fresh", "deeper")), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a write that cannot land names the path, not just EPERM", () => {
+  const root = mkdtempSync(join(tmpdir(), "inbox-writefail-"));
+  try {
+    // A file where a directory is expected: the create cannot succeed, and the
+    // reason must reach the user with the path they can go look at.
+    const blocker = join(root, "blocker");
+    writeFileSync(blocker, "x");
+    let caught = null;
+    try {
+      ensureDir(join(blocker, "nested"));
+    } catch (error) {
+      caught = error;
+    }
+    assert.ok(caught, "ensureDir should refuse a path it cannot create");
+    assert.equal(caught.target, join(blocker, "nested"));
+    assert.match(caught.message, /could not write/);
+    assert.ok(caught.message.includes(blocker), "the message must carry the path");
+
+    const wrapped = writeFailure(Object.assign(new Error("EPERM: operation not permitted, mkdir 'x'"), { code: "EPERM" }), "C:/state");
+    assert.equal(wrapped.code, "EPERM");
+    assert.equal(wrapped.target, "C:/state");
+    assert.match(wrapped.message, /could not write C:\/state — EPERM: operation not permitted/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("a claim names one item, not a repository", () => {
