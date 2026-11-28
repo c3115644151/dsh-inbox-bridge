@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, isAbsolute } from "node:path";
 
-import { DEFAULT_ACK_HINT, admissionVerdict, audienceFor, buildMessage, buildUiPayload, checkLatestVersion, commandFailure, compareVersions, deliver, deliveryTargets, detectRepo, ensureDir, eventTier, filterUndelivered, formatEvents, hostRuntime, itemIdentity, keyOf, mergeConfig, overlayPreferences, roleAllowed, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, runCommand, sessionLabel, sessionTag, updateNotice, wakePlan, writeFailure } from "./index.js";
+import { DEFAULT_ACK_HINT, admissionVerdict, audienceFor, buildMessage, buildUiPayload, checkLatestVersion, commandFailure, compareVersions, deliver, deliveryTargets, detectRepo, ensureDir, eventTier, filterUndelivered, formatEvents, hostRuntime, itemIdentity, keyOf, markReadVerdict, mergeConfig, overlayPreferences, roleAllowed, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, runCommand, sessionLabel, sessionTag, updateNotice, wakePlan, writeFailure } from "./index.js";
 
 const idle = { status: "idle" };
 const running = { status: "running" };
@@ -1694,3 +1694,28 @@ test("a failed or offline version check is silently unknown", async () => {
   });
   assert.equal(malformed, null);
 });
+test("a token without the notifications scope is named once, with the command that fixes it", () => {
+  // A fresh `gh auth login` carries gist, project, read:org, repo, workflow —
+  // and nothing else. Every PATCH then answers the same 404, so the line that
+  // matters is the one with the fix, not the Nth 404.
+  const verdict = markReadVerdict([
+    { id: "1", reason: 'Not Found (HTTP 404): This API operation needs the "notifications" scope' },
+    { id: "2", reason: 'Not Found (HTTP 404): This API operation needs the "notifications" scope' },
+  ]);
+  assert.equal(verdict.count, 2);
+  assert.equal(verdict.scopeMissing, true);
+  assert.match(verdict.reason, /no `notifications` scope/u);
+  assert.match(verdict.log, /gh auth refresh -h github.com -s notifications/u);
+  assert.equal(verdict.hint, "gh auth refresh -h github.com -s notifications");
+});
+
+test("another reason for a failed mark-read is passed through, without a scope hint", () => {
+  const verdict = markReadVerdict([{ id: "9", reason: "gh timed out after 20s" }]);
+  assert.equal(verdict.scopeMissing, false);
+  assert.equal(verdict.hint, null);
+  assert.match(verdict.log, /gh timed out after 20s/u);
+  // Nothing failed is not a verdict at all: the caller must not record a block.
+  assert.equal(markReadVerdict([]), null);
+  assert.equal(markReadVerdict(undefined), null);
+});
+

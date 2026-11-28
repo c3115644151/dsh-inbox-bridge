@@ -248,6 +248,8 @@ export function preferenceNext(current = {}, action = "", value = "", options = 
  */
 export const DEFAULT_ACK_HINT = `node "${CLI}" ack --done -- <key>`;
 
+/** How long to stop trying to mark threads read after the token refused. */
+const MARK_READ_RECHECK_MS = 30 * 60 * 1000;
 /** How long a session workspace's `owner/name` is trusted before re-reading git. */
 const REPO_TTL_MS = 10 * 60 * 1000;
 
@@ -294,6 +296,33 @@ export function ensureDir(dir) {
     // directory was there all along: only a still-missing path is a failure.
     if (!existsSync(dir)) throw writeFailure(error, dir);
   }
+}
+
+/**
+ * What to say about threads the poll could not mark read, or `null` when every
+ * thread was cleared.
+ *
+ * A token without the `notifications` scope answers `404 … This API operation
+ * needs the "notifications" scope`, which reads like a broken plugin. The
+ * sentence that matters is the fix, so it is the sentence that gets logged and
+ * carried to the page — once per distinct reason, not once per thread.
+ */
+export function markReadVerdict(failures = []) {
+  const list = (Array.isArray(failures) ? failures : []).filter(Boolean);
+  if (list.length === 0) return null;
+  const scopeMissing = list.some((entry) => /notifications/iu.test(String(entry?.reason ?? "")));
+  const reason = scopeMissing
+    ? "the gh token has no `notifications` scope"
+    : String(list[0]?.reason ?? "unknown");
+  return {
+    count: list.length,
+    reason,
+    scopeMissing,
+    log: scopeMissing
+      ? `could not mark ${list.length} thread(s) read: ${reason} — one fix: gh auth refresh -h github.com -s notifications`
+      : `could not mark ${list.length} thread(s) read: ${reason}`,
+    hint: scopeMissing ? "gh auth refresh -h github.com -s notifications" : null,
+  };
 }
 
 /**
@@ -560,6 +589,15 @@ export function apply(ctx, config) {
    * how it delivers, and the queue as it stands. Statuses come from the queue
    * file (the CLI's record of truth); details come from `recent`.
    */
+  /**
+   * Whether threads can be marked read at all. A token without the
+   * `notifications` scope answers every PATCH with the same 404, so the poll
+   * stops trying for a while and says the reason once — a fresh install with a
+   * plain `gh auth login` has no such scope, and one line with the fix is worth
+   * more than one 404 per thread per minute.
+   */
+  const markRead = { blocked: false, reason: null, at: 0 };
+
   const uiPayload = (sessionId = null) => {
     const agent = sessionId ? agents.get(sessionId) : null;
     // What this session watches: only what it took over. The instance polls the
@@ -627,6 +665,10 @@ export function apply(ctx, config) {
       // shows this only when it is not fine: a plugin that cannot remember a
       // setting has to say so instead of quietly forgetting it.
       storage: { root: state.root, from: state.from, ok: state.ok, reason: state.reason },
+      // Threads the poll could not mark read. Shown on the page because the
+      // consequence is visible there — GitHub keeps showing them as unread —
+      // and the fix is one command the page can print.
+      markRead: markRead.blocked ? { blocked: true, reason: markRead.reason } : { blocked: false, reason: null },
       // What the migration copied the first time a newer root was used.
       storageMoved: state.migrated?.copied?.length ? state.migrated.copied : null,
     };
@@ -723,13 +765,36 @@ export function apply(ctx, config) {
     if (Date.now() - startedAt < 3_000) return;
     startedAt = Date.now();
     polling = true;
-    const scoped = { ...options, repos, repo: repos.length === 1 ? repos[0] : options.repo };
+    const scoped = {
+      ...options,
+      repos,
+      repo: repos.length === 1 ? repos[0] : options.repo,
+      // While the token cannot mark threads read there is nothing to try: N
+      // PATCHes per poll would each answer the same 404. Back off, and look
+      // again on a slower clock — a token can gain the scope mid-run.
+      ...(markRead.blocked && Date.now() - markRead.at < MARK_READ_RECHECK_MS
+        ? { clear: "off" }
+        : {}),
+    };
+    const attemptingClear = (scoped.clear ?? "repo") !== "off";
     try {
       const payload = await pollEvents(scoped);
       debug(`poll: payload skipped=${payload.skipped ?? "no"} events=${payload.events?.length ?? 0}`);
-      if (payload.cleared > 0) log(`marked ${payload.cleared} notification(s) read`);
-      for (const entry of payload.clearFailed ?? []) {
-        log(`could not mark ${entry.id} read: ${entry.reason}`);
+      if (payload.cleared > 0) {
+        markRead.blocked = false;
+        markRead.reason = null;
+        log(`marked ${payload.cleared} notification(s) read`);
+      }
+      // One line per distinct reason, not one per thread: the reason is a
+      // standing fact about the token, and repeating it every minute teaches
+      // whoever reads the log to skip the line that matters.
+      const verdict = markReadVerdict(payload.clearFailed);
+      if (verdict && attemptingClear) {
+        const repeat = markRead.reason === verdict.reason;
+        markRead.blocked = true;
+        markRead.reason = verdict.reason;
+        markRead.at = Date.now();
+        if (!repeat) log(verdict.log);
       }
       if (payload.skipped) {
         // A poll that cannot reach the source must leave a trace; silence here is

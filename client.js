@@ -111,6 +111,9 @@ window.__ModuleLoader__.load({
         unbound: "会话正在绑定，先不列别人的条目",
         updateAvailable: (latest, current) => `发现新版本 ${latest}（当前 ${current}）`,
         storageFailed: (root) => `状态写不进去：${root}（设置记不住）`,
+        markReadBlocked: "读过的通知还留在 GitHub 收件箱里（令牌缺 notifications 权限）",
+        markReadTip: (reason) =>
+          `${reason}。一次性补上：gh auth refresh -h github.com -s notifications —— 补完 30 分钟内会自动重试`,
         storageTip: (root, reason) =>
           `${root} 无法创建或写入：${reason}。设 INBOX_STATE_ROOT 到一个可写目录，或在 profile 里给它权限`,
         updateTip: "旧版本可能带着未修复的问题。请在会话里让 agent 升级，插件本身不会自动改动正在运行的版本。",
@@ -178,6 +181,9 @@ window.__ModuleLoader__.load({
         unbound: "binding this session, so no other session's items are listed",
         updateAvailable: (latest, current) => `new version ${latest} available (you have ${current})`,
         storageFailed: (root) => `cannot write state to ${root} (settings will not stick)`,
+        markReadBlocked: "threads it read stay unread in the GitHub inbox (token has no notifications scope)",
+        markReadTip: (reason) =>
+          `${reason}. One fix: gh auth refresh -h github.com -s notifications — it retries within 30 minutes once the scope is there`,
         storageTip: (root, reason) =>
           `${root} cannot be created or written: ${reason}. Point INBOX_STATE_ROOT at a writable directory, or fix that path's permissions`,
         updateTip: "An older copy may carry unfixed bugs. Ask the agent in a session to upgrade; the plugin never changes a running version by itself.",
@@ -1329,6 +1335,19 @@ window.__ModuleLoader__.load({
                     title: text.storageTip(status.storage.root, status.storage.reason ?? ""),
                   },
                   text.storageFailed(status.storage.root),
+                )
+              : null,
+            // The poll could not mark read: GitHub keeps the thread unread, and a
+            // plain `gh auth login` token simply lacks that one scope. Say the
+            // consequence and the command, in the place where the consequence is.
+            status.markRead?.blocked
+              ? h(
+                  "div",
+                  {
+                    style: { ...styles.more, color: "var(--dsw-alias-label-warning, inherit)", cursor: "default" },
+                    title: text.markReadTip(status.markRead.reason ?? ""),
+                  },
+                  text.markReadBlocked,
                 )
               : null,
             status.update?.behind
