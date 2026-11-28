@@ -1,4 +1,4 @@
-## 未发布（等确认后定版本号）
+## 3.1.1
 
 - **令牌缺权限时，不再每分钟刷同一句 404。** 3.0.0 把「清掉读过的线程」交给 `PATCH /notifications/threads/<id>` 之后，新装用户会撞上一个默认值：`gh auth login` 给的 scopes 是 `gist, project, read:org, repo, workflow`——**没有 `notifications`**。于是每个线程每轮都回同一个 404，只写进日志；用户看到的是「GitHub 收件箱里的通知永远不消」，而插件看起来一切正常。改了什么：`markReadVerdict()` 把失败归成「因」而不是「条」，日志**每个原因只写一次**并附 `gh auth refresh -h github.com -s notifications`；轮询在拒绝后**停 30 分钟再试**（`MARK_READ_RECHECK_MS`），补上权限会自动恢复；面板加一行「读过的通知还留在 GitHub 收件箱里（令牌缺 notifications 权限）」，悬停给出同一条命令。证据：两条新测试（scope 404 → 一句话带命令、其它原因原样透传且不给 scope 提示、空失败不算 verdict）；157→**159 全绿**。
 
