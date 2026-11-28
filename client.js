@@ -121,6 +121,7 @@ window.__ModuleLoader__.load({
             repository: "还没有接管仓库：粘贴仓库链接，或在这个仓库里开会话",
             storage: "状态写不进去",
           })[id] ?? id,
+        setupFixStale: "宿主还是旧版本，不认识这个动作——重启 DSH 后这个按钮就能用；等不及就先跑 gh auth refresh -h github.com -s notifications",
         setupFixOne: "一键补",
         setupFixing: "已发出…",
         setupFixCode: (code) => `在浏览器输入 ${code}`,
@@ -204,6 +205,7 @@ window.__ModuleLoader__.load({
             repository: "no repository taken yet: paste a link, or open a session in that repository",
             storage: "state cannot be written",
           })[id] ?? id,
+        setupFixStale: "the Host half is still an older build and does not know this action — restart DSH and the button works; until then run gh auth refresh -h github.com -s notifications",
         setupFixOne: "fix it",
         setupFixing: "asked…",
         setupFixCode: (code) => `type ${code} in your browser`,
@@ -1110,7 +1112,15 @@ function SetupList({ status, text }) {
     const result = await change(status, "fixscope", "1");
     setBusy(false);
     if (!result.ok) {
-      setError(result.error ?? "failed");
+      // The page reloads with the file it finds; the Host half only reloads when
+      // the app restarts. So a button new in this bundle can meet a Host that has
+      // never heard of it, and "unknown setting" is what that looks like — say
+      // what it means instead of repeating it.
+      setError(
+        /^unknown setting/iu.test(String(result.error ?? ""))
+          ? text.setupFixStale
+          : result.error ?? "failed",
+      );
       return;
     }
     setFix(result.fix ?? null);

@@ -638,7 +638,10 @@ test("wakeup reads while sessions are idle; quiet keeps them free", async () => 
     }));
     apply(contextWith(fakeAgent(root, "quiet-session")), config(quietMarker, { delivery: "quiet" }));
 
-    const deadline = Date.now() + 8_000;
+    // The heartbeat's first poll has to start a child process, and this file now
+    // runs beside the others: 8 s was enough alone and not under load. The claim
+    // is "it reads while idle eventually", never "it reads within 8 s".
+    const deadline = Date.now() + 20_000;
     while (Date.now() < deadline && !(await import("node:fs")).existsSync(wakeMarker)) {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
