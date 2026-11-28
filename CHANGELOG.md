@@ -1,4 +1,4 @@
-## 未发布（等确认后定版本号）
+## 3.1.2
 
 - **第一次运行失败时，告诉人下一步做什么。** 症状：新装的机器上 `gh` 还没登录，插件每轮只念一句 `poll skipped: gh is not authenticated`——本机日志里实测连续三次都是这句——而会话里收到的是「暂时读不到 工作区（gh is not authenticated），先做手头的事」。装的人读不出「该去登录」这一步。改了什么：`formatOfflineNotice` 把认得的原因配上对应的一步——`gh is not authenticated` / `bad credentials` / `HTTP 401|403` → 「在终端跑一次 `gh auth login`，插件下一轮会自己恢复」；`no repository` → 「面板里粘贴一个仓库链接，或在 git 仓库的目录里开会话」。认不出的原因**不加建议**：一句错的下一步比没有更坏。证据：新增测试 `a first run without gh is told what to run, not just what failed` 覆盖三例（两个第一道墙 + 一个必须不带建议的未知原因）；`npm test` **160 全绿**。
 
