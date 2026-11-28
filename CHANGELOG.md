@@ -1,4 +1,4 @@
-## 未发布（等确认后定版本号）
+## 3.1.0
 
 - **状态不再写进你的项目目录，装到哪台机器都能用。** 症状：另一台机器上安装正常、`gh` 登录正常、仓库权限正常，但点「接管仓库」直接报 `could not write C:\…\.work\inbox-bridge — EPERM: operation not permitted, mkdir`，什么设置都记不住。根因是状态一直写在 `<cwd>/.work` 下——把「插件能不能工作」绑在「用户项目目录能不能写」上，而那个目录常常不能：只读或同步中的项目、别的账号建的目录、被 Defender 受控文件夹访问盯上的桌面、目标已消失的 Junction。这类失败在插件内部无解，装的人只能去跑 `icacls`，还不一定有管理员。改了什么：新增 `scripts/state-root.mjs`，独占「状态放哪」这一个问题，顺序是 `INBOX_STATE_ROOT`（相对路径按 `cwd` 解析）→ `$DSH_HOME`（默认 `~/.dsh`）→ `<cwd>/.work`，**第一个真正能建、能写的胜出**（探针是建目录 + 写临时文件，不是查权限位）；选中的根通过 `INBOX_STATE_ROOT` 传给抓取器与 ack 子进程，`runtime.json` 记 `state.root`/`state.from`；一次都没写成时 `doctor` 的 `state` 项为 fail 并给原因，面板有一行「状态写不进去」。证据：`npm test` **157 全绿**（新增 `scripts/state-root.test.mjs` 5 条：显式根优先且按 cwd 解析、写不了就跳过而不是变成 EPERM、全都写不了时逐条报出、旧队列一次性复制而不覆盖、根目录随队列与抓取器目录一起就绪）；A 机实跑 `doctor`：`状态根 C:\Users\NUC\.dsh（来自 DSH_HOME）`，队列仍是 `done 176`——迁移把旧 `.work` 的队列与 16 个仓库的 baseline 复制过去了。
 - **升级不会看起来「机器把队列忘了」。** 第一次用新根时，旧根的 `state.json`、`prefs.json`、`labels.json` 与 `github-inbox/state.json` 被复制过去；目标已有状态就不覆盖；日志不搬，因为日志记的是它自己那次运行。
