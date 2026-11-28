@@ -1,4 +1,4 @@
-## 未发布（等确认后定版本号）
+## 3.3.0
 
 - **令牌权限那一行现在是个按钮，点一下就把码给你。** 症状：3.2.0 的清单只说「缺 notifications 权限，跑 `gh auth refresh -h github.com -s notifications`」——对一个不知道终端在哪的人，这条命令等于没有。改了什么：先确认这条命令**不需要终端**（实跑 `gh auth refresh --clipboard`：码直接打在 stderr 的 `! One-time code (94CD-B4B5) copied to clipboard` 上，进程随后等人同意）。于是 `startScopeFix()` 起这个进程、从输出里读设备码、把码和 `github.com/login/device` 交给面板；人在自己的浏览器里点一次同意，进程退出时 Host 立刻重探，那一行自己消失。面板上按「一键补」即可。证据：用**真实 gh** 跑通了同一条路径——`answer: {"ok":true,"code":"D665-54E1","url":"https://github.com/login/device","reason":null}`；新增 3 条测试（从 stderr 读码并大写、`gh` 不打印码时按超时给原因而不是挂住、spawn 抛错时原样报出）；另外补了「没探过就不下结论」：`setupChecklist({ probed: false })` 返回空清单，面板启动时先探一次（延迟 1.5 秒，不挡加载），因此**不会再出现「本机没有 gh」这种没看就说的断言**。`npm test` **167 全绿**。
 - **为什么只有这一行有按钮。** 装 `gh` 是装软件、`gh auth login` 要选认证方式并贴一次密码——都不是「替人点一下」能完成的。所以那两行仍是命令与说明，只有设备码流程被做成按钮：它的全部交互就是「在浏览器里同意一次」。
