@@ -1,4 +1,4 @@
-## 未发布（等确认后定版本号）
+## 3.0.0
 
 - **清掉读过的线程不再需要浏览器，也不用登录。** 症状：点「打开登录窗口」跳出来的是一个没有书签、没有已保存密码的陌生浏览器；混进来的那条报错是 `clear-inbox: the browser never opened http://127.0.0.1:9333`，只落在日志里；与此同时 GitHub 上的通知一直不消，面板那行提醒每轮重新投递一遍。根因是 2.x 把「清掉读过的」拆成两层：条目级标已读走 API，仓库级去点网页上的 Done——而 Done 是网页状态，不是 API 状态。改了什么：删掉 `scripts/clear-inbox.mjs`（584 行 CDP 客户端）、整套 sign-in（`openSignIn`/`checkSignIn`/`signInLaunch`/`spawnSignIn`）、`sweep` 与 `signInCooldownMs` 两个配置键、面板的登录行与八句提示、浏览器 profile 目录。清理由 `pollOnce` 里的 `markThreadsRead` 完成（`PATCH /notifications/threads/<id>`），和读收件箱同一条 `gh` 调用。证据：`npm test` 150 全绿（删掉 18 条浏览器相关、新增 2 条 doctor 检查）；全新 doctor 检查 `notifications` 在令牌缺权限时给出 `gh auth refresh -h github.com -s notifications`，测试两条（有权限 → ok、无权限 → warn + 命令），反向验证把 detail 去掉即红。
 - **一项新前置条件：`gh` 令牌要带 `notifications` 权限。** 少这一项时 PATCH 回 404，正文写着 `This API operation needs the "notifications" scope`——读起来像插件坏了，所以 `doctor` 必须直说，`docs/configuration.md` 给出补法与「为什么 Done 不再追求」。加权限是叠加的（设备码流程，在用户自己的浏览器里完成），`repo` 等原有权限不受影响。
