@@ -20,7 +20,7 @@ That is also why it only reads: its job is to make the agent aware. The work hap
 - **You own a repository.** The first session in a workspace automatically takes the repository it sits in; later sessions start without one, and the panel can add or release. An owner receives the repository-wide signals: default-branch CI, security alerts, releases.
 - **Two tiers of ownership.** Repository-level facts go to the owner; item-level facts (checks, reviews, assignments, mentions on one pull request or issue) go to whoever works in that repository. One fact wakes one session.
 - **Polling follows turns.** Once at the start, every minute while a turn runs, once at the end; under `wakeup` it also reads while idle, because otherwise it could never reach you when you are away.
-- **Clearing, without asking.** Threads it read are marked read; repository-level facts are archived to Done by their owner — two ledgers, each kept by whoever owns it.
+- **Clearing, without asking.** The threads it read are marked read in the same `gh` call that reads the inbox, so they stop coming back. No browser, no sign-in; it needs the `notifications` scope, and `doctor` says whether it is there.
 - **The panel is editable.** The chip shows a blue dot and a count when something waits; hovering opens the events and two groups of controls — delivery, the rhythm (how idle is idle, wakes per hour) — plus the list of repositories this session owns (paste a link or type `owner/name`).
 
 ## Install
@@ -45,5 +45,5 @@ Then give it a working directory (`cwd`); the repository and the identity come f
 - Read-only: no merging, commenting or changing repositories.
 - No turn by default; only `delivery: wakeup` with a matching `wakeOn` role, this fact belonging to this session, enough idle time, and room in both budgets may start one; any gate that fails falls back to queueing.
 - One fact wakes one session, but it cannot arbitrate between two agents that already started working.
-- Archiving to Done needs one browser sign-in (GitHub has no archive API); the plugin opens that window for you.
+- GitHub's web "Done" has no public endpoint, so the plugin does not chase that state: for a poller, read and done are the same thing — neither comes back in the unread feed.
 - State is local, under `<cwd>/.work/`, and is not synced across machines.

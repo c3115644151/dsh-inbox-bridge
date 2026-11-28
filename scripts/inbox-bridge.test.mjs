@@ -436,6 +436,56 @@ test("doctor says which identity can read which repository, and what is stale", 
   });
 });
 
+test("doctor says when the token cannot mark notifications read", () => {
+  withWorkspace((root) => {
+    writeFileSync(
+      join(root, ".work", "inbox-bridge", "runtime.json"),
+      JSON.stringify({
+        cwd: root,
+        repos: ["owner/one"],
+        identity: { kind: "user", login: "me" },
+      }),
+    );
+    const report = describeDoctor(root, {
+      readGitRepo: () => null,
+      probeGh: (argv) => {
+        if (argv[0] === "api" && argv[1] === "--include") {
+          return { ok: true, value: "HTTP/2.0 200 OK\nX-OAuth-Scopes: repo, read:org\n\n{\"login\":\"me\"}" };
+        }
+        if (argv[0] === "api" && argv[1] === "user") return { ok: true, value: "me" };
+        return { ok: true, value: "owner/one" };
+      },
+    });
+    const check = report.checks.find((entry) => entry.id === "notifications");
+    assert.equal(check.status, "warn");
+    // The fix has to be in the line: an unauthorised PATCH answers 404, which
+    // reads like a broken plugin rather than a token missing one grant.
+    assert.match(check.detail, /gh auth refresh -h github\.com -s notifications/u);
+  });
+});
+
+test("doctor is quiet when the token already carries the notifications scope", () => {
+  withWorkspace((root) => {
+    writeFileSync(
+      join(root, ".work", "inbox-bridge", "runtime.json"),
+      JSON.stringify({ cwd: root, repos: ["owner/one"], identity: { kind: "user", login: "me" } }),
+    );
+    const report = describeDoctor(root, {
+      readGitRepo: () => null,
+      probeGh: (argv) => {
+        if (argv[0] === "api" && argv[1] === "--include") {
+          return { ok: true, value: "HTTP/2.0 200 OK\nX-OAuth-Scopes: gist, notifications, repo\n\n{}" };
+        }
+        if (argv[0] === "api" && argv[1] === "user") return { ok: true, value: "me" };
+        return { ok: true, value: "owner/one" };
+      },
+    });
+    const check = report.checks.find((entry) => entry.id === "notifications");
+    assert.equal(check.status, "ok");
+    assert.equal(check.detail, null);
+  });
+});
+
 test("doctor calls a lapsed App token a failure, not a warning", () => {
   withWorkspace((root) => {
     writeFileSync(

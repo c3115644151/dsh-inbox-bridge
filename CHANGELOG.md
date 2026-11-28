@@ -1,3 +1,10 @@
+## 未发布（等确认后定版本号）
+
+- **清掉读过的线程不再需要浏览器，也不用登录。** 症状：点「打开登录窗口」跳出来的是一个没有书签、没有已保存密码的陌生浏览器；混进来的那条报错是 `clear-inbox: the browser never opened http://127.0.0.1:9333`，只落在日志里；与此同时 GitHub 上的通知一直不消，面板那行提醒每轮重新投递一遍。根因是 2.x 把「清掉读过的」拆成两层：条目级标已读走 API，仓库级去点网页上的 Done——而 Done 是网页状态，不是 API 状态。改了什么：删掉 `scripts/clear-inbox.mjs`（584 行 CDP 客户端）、整套 sign-in（`openSignIn`/`checkSignIn`/`signInLaunch`/`spawnSignIn`）、`sweep` 与 `signInCooldownMs` 两个配置键、面板的登录行与八句提示、浏览器 profile 目录。清理由 `pollOnce` 里的 `markThreadsRead` 完成（`PATCH /notifications/threads/<id>`），和读收件箱同一条 `gh` 调用。证据：`npm test` 150 全绿（删掉 18 条浏览器相关、新增 2 条 doctor 检查）；全新 doctor 检查 `notifications` 在令牌缺权限时给出 `gh auth refresh -h github.com -s notifications`，测试两条（有权限 → ok、无权限 → warn + 命令），反向验证把 detail 去掉即红。
+- **一项新前置条件：`gh` 令牌要带 `notifications` 权限。** 少这一项时 PATCH 回 404，正文写着 `This API operation needs the "notifications" scope`——读起来像插件坏了，所以 `doctor` 必须直说，`docs/configuration.md` 给出补法与「为什么 Done 不再追求」。加权限是叠加的（设备码流程，在用户自己的浏览器里完成），`repo` 等原有权限不受影响。
+- **旧配置不再报错。** profile 里残留的 `sweep`、`signInCooldownMs`、`signIn` 三个键在 `mergeConfig` 里被丢弃而不是拒绝，旧的 `.work/browser-profile` 可以直接删。测试 `reading the inbox is on by default, and a dead sweep key is ignored` 坐实这一点。
+- **文档同轮改口径**：`README.md`/`README.en.md`（顺手清理那条 + 边界两条）、`docs/how-it-works.md`（第 9 步改为 API 标已读并写清 Done 的取舍、面板段删掉登录说明、doctor 段）、`docs/configuration.md`（「清掉读过的线程要一项令牌权限」整节替换归档登录一节、配置表删两行）、`docs/decisions.md` 新增 D-021（含三条被否掉的替代方案：磨平窗口棱角、复制 cookie、接管运行中的浏览器）、市场详情页与首页同步。
+
 ## 2.26.0
 
 - **别人开进我仓库的 PR / issue 会唤醒管理者了。** PR #11 在 2026-11-26 13:21Z 创建，抓取层 20 分钟后就生成了 `dsh-inbox-bridge#pr:11:incoming:awaiting-decision` 事件，却整整静音到用户手动来问——根因是 profile 的 `wakeOn` 里唯独没有 `incoming`，而唤醒的第一道门就是 `if (!wakeOn.includes(role)) continue`。incoming 是"主用机的仓库里来了新东西"，正是维护者最该看到的。profile 的 `wakeOn` 补上 `incoming`；新增测试 `a new PR or issue opened in my repository can wake its maintainer` 坐实机制，反向验证（拿掉 incoming → 唤醒落空）变红。

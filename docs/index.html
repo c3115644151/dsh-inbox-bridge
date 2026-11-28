@@ -108,7 +108,7 @@
         <li><strong>两级归属。</strong>仓库级事实只给接管者；条目级事实给在仓库里干活的会话，没有就落到接管者、再落到最近说话的那个——同一条事实只叫一个会话。</li>
         <li><strong>轮询跟随回合。</strong>开始时一次、进行中每 1 分钟一次、结束时一次；没人接管的仓库不被访问。</li>
         <li><strong>消息只有事实。</strong>一句抬头加每条一行「要对它做什么」，不写插件自己的机制。</li>
-        <li><strong>顺手清掉读过的。</strong>收到的事件标已读；仓库级事件归档到 Done。归档默认开着，只需要登录一次浏览器，插件会自己弹窗口。</li>
+        <li><strong>顺手清掉读过的。</strong>读过的事件在读收件箱的那条 <code>gh</code> 调用里就标成已读，下次不再重复报。没有浏览器、不用登录，但要令牌带 <code>notifications</code> 权限（<code>doctor</code> 会告诉你）。</li>
       </ul>
 
       <h2>它不做什么</h2>
@@ -137,8 +137,7 @@ dsh plugin add ./dsh-inbox-bridge</pre>
         <tr><td><code>repo</code> / <code>repos</code></td><td>空</td><td>实例级接管；平时由会话自己接管，不用写</td></tr>
         <tr><td><code>delivery</code></td><td><code>quiet</code></td><td><code>quiet</code> 只注入；<code>wakeup</code> 空闲时也能开一轮</td></tr>
         <tr><td><code>roles</code></td><td>空（全收）</td><td>只关心某些角色：<code>author</code>、<code>reviewer</code>、<code>assignee</code>、<code>incoming</code>…</td></tr>
-        <tr><td><code>clear</code></td><td><code>repo</code></td><td>读到的事件标已读：<code>repo</code> 自己的仓库、<code>all</code> 整个账号、<code>off</code> 不动</td></tr>
-        <tr><td><code>sweep</code></td><td>开</td><td>有新的仓库级事实时把收件箱归档到 Done，需先登录一次浏览器</td></tr>
+        <tr><td><code>clear</code></td><td><code>repo</code></td><td>读到的事件标已读：<code>repo</code> 自己的仓库、<code>all</code> 整个账号、<code>off</code> 不动；需要令牌的 <code>notifications</code> 权限</td></tr>
       </table>
 
       <footer>

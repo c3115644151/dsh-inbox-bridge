@@ -17,10 +17,10 @@
  * run goes idle. Does not own: fetching the source (the configured poller does)
  * or the meaning of "handled" (the ack command decides).
  */
-import { execFile, execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname, isAbsolute, join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { repoOfKey, splitKey } from "./scripts/key.mjs";
 
@@ -35,8 +35,6 @@ export const inject = { agents: true, connection: false, webServer: false, tools
 
 /** The bridge CLI that ships with this plugin; commands run it, not a project copy. */
 const CLI = fileURLToPath(new URL("./scripts/inbox-bridge.mjs", import.meta.url));
-/** The browser sweep that archives the GitHub inbox; the page can turn it on. */
-const SWEEP_SCRIPT = fileURLToPath(new URL("./scripts/clear-inbox.mjs", import.meta.url));
 
 /** Where the plugin asks which version is current. Overridable for offline tests. */
 export const UPDATE_URL = "https://registry.npmjs.org/dsh-inbox-bridge/latest";
@@ -371,19 +369,6 @@ const DEFAULTS = Object.freeze({
   /** wakeups one agent may take before its next human message, then it only queues */
   maxConsecutiveWakes: 3,
   /**
-   * Archiving the repository-tier threads we just read. GitHub has no API for
-   * "Done", so this is a browser action (`scripts/clear-inbox.mjs`); it runs on a
-   * turn that found something, and `null` here would mean the maintainer's own
-   * bookkeeping silently stops — so it is on, not a switch.
-   */
-  sweep: { args: [SWEEP_SCRIPT, "--json"], when: "events" },
-  /**
-   * How long to wait before the sign-in window may open again after it was left
-   * unsigned. Six hours: long enough not to interrupt, short enough that
-   * archiving comes back on the next event after a session expires.
-   */
-  signInCooldownMs: 6 * 60 * 60 * 1000,
-  /**
    * Which GitHub identity the poller reads as. `kind: "user"` uses the ambient
    * `gh` login; `kind: "app"` needs a token (`token` or `tokenEnv`) and has no
    * notification stream — the poller then reads repository feeds only.
@@ -634,15 +619,6 @@ export function apply(ctx, config) {
       // already refused every caller that is not the host's own page.
       token: uiToken,
       overlay: Object.keys(prefs),
-      signIn: {
-        signedIn: signIn.signedIn,
-        open: signIn.open,
-        attemptedAt: signIn.attemptedAt ? new Date(signIn.attemptedAt).toISOString() : null,
-        // Why the last click did not open a window. A button that silently does
-        // nothing is the same failure as an error nobody reads.
-        reason: signIn.reason,
-      },
-      sweepOn: Boolean(options.sweep),
       sessionId,
       update: updateInfo,
     };
@@ -664,7 +640,6 @@ export function apply(ctx, config) {
             intervalMs: options.intervalMs,
             delivery: options.delivery,
             clear: options.clear,
-            sweep: options.sweep ? options.sweep.when : null,
             wakeOn: options.wakeOn,
             wakeAfterIdleMs: options.wakeAfterIdleMs,
             wakesPerHour: options.wakesPerHour,
@@ -708,139 +683,11 @@ export function apply(ctx, config) {
     log(`injected offline reminder: ${reason}`);
   };
 
-  // Archiving the notification inbox ("Done") has no API: it is a page action.
-  // A configured sweep command does it through a browser, and this is where the
-  // plugin calls it. `when: "events"` keeps a quiet turn at zero extra cost.
-  // Archiving needs a browser session, and a browser session expires. The
-  // operator should never have to run a command in a terminal to fix that:
-  // choosing the archive mode — or the archive finding no sign-in on its own —
-  // opens the window that asks for it.
-  const signIn = { signedIn: null, open: false, attemptedAt: 0, reason: null };
-
-  const sweepScript = () => {
-    const args = options.sweep?.args ?? [];
-    const script = args.find((arg) => String(arg).endsWith(".mjs"));
-    return typeof script === "string" ? script : null;
-  };
-
-  const minutesSince = (at) => Math.max(1, Math.round((Date.now() - at) / 60_000));
-
-  // A click that opens nothing must say why. Every refusal below records a code
-  // the panel can turn into words, because "I pressed it and nothing happened"
-  // is the one answer this button must never give.
-  const openSignIn = (why) => {
-    const refuse = (code, detail = null) => {
-      signIn.reason = { code, detail };
-      log(`sign-in window not opened (${code}${detail === null ? "" : `: ${detail}`}) — ${why}`);
-      return { ok: false, code, detail };
-    };
-    const script = sweepScript();
-    if (!script) return refuse("no-script");
-    if (signIn.open) return refuse("already-open");
-    if (signIn.attemptedAt && Date.now() - signIn.attemptedAt < options.signInCooldownMs) {
-      return refuse("cooldown", minutesSince(signIn.attemptedAt));
-    }
-    signIn.attemptedAt = Date.now();
-    signIn.open = true;
-    signIn.signedIn = false;
-    signIn.reason = null;
-    const launch = signInLaunch(script, options);
-    if (launch.error) {
-      signIn.open = false;
-      return refuse("launch-failed", launch.error);
-    }
-    try {
-      spawnSignIn(
-        {
-          runtime: launch.runtime,
-          script: launch.script,
-          cwd: options.cwd,
-          env: {
-            ...process.env,
-            // The window finishes the sweep after a sign-in; give it the same
-            // subscription the poll uses, or it would not know what to archive.
-            ...(polledRepos().length > 0 ? { INBOX_REPO: polledRepos().join(",") } : {}),
-            ELECTRON_RUN_AS_NODE: "1",
-          },
-        },
-        {
-          onClose: () => {
-            signIn.open = false;
-          },
-          onError: (error) => {
-            signIn.open = false;
-            signIn.reason = { code: "launch-failed", detail: describe(error) };
-            log(`could not open the sign-in window: ${describe(error)}`);
-          },
-        },
-      );
-    } catch (error) {
-      signIn.open = false;
-      return refuse("launch-failed", describe(error));
-    }
-    log(`opened the sign-in window (${why}); archiving resumes once you sign in`);
-    return { ok: true, code: null, detail: null };
-  };
-
-  const checkSignIn = async () => {
-    const script = sweepScript();
-    if (!script) return;
-    try {
-      await runCommand({ command: "node", args: [script, "--check", "--json"] }, options);
-      signIn.signedIn = true;
-    } catch (error) {
-      if (error?.exitCode === 2) signIn.signedIn = false;
-    }
-  };
-
-  // A sweep that fails is retried on a slower clock. Launching a browser every
-  // minute to fail the same way costs a process each time and teaches whoever
-  // reads the log to ignore the line that is supposed to mean "this is broken".
-  const SWEEP_RETRY_MS = 30 * 60 * 1000;
-  let sweepFailure = { at: 0, why: "" };
-
-  const sweepInbox = async (freshCount, runAs = options) => {
-    if (!options.sweep) return;
-    // The bundled archiver drives a browser, which a headless host or a test run
-    // does not have. A profile that brings its own command is left alone.
-    if (process.env.INBOX_NO_BROWSER === "1" && (options.sweep.args ?? []).includes(SWEEP_SCRIPT)) return;
-    if (options.sweep.when === "events" && freshCount === 0) return;
-    if (sweepFailure.at && Date.now() - sweepFailure.at < SWEEP_RETRY_MS) return;
-    const began = Date.now();
-    try {
-      const stdout = await runCommand(options.sweep, runAs);
-      const line = String(stdout ?? "").trim().split(/\r?\n/u).pop() ?? "";
-      signIn.signedIn = true;
-      sweepFailure = { at: 0, why: "" };
-      log(`swept the notification inbox: ${line || "done"} (${Date.now() - began}ms)`);
-    } catch (error) {
-      // The command's own answer outranks its exit code. `--json` prints
-      // `{ ok: true, … }` even when the process ends non-zero (a browser it could
-      // not fully close, say), and reporting that as a failure would teach people
-      // to ignore the line that is supposed to mean "this is broken".
-      const answer = parseJsonAnswer(error?.stdout);
-      if (answer?.ok === true) {
-        signIn.signedIn = true;
-        sweepFailure = { at: 0, why: "" };
-        const archived = Number.isFinite(answer.archived) ? `${answer.archived} thread(s)` : "done";
-        log(`swept the notification inbox: ${archived} (${Date.now() - began}ms)`);
-        return;
-      }
-      if (error?.exitCode === 2 || answer?.reason === "sign-in-required") {
-        // The command says "sign-in required"; raise the window rather than
-        // asking the operator to copy a command out of the log.
-        signIn.signedIn = false;
-        log("the archive needs a browser sign-in");
-        openSignIn("the archive found no sign-in");
-      } else {
-        const why = answer?.reason ? `${answer.reason} (${describe(error)})` : describe(error);
-        const repeat = sweepFailure.why === why;
-        sweepFailure = { at: Date.now(), why };
-        if (!repeat) log(`sweep failed: ${why}; not retrying for 30 分钟`);
-      }
-    }
-  };
-
+  // Reading a thread and leaving it unread is what makes an inbox unusable, so
+  // the poll marks the threads it turned into facts read — through the API, in
+  // the same `gh` call it already makes. There is no browser to sign into:
+  // "Done" is a page action over a private endpoint, "read" is an API call, and
+  // for a poller the two are the same thing: neither comes back in the feed.
   let startedAt = 0;
 
   const poll = async () => {
@@ -903,9 +750,6 @@ export function apply(ctx, config) {
       if (suppressed > 0) log(`suppressed ${suppressed} event(s) already delivered; waiting for ack`);
       if (events.length === 0) return;
       rememberEvents(events);
-      // Archiving runs alongside delivery: the browser takes seconds, and the
-      // notice must not wait for it.
-      void sweepInbox(freshCount, scoped);
       // Each session gets the facts that belong to it, and the tier decides who that is.
       const { ready, deferred } = deliveryTargets([...agents.values()], scoped);
       // Repository-tier facts (a red default branch, an advisory, a recovery) are the
@@ -1148,7 +992,7 @@ export function apply(ctx, config) {
   const subscribedNow = polledRepos();
   log(
     `started: ${agents.size} agent(s), poll every ${pollLabel(options.intervalMs)} ` +
-      `while a turn runs, delivery ${options.delivery}, cleaning ${options.clear}/${options.sweep ? "archive" : "read only"}` +
+      `while a turn runs, delivery ${options.delivery}, cleaning ${options.clear}` +
       `${subscribedNow.length ? `, polling ${subscribedNow.join(", ")}` : ", nothing owned yet"}`,
   );
   if (options.wakeOnIdle) {
@@ -1156,9 +1000,6 @@ export function apply(ctx, config) {
       `wakeOn ${options.wakeOn.join(",")} is idle: delivery is ${options.delivery}, so those roles only queue`,
     );
   }
-  // Archiving only works with a browser session; find out once at start whether
-  // there is one, so the panel can say so before the first event arrives.
-  if (options.sweep) void checkSignIn();
 
   // A turn is the only thing that makes the inbox worth reading: poll when one
   // starts, re-poll while a long one runs, poll once more when it ends. An idle
@@ -1468,23 +1309,6 @@ export function apply(ctx, config) {
                 sessionId,
                 sessionRepo,
               });
-              if (action === "signin") {
-                // Not a setting: open the window that archiving needs. A refusal
-                // comes back as a code the panel turns into words, so pressing
-                // this button can never look like pressing nothing.
-                const opened = openSignIn("you asked for it in the panel");
-                if (!opened.ok) {
-                  return reply(200, {
-                    ok: false,
-                    opened: false,
-                    code: opened.code,
-                    detail: opened.detail,
-                    error: `sign-in did not open: ${opened.code}`,
-                    status: uiPayload(sessionId),
-                  });
-                }
-                return reply(200, { ok: true, opened: true, status: uiPayload(sessionId) });
-              }
               if (next === null) {
                 return reply(400, { ok: false, error: `unknown setting: ${action || "-"}` });
               }
@@ -1919,49 +1743,27 @@ export function mergeConfig(config) {
       `inbox-bridge: \`clear\` must be "off" or "repo", got ${JSON.stringify(requested)}`,
     );
   }
-  const sweep = "sweep" in given ? given.sweep : DEFAULTS.sweep;
-  let sweepSpec = null;
-  if (sweep !== null && sweep !== undefined) {
-    if (typeof sweep !== "object" || Array.isArray(sweep)) {
-      throw new Error(
-        `inbox-bridge: \`sweep\` must be { command, args, when }, got ${JSON.stringify(sweep)}`,
-      );
-    }
-    if (!Array.isArray(sweep.args ?? [])) {
-      throw new Error(
-        `inbox-bridge: \`sweep.args\` must be an array, got ${JSON.stringify(sweep.args)}`,
-      );
-    }
-    const when = sweep.when ?? "events";
-    if (when !== "events" && when !== "always") {
-      throw new Error(
-        `inbox-bridge: \`sweep.when\` must be "events" or "always", got ${JSON.stringify(when)}`,
-      );
-    }
-    sweepSpec = { command: sweep.command ?? "node", args: sweep.args ?? [], when };
-  }
-  const signInCooldownMs = given.signInCooldownMs ?? DEFAULTS.signInCooldownMs;
-  if (!Number.isInteger(signInCooldownMs) || signInCooldownMs < 0) {
-    throw new Error(
-      `inbox-bridge: \`signInCooldownMs\` must be a non-negative integer, got ${JSON.stringify(signInCooldownMs)}`,
-    );
-  }
+  // A profile written for the browser archiver still carries
+  // `sweep: { args: ["…clear-inbox.mjs"], when: … }`. Reading a thread used to be
+  // a page action; it is an API call now, so the key means nothing and is ignored
+  // rather than refused — a shared template must still load.
   // A profile written by an older version may still name `primary`. It no longer
   // means anything — the session you spoke to last takes a wakeup — and refusing
   // the whole config over a dead key would be worse than ignoring it, so it is
   // dropped rather than validated.
   if (given.primary !== undefined) delete given.primary;
+  if ("sweep" in given) delete given.sweep;
+  if ("signInCooldownMs" in given) delete given.signInCooldownMs;
+  if ("signIn" in given) delete given.signIn;
   return {
     ...DEFAULTS,
     ...given,
-    signInCooldownMs,
     repo,
     repos: watched,
     delivery,
     identity,
     roles,
     clear,
-    sweep: sweepSpec,
     wakeOn,
     wakeOnIdle,
     intervalMs,
@@ -2057,8 +1859,7 @@ export function commandFailure(error, { stdout = "", stderr = "" } = {}, options
         : `${error?.message ?? "the command failed"}${detail ? `: ${detail}` : ""}`,
   );
   // Exit codes are part of the command contract: 2 means "this command needs a
-  // person once" (the sweep needs a browser sign-in), which is not the same
-  // problem as a crashed command.
+  // person once", which is not the same problem as a crashed command.
   if (typeof error?.code === "number") failure.exitCode = error.code;
   // Keep the command's own words: a `--json` run may have answered while still
   // exiting non-zero, and the answer is the better evidence.
@@ -2088,62 +1889,6 @@ export function hostRuntime({ exists = existsSync, runtime = process.execPath, e
     (entry) => typeof entry === "string" && entry !== "",
   );
   return candidates.find((entry) => exists(entry)) ?? null;
-}
-
-/**
- * What the sign-in window runs, or the reason it cannot start.
- *
- * The configured sweep command is written relative to `cwd`, which is the
- * plugin's own directory in the default configuration. A copy that lost its
- * `scripts/` folder — or an operator who pointed `cwd` somewhere else — should
- * get the archiver this package ships, not a window that never appears.
- */
-export function signInLaunch(script, options = {}, { exists = existsSync, runtime = process.execPath, env = process.env, cwd = process.cwd } = {}) {
-  const exe = hostRuntime({ exists, runtime, env });
-  if (exe === null) return { error: `no JS runtime at ${runtime}` };
-  const where = options.cwd ?? cwd;
-  const absolute = (entry) => (isAbsolute(entry) ? entry : join(where, entry));
-  if (exists(absolute(script))) return { runtime: exe, script };
-  if (basename(script) === basename(SWEEP_SCRIPT) && exists(SWEEP_SCRIPT)) {
-    return { runtime: exe, script: SWEEP_SCRIPT };
-  }
-  return { error: `no script at ${absolute(script)}` };
-}
-
-/**
- * Start the window that asks for a browser sign-in, and answer every way it can
- * fail to start.
- *
- * The child is detached — a twenty-minute sign-in must not hold a poll open —
- * and visible, because there has to be a window to sign in. A child that never
- * started answers with an `error` event instead of an exit; with nothing
- * listening, that event ends the process that owns it. That is how a host died
- * when the archiver was missing on a machine whose app had been reinstalled.
- */
-export function spawnSignIn(
-  { runtime, script, cwd, env = process.env },
-  { start = spawn, onClose = () => {}, onError = () => {} } = {},
-) {
-  const child = start(runtime, [script, "--login", "--json"], {
-    cwd,
-    env,
-    detached: true,
-    windowsHide: false,
-    stdio: "ignore",
-  });
-  let closed = false;
-  const settle = () => {
-    if (closed) return;
-    closed = true;
-    onClose();
-  };
-  child.once?.("error", (error) => {
-    settle();
-    onError(error);
-  });
-  child.once?.("exit", settle);
-  child.unref?.();
-  return child;
 }
 
 export function runCommand(spec, options, extraEnv = {}) {
@@ -2362,7 +2107,6 @@ export function buildUiPayload({
   recent = new Map(),
   now = Date.now(),
   session = null,
-  signIn = null,
   polled = null,
 }) {
   const configured = options.repos?.length > 0 ? options.repos : options.repo ? [options.repo] : [];
@@ -2437,8 +2181,6 @@ export function buildUiPayload({
     },
     delivery: options.delivery ?? DEFAULTS.delivery,
     clear: options.clear ?? DEFAULTS.clear,
-    sweep: options.sweep?.when ?? null,
-    signIn: signIn ?? { signedIn: null, open: false, attemptedAt: null },
     intervalMs: options.intervalMs ?? DEFAULTS.intervalMs,
     wake: {
       on: options.wakeOn ?? [],
@@ -2476,26 +2218,4 @@ function describe(error) {
     .filter((line) => line && !line.startsWith("at ") && !line.startsWith("Node.js"));
   const printed = String(error?.stdout ?? "").trim().split(/\r?\n/u).pop()?.trim() ?? "";
   return spoken[0] ?? printed ?? message ?? "no answer";
-}
-
-/**
- * The last JSON object a command printed, or null. Children print progress lines
- * before their answer, so scan from the end and take the first line that parses.
- */
-function parseJsonAnswer(stdout) {
-  const lines = String(stdout ?? "")
-    .trim()
-    .split(/\r?\n/u)
-    .reverse();
-  for (const line of lines) {
-    const text = line.trim();
-    if (!text.startsWith("{")) continue;
-    try {
-      const parsed = JSON.parse(text);
-      if (parsed && typeof parsed === "object") return parsed;
-    } catch {
-      // Not the answer; keep looking.
-    }
-  }
-  return null;
 }

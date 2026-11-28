@@ -47,18 +47,23 @@ inbox_claim { item: "owner/name#issue:527", action: "unclaim" }  # 撤回
 
 `item` 收条目身份 `owner/name#kind:number`；队列里的长 key（带摘要的，如 `owner/name#issue:527:mine:closedc7`）也认，插件会归一成同一个身份。认领写进覆盖层的 `claims`，效果和面板点一下完全一样：这条 PR/issue 的下一次变化只送给认领它的会话。它只作用于**条目级**事实——仓库级的 CI 与安全告警不看认领，免得一条过期的认领把失败挪走。仓库不是 `claim` 的对象（那是「接管」，见上）。
 
-### 归档需要一次登录
+### 清掉读过的线程要一项令牌权限
 
-GitHub 的 Done 只有网页端点，所以归档要用插件自己的浏览器配置（`.work/inbox-bridge/browser-profile`，可用 `INBOX_PROFILE_DIR` 指到别处）登录一次。这份配置跟着插件的状态走：它存的是一个登录会话，放进 `.work` 顶层就会被当成临时文件清掉。归档默认开着，这件事不用你去终端敲命令，也不用先在卡片上选什么东西：
+插件读过的通知线程用 `PATCH /notifications/threads/<id>` 标成已读，和读收件箱是同一条 `gh` 调用：没有浏览器、没有窗口、没有需要你登录的东西。不收尾的线程会一直留在未读流里，每轮都被重新读出来再报一次，所以这一步不是可选的。
 
-- 插件第一次要归档时发现没登录，就自己弹出一个登录窗口（`scripts/clear-inbox.mjs --login`）；登录完它接着归档。
-- 之后会话失效，下一次归档失败时，插件自己再弹一次窗口（两次之间至少隔 `signInCooldownMs`）。
-- 还没登录时卡片里会写着一行「归档还没登录 GitHub」，旁边有「打开登录窗口」按钮。窗口没打开时按钮旁边会说原因：没配归档脚本 / 窗口已经开着 / 冷却中（还剩几分钟）/ 起不来（附具体错误）——点一下什么都不说，是这一行要避免的情况。
-- 2.26 及更早版本把配置放在 `.work/browser-profile`；升级后第一次归档会把它搬过来，搬不动就重新登录一次。
+要的权限只有一项：
 
-窗口是独立进程，宿主的轮询不会被它挡住。命令行里 `scripts/clear-inbox.mjs --check` 只回答「登录了没」（没登录时退出码 2），`--login` 打开窗口等你登录，`--dry-run` 只报数量，`--repo owner/name`（可重复，插件通过 `INBOX_REPO` 传）指定范围，`--all` 才是整个收件箱。
+```bash
+gh auth refresh -h github.com -s notifications
+```
 
-登录状态能活下来，靠的是插件让浏览器自己关掉：Chromium 在退出时才把 cookie 写进磁盘，强行结束进程会丢掉刚登录的会话——这正是「刚登录过又让我登录」的原因。GitHub 的 `user_session` 本身带约两周的有效期，每次归档都会续上。
+走的是设备码流程：在**你自己的浏览器**里输入它给的 8 位码、点授权，不用把密码敲进任何别的地方。加权限是叠加的，原来的 `repo` / `gist` 等不受影响。
+
+少这一项时 PATCH 会回 404，正文是 `This API operation needs the "notifications" scope`——读起来像插件坏了，其实是令牌少了一次授权。`node scripts/inbox-bridge.mjs doctor` 有一项 `notifications` 直接告诉你有没有，缺了就在 detail 里给出上面那条命令。
+
+GitHub 网页上的「Done」没有公开接口（`POST /notifications/beta/archive` 要网页会话 + CSRF），所以插件不追求那个状态：对轮询器来说已读与 Done 等价，两者都不再出现在 `/notifications` 的未读流里。想让它在网页收件箱里彻底消失，那一步得你自己点。
+
+2.26 及更早版本用的是「自带浏览器 + 登录一次」的归档路径（`.work/browser-profile`、`signInCooldownMs`、`sweep`、`scripts/clear-inbox.mjs`）。这些都已经删掉；旧 profile 目录可以随手删，旧的配置键会被忽略而不是报错。
 
 ## 全部配置项
 
@@ -83,9 +88,7 @@ GitHub 的 Done 只有网页端点，所以归档要用插件自己的浏览器�
 | `claims` | `{ "<owner/name#kind:number>": "<sessionId>" }` | 条目级认领：某条 PR/issue 的回音只送给认领它的会话，不管别人在哪里工作、谁接管了仓库。只出现在路由规则都到不了人的条目上（面板给出「认领」按钮，会话也可以调 `inbox_claim` 工具，见上），优先级高于工作区与接管仓库；`unclaim` 撤回；key 不带摘要，回音变了也不会失效 |
 | `identity` | `{ kind: "user" }` | 用哪个身份读 GitHub，见下 |
 | `roles` | `[]` | 只接收这些角色的事件；空 = 全收 |
-| `clear` | `"repo"` | 把这一轮读过的通知线程标为已读：`repo` 只清它读过的那些仓库，`off` 不碰收件箱。整个账号不在范围内——清别人的仓库属于人的决定，不是后台轮询的决定。旧配置里的 `"all"` 按 `"repo"` 载入。GitHub 没有「完成」API，所以清的是未读角标，历史仍在收件箱里 |
-| `sweep` | `{ args: ["scripts/clear-inbox.mjs", "--json"], when: "events" }`（默认开） | 抓到新东西后把**仓库级**的收件箱线程归档进 Done（CI、安全告警、发布；PR 与 issue 的回复留给「已读」）。`when: "events"` 只在有新发现的回合跑，`"always"` 每轮都跑，显式 `null` 关掉。**只归档接管者名下的仓库**（按仓库逐个走 `repo:` 搜索视图），没有接管任何仓库时什么都不归档；整个收件箱要显式 `--all`。归档要有插件的浏览器配置里的一次登录；没有就让面板替你打开窗口，见上 |
-| `signInCooldownMs` | `21600000`（6 小时） | 归档缺登录时，两次「替你打开登录窗口」之间至少隔多久。长到不打扰，短到会话失效后的下一个事件还能恢复 |
+| `clear` | `"repo"` | 把这一轮读过的通知线程标为已读：`repo` 只清它读过的那些仓库，`off` 不碰收件箱。整个账号不在范围内——清别人的仓库属于人的决定，不是后台轮询的决定。旧配置里的 `"all"` 按 `"repo"` 载入。**需要令牌的 `notifications` 权限**，见上；GitHub 没有「Done」API，所以清的是未读流，历史仍留在网页收件箱里 |
 | `debug` | `false` | 把每个边界事件写进 `plugin.log`，用来排查「没轮询」还是「轮询了没结果」 |
 | `poll` | 插件自带 CLI 的 `poll` | 换掉抓取命令：`{ command, args }`，只要能输出约定的 JSON，来源可以不是 GitHub |
 | `ack` | 插件自带 CLI 的 `ack` | 同上，换掉收口命令 |
@@ -128,7 +131,7 @@ node scripts/inbox-bridge.mjs status            # 仓库、身份、角色、投
 node scripts/inbox-bridge.mjs poll              # 立刻抓一次
 node scripts/inbox-bridge.mjs ack --done -- <key>   # 划掉一条，并停止提醒
 node scripts/inbox-bridge.mjs ack --all-delivered --done   # 把所有 delivered 一次划掉
-node scripts/inbox-bridge.mjs doctor            # 逐项自检：身份、仓库可读性、上次轮询、队列、归档登录
+node scripts/inbox-bridge.mjs doctor            # 逐项自检：身份、仓库可读性、上次轮询、队列、通知权限
 node scripts/inbox-bridge.mjs explain <key>     # 某件事走到哪一步了，为什么没到你眼前
 ```
 

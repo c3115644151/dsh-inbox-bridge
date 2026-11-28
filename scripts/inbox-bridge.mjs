@@ -595,7 +595,7 @@ const ROLE_WORDS = new Set(["any", "author", "reviewer", "assignee", "mention", 
 /**
  * Check the install end to end: is the plugin running here, does its identity
  * still work, can it read each subscribed repository, is each of them actually
- * being polled, is the queue coherent, and is the sweep signed in.
+ * being polled, is the queue coherent, and can the token mark notifications read.
  * Every probe is injectable so the checks stay offline in tests.
  */
 export function describeDoctor(root, options = {}) {
@@ -733,24 +733,41 @@ export function describeDoctor(root, options = {}) {
     add("source", "ok", `来源状态按仓库分片：${names.join(", ") || "（空）"}`);
   }
 
-  if (runtime?.sweep && runtime.sweep !== "off" && runtime.sweep !== null) {
-    const profile = join(resolve(root), ".work", "browser-profile", "Default");
-    // Chromium keeps cookies under Network/ since v96; older builds used Default/.
-    const cookies = [join(profile, "Network", "Cookies"), join(profile, "Cookies")];
-    const cli = join(dirname(fileURLToPath(import.meta.url)), "clear-inbox.mjs");
-    if (cookies.some((file) => existsSync(file))) {
+  // Marking a thread read is what takes it out of the feed, and that one call is
+  // the only thing this plugin does that a plain `repo` scope does not cover: an
+  // unauthorised PATCH answers 404 "This API operation needs the notifications
+  // scope", which reads like a broken plugin instead of a token missing a grant.
+  const scopes = identity.kind === "app" ? { ok: false, reason: "App 身份没有通知流" } : gh(["api", "--include", "user"]);
+  if (!scopes.ok) {
+    add("notifications", "warn", "没法确认令牌能不能标记通知为已读", scopes.reason);
+  } else {
+    const header = String(scopes.value ?? "")
+      .split(/\r?\n/u)
+      .find((line) => /^x-oauth-scopes:/iu.test(line));
+    const granted = header
+      ? header
+          .split(":")
+          .slice(1)
+          .join(":")
+          .split(",")
+          .map((name) => name.trim())
+          .filter(Boolean)
+      : [];
+    if (granted.includes("notifications")) {
+      add("notifications", "ok", "令牌可以标记通知为已读");
+    } else if (granted.length > 0) {
       add(
-        "sweep",
-        "ok",
-        "清理收件箱用的浏览器配置里有登录痕迹",
-        `这只是痕迹，不代表会话还有效；真失效时插件会自己再开一次登录窗口（node "${cli}" --check 能直接问）`,
+        "notifications",
+        "warn",
+        "令牌缺少 notifications 权限：读过的通知不会自己从收件箱消失",
+        "gh auth refresh -h github.com -s notifications",
       );
     } else {
       add(
-        "sweep",
+        "notifications",
         "warn",
-        "清理收件箱还没有登录过",
-        `把面板的「消息清理」切到归档，插件会自己弹出登录窗口；命令行也行：node "${cli}" --login`,
+        "令牌没报 scopes，无法确认通知权限",
+        "细粒度令牌需要勾上 Notifications 的读写",
       );
     }
   }

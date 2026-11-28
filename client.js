@@ -104,7 +104,6 @@ window.__ModuleLoader__.load({
         asGh: "以本机 gh 读取",
         watching: (repos) => (repos.length > 1 ? `关注 ${repos.length} 个仓库` : repo(repos)),
         clear: "已标为已读",
-        sweep: "已归档到 Done",
         quiet: "不会主动开启对话",
         unwatched: (repo) => `还没有会话接管 ${repo}，插件不轮询它`,
         elsewhere: (n) => `另有 ${n} 条在别的仓库等你认领`,
@@ -128,14 +127,6 @@ window.__ModuleLoader__.load({
           quietTip: "只排队，等你下次发消息时随该轮进入上下文。",
           wakeup: "主动唤醒",
           wakeupTip: "会话空闲时，插件可以替你开启一轮。选中后按钮右侧的 ⌄ 可展开空闲时长与每小时次数。",
-          signInNeeded: "归档还没登录 GitHub，仓库的事件不会进 Done。",
-          signInWaiting: "已打开登录窗口，登录后自动生效。",
-          signInOpen: "打开登录窗口",
-          signInTip: "在插件自己的浏览器配置里登录一次；之后归档会自动运行，失效时会再打开这个窗口。",
-          signInNoScript: "没法打开：插件没配上归档脚本（sweep.args 里没有 .mjs）。",
-          signInAlreadyOpen: "登录窗口已经开着，去任务栏找一下它（可能被别的窗口挡住）。",
-          signInCooldown: (minutes) => `刚试过，冷却中：${minutes} 分钟后可以再点。`,
-          signInLaunchFailed: (detail) => `窗口没起来：${detail}`,
           autonomy: "处理方式",
           autonomyTip: "收到消息后怎么处理；与提醒方式（是否开新一轮）无关。",
           act: "直接处理",
@@ -177,7 +168,6 @@ window.__ModuleLoader__.load({
         asGh: "as the local gh login",
         watching: (repos) => (repos.length > 1 ? `watching ${repos.length} repositories` : repo(repos)),
         clear: "marked read",
-        sweep: "archived to done",
         quiet: "never starts a turn",
         unwatched: (repo) => `${repo} is not owned by any session, so it is not polled`,
         elsewhere: (n) => `${n} more in other repositories, waiting for a claim`,
@@ -201,14 +191,6 @@ window.__ModuleLoader__.load({
           quietTip: "Wait for your next message; the notice rides along with that turn.",
           wakeup: "may wake it",
           wakeupTip: "When the session is idle, the plugin may start a turn to handle it. The ⌄ on the selected button opens the idle time and hourly limit.",
-          signInNeeded: "Archiving is not signed in yet, so repository events do not reach Done.",
-          signInWaiting: "The sign-in window is open; archiving resumes when you finish.",
-          signInOpen: "open sign-in",
-          signInTip: "Sign in once in this plugin's own browser profile; afterwards archiving runs on its own and reopens this window if the session expires.",
-          signInNoScript: "Cannot open it: the plugin has no archiving script (sweep.args names no .mjs).",
-          signInAlreadyOpen: "The sign-in window is already open — look for it on the taskbar; another window may be covering it.",
-          signInCooldown: (minutes) => `Just tried: try again in ${minutes} minute(s).`,
-          signInLaunchFailed: (detail) => `The window did not start: ${detail}`,
           autonomy: "handling",
           autonomyTip: "What to do with a fact after it arrives; independent of delivery (which decides if a turn opens).",
           act: "act now",
@@ -517,24 +499,6 @@ window.__ModuleLoader__.load({
         cursor: "pointer",
         textAlign: "left",
         minWidth: 0,
-      },
-      signInRow: {
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: "8px",
-        marginTop: "2px",
-        paddingLeft: "2px",
-        minWidth: 0,
-      },
-      signInText: {
-        color: "var(--dsw-alias-label-warning, var(--dsw-alias-label-secondary))",
-        fontSize: "11px",
-        lineHeight: "18px",
-        minWidth: 0,
-        overflow: "hidden",
-        textOverflow: "ellipsis",
-        whiteSpace: "nowrap",
       },
       metaValue: {
         color: "var(--dsw-alias-label-secondary)",
@@ -864,29 +828,6 @@ window.__ModuleLoader__.load({
         }
         reload();
       };
-      // Opening the sign-in window answers one of two things: a window opened, or
-      // a reason it did not. "I pressed it and nothing happened" is the one answer
-      // this button must never give.
-      const openSignInWindow = async () => {
-        if (busy) return;
-        setBusy(true);
-        setError(null);
-        const result = await change(status, "signin", "1");
-        setBusy(false);
-        if (!result.ok) {
-          const detail = result.detail ?? null;
-          setError(
-            result.code === "no-script"
-              ? pick.signInNoScript
-              : result.code === "already-open"
-                ? pick.signInAlreadyOpen
-                : result.code === "cooldown"
-                  ? pick.signInCooldown(detail ?? 1)
-                  : pick.signInLaunchFailed(detail ?? result.error ?? "unknown"),
-          );
-        }
-        reload();
-      };
       const seg = (label, options, current, set, key) =>
         h(
           "div",
@@ -1006,35 +947,8 @@ window.__ModuleLoader__.load({
             "autonomy",
           ),
         ),
-        // Cleaning has no switch any more: the tier decides. Item-tier notices are
-        // marked read; repository-tier notices are archived by the session that
-        // maintains that repository. Archiving is a page action in GitHub, so it
-        // needs a browser session in the plugin's own profile — say that here and
-        // open the window from here, because the name of the game is "no command".
-        status.sweepOn && status.signIn?.signedIn !== true
-          ? h(
-              "div",
-              { style: styles.signInRow },
-              h(
-                "span",
-                { style: styles.signInText },
-                status.signIn?.open ? pick.signInWaiting : pick.signInNeeded,
-              ),
-              status.signIn?.open
-                ? null
-                : h(
-                    "button",
-                    {
-                      type: "button",
-                      disabled: busy,
-                      title: pick.signInTip,
-                      onClick: () => void openSignInWindow(),
-                      style: styles.seg,
-                    },
-                    pick.signInOpen,
-                  ),
-            )
-          : null,
+        // Cleaning has no switch any more, and no window either: the poll marks the
+        // threads it turned into facts read, in the same `gh` call it already makes.
         h(
           "div",
           { style: styles.controlRow },

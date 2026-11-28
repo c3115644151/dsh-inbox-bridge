@@ -33,7 +33,7 @@ That is also why it only reads: its job is to make the agent aware. The work hap
 - **Polling follows turns.** Once when a session starts, every minute while a turn runs, once when it ends; an idle session makes no request. Only with `delivery: wakeup` does it also read on that interval while idle — without that it could never wake you while you are away.
 - **It also watches security and merge state.** Open Dependabot and code-scanning alerts, and a pull request of yours that conflicts with the base branch or is behind it, matter as much as a red check.
 - **The run that happens at night counts too.** A scheduled workflow that fails says it was scheduled, instead of reading as the last push failing; a review comment on your own pull request is reported as itself, and a push that answers it closes it.
-- **It tidies what it read, without a switch.** Repository-level facts (CI, advisories) are archived by the owner; item-level facts (answers on a pull request or issue) are only marked read — whoever received them clears them, and nobody touches another session's ledger.
+- **It tidies what it read, without a switch and without a browser.** The threads it read are marked read during the poll, through the same `gh` call it already makes, so they stop coming back. Only the repositories it owns are touched. **This needs the `notifications` scope on the `gh` token** (`gh auth refresh -h github.com -s notifications`); `inbox-bridge doctor` says whether it is there.
 - **It goes into the context, and opens a turn only when it has to.** By default a notice arrives at the next safe injection point and does not interrupt the tool loop; with `delivery: wakeup` it opens a turn only for a listed `wakeOn` role, after the session has been idle for 15 minutes, at most 3 times in a row per session, and at most 2 times an hour — anything else keeps queueing. A notice is marked `delivered`, and unhandled events come back once after six hours.
 - **The session decides how to handle a fact.** "Handling" has two modes: act now (the default — act as soon as it arrives) and confirm first (finish the current task, then report the collected facts together and wait for your call). It changes neither delivery nor whether a turn opens — that is delivery's job.
 
@@ -107,7 +107,6 @@ To see what it can actually see: `node scripts/inbox-bridge.mjs doctor` checks t
 | `delivery` | `quiet` | `quiet` only delivers at the next step; `wakeup` may also open a turn when the session is idle (otherwise the notice is delivered as usual) |
 | `wakeOn` | empty | Role whitelist for waking under `wakeup`; empty means it never wakes |
 | `clear` | `repo` | Mark the threads it read as read: `repo` / `all` / `off`. Never touches what it did not read |
-| `sweep` | on | Archive repository-level facts (CI, advisories) into Done; a missing sign-in opens a window instead of asking you to type |
 
 Full settings, command line and state files: [settings and commands](docs/configuration.md).
 
@@ -116,8 +115,8 @@ Full settings, command line and state files: [settings and commands](docs/config
 - **Read-only.** It does not merge, comment, or change a repository.
 - **It does not open a conversation by default.** Only with `delivery: wakeup`, a matching `wakeOn` role, a long enough idle window, and budget left; any gate that fails falls back to queueing.
 - **One fact wakes one session.** It does not arbitrate concurrent work: one pull request never wakes two sessions, but two agents already acting on it are beyond it.
-- **Archiving needs one browser sign-in, and you are not asked to run anything.** GitHub has no archive API, so `scripts/clear-inbox.mjs` uses the local browser (Edge / Chrome / Chromium); when the sign-in is missing the plugin opens the window itself, and opens it again when the session expires.
-- **Archiving only touches repository-level facts.** It walks the repositories you took over through GitHub's notification search view (`repo:owner/name`) and archives only runs, advisories and releases; answers on pull requests and issues are only marked read. The whole inbox needs an explicit `--all`.
+- **No browser, no sign-in.** A read thread is cleared with `PATCH /notifications/threads/<id>`, in the same `gh` call that reads the inbox; the token needs the `notifications` scope, and `inbox-bridge doctor` says so. GitHub's web "Done" has no public endpoint, so the plugin does not chase that state: for a poller, read and done are the same thing — neither comes back in the unread feed.
+- **It only touches the repositories it owns.** It clears the threads it read through its own ownership, and leaves the rest of the account alone.
 - **State is local.** It lives under the workspace's `.work/` and is not synced across machines.
 
 ## More

@@ -1,17 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-// Archiving is on by default, and it opens a browser. A test run has no browser
-// to spare (and a leaked one locks its profile directory), so switch it off here;
-// the sweep path itself is covered by tests that pass their own command.
-process.env.INBOX_NO_BROWSER = "1";
 import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, isAbsolute } from "node:path";
 
-import { DEFAULT_ACK_HINT, admissionVerdict, audienceFor, buildMessage, buildUiPayload, checkLatestVersion, commandFailure, compareVersions, deliver, deliveryTargets, detectRepo, ensureDir, eventTier, filterUndelivered, formatEvents, hostRuntime, itemIdentity, keyOf, mergeConfig, overlayPreferences, roleAllowed, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, runCommand, sessionLabel, sessionTag, signInLaunch, spawnSignIn, updateNotice, wakePlan, writeFailure } from "./index.js";
+import { DEFAULT_ACK_HINT, admissionVerdict, audienceFor, buildMessage, buildUiPayload, checkLatestVersion, commandFailure, compareVersions, deliver, deliveryTargets, detectRepo, ensureDir, eventTier, filterUndelivered, formatEvents, hostRuntime, itemIdentity, keyOf, mergeConfig, overlayPreferences, roleAllowed, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, runCommand, sessionLabel, sessionTag, updateNotice, wakePlan, writeFailure } from "./index.js";
 
 const idle = { status: "idle" };
 const running = { status: "running" };
@@ -757,129 +753,9 @@ test("the poll child is told which threads to clear", () => {
   assert.equal(options.clear, "off");
 });
 
-test("a sweep command is validated, and defaults to running only after a real finding", () => {
-  assert.equal(mergeConfig({}).sweep.when, "events");
-  const sweep = mergeConfig({ sweep: { args: ["scripts/clear-inbox.mjs"] } });
-  assert.deepEqual(sweep.sweep, { command: "node", args: ["scripts/clear-inbox.mjs"], when: "events" });
-  assert.equal(mergeConfig({ sweep: { command: "node", args: [], when: "always" } }).sweep.when, "always");
-  assert.throws(() => mergeConfig({ sweep: "browser" }), /`sweep` must be \{ command, args, when \}/u);
-  assert.throws(() => mergeConfig({ sweep: { args: "nope" } }), /`sweep.args` must be an array/u);
-  assert.throws(() => mergeConfig({ sweep: { when: "rarely" } }), /`sweep.when` must be "events" or "always"/u);
-});
 
-test("the inbox is swept only on a turn that found something", async () => {
-  // GitHub has no "done" API, so archiving is a browser action behind `sweep`.
-  // The cost rule that makes it affordable: an empty poll runs nothing.
-  const root = mkdtempSync(join(tmpdir(), "inbox-sweep-"));
-  const marker = join(root, "swept.txt");
-  try {
-    const ctx = fakeContext([fakeAgent(root)]);
-    const { apply } = await import("./index.js");
-    apply(ctx, mergeConfig({
-      cwd: root,
-      repo: "owner/name",
-      poll: {
-        command: process.execPath,
-        args: ["-e", `console.log(JSON.stringify({ events: [] }))`],
-      },
-      ack: { command: process.execPath, args: ["-e", "console.log('{}')"] },
-      sweep: {
-        command: process.execPath,
-        args: ["-e", `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "swept");console.log("archived 3 thread(s)")`],
-      },
-    }));
-    ctx.emit("agent/status", { agent: { session: { id: "session-1" } }, status: "running" });
-    await new Promise((resolve) => setTimeout(resolve, 1_500));
-    const fs = await import("node:fs");
-    assert.equal(fs.existsSync(marker), false, "an empty poll paid for a sweep");
-  } finally {
-    removeTree(root);
-  }
-});
 
-test("a turn with findings sweeps the inbox and says what it archived", async () => {
-  const root = mkdtempSync(join(tmpdir(), "inbox-sweep-live-"));
-  const marker = join(root, "swept.txt");
-  const logPath = join(root, ".work", "inbox-bridge", "plugin.log");
-  try {
-    const ctx = fakeContext([fakeAgent(root)]);
-    const { apply } = await import("./index.js");
-    apply(ctx, mergeConfig({
-      cwd: root,
-      repo: "owner/name",
-      poll: {
-        command: process.execPath,
-        args: [
-          "-e",
-          `console.log(JSON.stringify({ events: [{ key: "run:1", kind: "ci", title: "ci failed", role: "ci", repo: "owner/name" }] }))`,
-        ],
-      },
-      ack: { command: process.execPath, args: ["-e", "console.log('{}')"] },
-      sweep: {
-        command: process.execPath,
-        args: ["-e", `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "swept");console.log("archived 3 thread(s)")`],
-      },
-    }));
-    ctx.emit("agent/status", { agent: { session: { id: "session-1" } }, status: "running" });
-    const fs = await import("node:fs");
-    const deadline = Date.now() + 6_000;
-    const swept = () => fs.existsSync(marker);
-    const logged = () => fs.existsSync(logPath) && fs.readFileSync(logPath, "utf8").includes("swept the notification inbox: archived 3 thread(s)");
-    while (Date.now() < deadline && !(swept() && logged())) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    assert.equal(swept(), true, "a poll with findings did not sweep");
-    assert.equal(logged(), true, "the sweep result was not logged");
-  } finally {
-    removeTree(root);
-  }
-});
 
-test("a sweep that answers ok is not a failure, whatever its exit code", async () => {
-  const root = mkdtempSync(join(tmpdir(), "inbox-sweep-answer-"));
-  const logPath = join(root, ".work", "inbox-bridge", "plugin.log");
-  try {
-    const ctx = fakeContext([fakeAgent(root)]);
-    const { apply } = await import("./index.js");
-    apply(
-      ctx,
-      mergeConfig({
-        cwd: root,
-        repo: "owner/name",
-        poll: {
-          command: process.execPath,
-          args: [
-            "-e",
-            `console.log(JSON.stringify({ events: [{ key: "run:1", kind: "ci", title: "ci failed", role: "ci", repo: "owner/name" }] }))`,
-          ],
-        },
-        ack: { command: process.execPath, args: ["-e", "console.log('{}')"] },
-        sweep: {
-          command: process.execPath,
-          // A browser that could not close cleanly leaves a non-zero exit even
-          // though the archiving itself succeeded. The answer is the evidence.
-          args: [
-            "-e",
-            "console.log(JSON.stringify({ ok: true, archived: 2 }));process.exit(1)",
-            "sweeper.mjs",
-          ],
-        },
-      }),
-    );
-    ctx.emit("agent/status", { agent: { session: { id: "session-1" } }, status: "running" });
-    const fs = await import("node:fs");
-    const read = () => (fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf8") : "");
-    const deadline = Date.now() + 6_000;
-    const swept = () => read().includes("swept the notification inbox: 2 thread(s)");
-    while (Date.now() < deadline && !swept()) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    assert.equal(swept(), true, "an ok answer was not taken at its word");
-    assert.equal(read().includes("sweep failed"), false, "an ok answer was reported as a failure");
-  } finally {
-    removeTree(root);
-  }
-});
 
 test("a poll interval is stated in the unit that is exact", () => {
   // 90 000 ms is the default idle window: "2 分钟" would promise a longer wait
@@ -891,52 +767,6 @@ test("a poll interval is stated in the unit that is exact", () => {
   assert.equal(pollLabel(20_000), "20 秒");
 });
 
-test("a sweep that needs a person says so, instead of looking like a crash", async () => {
-  const root = mkdtempSync(join(tmpdir(), "inbox-sweep-login-"));
-  const logPath = join(root, ".work", "inbox-bridge", "plugin.log");
-  try {
-    // The window the plugin opens has to be a file that is really there: a spawn
-    // of a missing script raises an `error` event, and nothing answers it.
-    writeFileSync(join(root, "sweeper.mjs"), "console.log('login');\n");
-    const ctx = fakeContext([fakeAgent(root)]);
-    const { apply } = await import("./index.js");
-    apply(ctx, mergeConfig({
-      cwd: root,
-      repo: "owner/name",
-      poll: {
-        command: process.execPath,
-        args: [
-          "-e",
-          `console.log(JSON.stringify({ events: [{ key: "run:1", kind: "ci", title: "ci failed", role: "ci", repo: "owner/name" }] }))`,
-        ],
-      },
-      ack: { command: process.execPath, args: ["-e", "console.log('{}')"] },
-      sweep: {
-        command: process.execPath,
-        // A sweeper that is not signed in: `node -e …` exits 2, and the file name
-        // in the tail is what tells the plugin which script to reopen for a sign-in.
-        args: ["-e", "console.error('not signed in');process.exit(2)", "sweeper.mjs"],
-      },
-    }));
-    ctx.emit("agent/status", { agent: { session: { id: "session-1" } }, status: "running" });
-    const fs = await import("node:fs");
-    const deadline = Date.now() + 6_000;
-    const read = () => (fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf8") : "");
-    const logged = () => read().includes("the archive needs a browser sign-in");
-    while (Date.now() < deadline && !logged()) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    assert.equal(logged(), true, "exit code 2 was not explained");
-    assert.equal(read().includes("sweep failed"), false, "a sign-in prompt was reported as a failure");
-    const opened = () => read().includes("opened the sign-in window");
-    while (Date.now() < deadline && !opened()) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    assert.equal(opened(), true, "the archive did not offer to sign in by itself");
-  } finally {
-    removeTree(root);
-  }
-});
 
 test("the page sees what is still open, newest first, and nothing already closed", () => {
   const payload = buildUiPayload({
@@ -946,7 +776,6 @@ test("the page sees what is still open, newest first, and nothing already closed
       identity: { kind: "user", login: "me" },
       delivery: "quiet",
       clear: "all",
-      sweep: { when: "events" },
     },
     queue: {
       "a/b#run:1": { status: "done", at: "2026-01-01T00:00:00Z" },
@@ -963,7 +792,6 @@ test("the page sees what is still open, newest first, and nothing already closed
   assert.equal(payload.events[1].title, "标题");
   assert.equal(payload.events[0].repo, "a/b");
   assert.equal(payload.delivery, "quiet");
-  assert.equal(payload.sweep, "events");
   assert.deepEqual(payload.polls, [{ repo: "a/b", at: "2026-01-02T01:00:00Z", as: "me", events: 2 }]);
   assert.equal(payload.identity.hasToken, false);
   assert.equal(payload.at, new Date(0).toISOString());
@@ -1006,99 +834,21 @@ test("cleaning is not a setting: the tier decides, and the old switches are gone
   assert.equal(preferenceNext({}, "archive", "on", {}), null);
 });
 
-test("the sign-in window is a setting: six hours between tries, by default", () => {
-  assert.equal(mergeConfig({}).signInCooldownMs, 6 * 60 * 60 * 1000);
-  assert.equal(mergeConfig({ signInCooldownMs: 1_000 }).signInCooldownMs, 1_000);
-  assert.throws(() => mergeConfig({ signInCooldownMs: -1 }), /non-negative integer/u);
-  assert.throws(() => mergeConfig({ signInCooldownMs: "soon" }), /non-negative integer/u);
-});
 
-test("the sign-in window spawns a runtime and a script that are both really there", () => {
+test("the host's own JS runtime is resolved, and a missing one is named", () => {
   const app = "C:\\app\\Harness.exe";
   const node = "C:\\node\\node.exe";
   const env = { DSH_NODE_EXECUTABLE: node, DSH_EXE: app };
   // Nothing on disk: the caller is told why, so it logs instead of spawning a
   // path whose missing `error` event used to take the host down with it.
   assert.equal(hostRuntime({ runtime: app, env: {}, exists: () => false }), null);
-  assert.match(signInLaunch("scripts/clear-inbox.mjs", {}, { exists: () => false }).error, /no JS runtime at /u);
   // The running binary wins; a moved installation falls back to the host's own paths.
   assert.equal(hostRuntime({ runtime: app, env, exists: (path) => path === app || path === node }), app);
   assert.equal(hostRuntime({ runtime: app, env, exists: (path) => path === node }), node);
   assert.equal(hostRuntime({ runtime: app, env: { DSH_EXE: app }, exists: (path) => path === app }), app);
-  // A sweep command written relative to the plugin directory is checked there,
-  // and handed to the child unchanged so `cwd` keeps meaning what it meant.
-  const here = process.cwd();
-  const realOr = (app) => (path) => path === app || existsSync(path);
-  const relative = signInLaunch("scripts/clear-inbox.mjs", { cwd: here }, { runtime: app, env: {}, exists: realOr(app) });
-  assert.equal(relative.script, "scripts/clear-inbox.mjs");
-  assert.equal(relative.runtime, app);
-  // A copy that lost its scripts folder still archives with the file we ship.
-  const fallback = signInLaunch("scripts/clear-inbox.mjs", { cwd: join(here, "gone") }, {
-    runtime: app,
-    env: {},
-    exists: realOr(app),
-  });
-  assert.match(fallback.script, /clear-inbox\.mjs$/u);
-  assert.ok(isAbsolute(fallback.script));
-  // A script of the operator's own that is not there is named, never guessed at.
-  const custom = signInLaunch("my/sweep.mjs", { cwd: join(here, "gone") }, {
-    runtime: app,
-    env: {},
-    exists: realOr(app),
-  });
-  assert.match(custom.error, /no script at .*my.sweep\.mjs$/u);
-  assert.equal(custom.runtime, undefined);
 });
 
-test("a sign-in window that never starts reports it instead of ending the host", async () => {
-  const seen = [];
-  const failing = () => {
-    const child = new EventEmitter();
-    child.unref = () => {};
-    // Spawn ENOENT arrives as an event, not a throw: this is the shape that took
-    // a host down when the window was first opened on a reinstalled app.
-    queueMicrotask(() =>
-      child.emit("error", Object.assign(new Error("spawn C:\\gone\\Harness.exe ENOENT"), { code: "ENOENT" })),
-    );
-    return child;
-  };
-  assert.doesNotThrow(() =>
-    spawnSignIn({ runtime: "C:\\gone\\Harness.exe", script: "sweeper.mjs", cwd: process.cwd(), env: {} }, {
-      start: failing,
-      onClose: () => seen.push("closed"),
-      onError: (error) => seen.push(error.code),
-    }),
-  );
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(seen, ["closed", "ENOENT"]);
-  // A host that refuses the spawn before there is a child takes the other door.
-  assert.throws(
-    () => spawnSignIn({ runtime: "x", script: "y.mjs" }, { start: () => { throw new Error("no spawn"); } }),
-    /no spawn/u,
-  );
-  // The ordinary path settles once, whatever the child says on its way out.
-  const exiting = new EventEmitter();
-  exiting.unref = () => {};
-  const closes = [];
-  spawnSignIn({ runtime: "node", script: "s.mjs", env: {} }, { start: () => exiting, onClose: () => closes.push("closed") });
-  exiting.emit("exit", 0);
-  exiting.emit("exit", 1);
-  assert.deepEqual(closes, ["closed"]);
-});
 
-test("the page is told whether archiving can sign in yet", () => {
-  const waiting = buildUiPayload({
-    options: mergeConfig({ repo: "owner/name" }),
-    signIn: { signedIn: null, open: false, attemptedAt: null },
-  });
-  assert.deepEqual(waiting.signIn, { signedIn: null, open: false, attemptedAt: null });
-  const open = buildUiPayload({
-    options: mergeConfig({ repo: "owner/name" }),
-    signIn: { signedIn: false, open: true, attemptedAt: null },
-  });
-  assert.equal(open.signIn.open, true);
-  assert.equal(buildUiPayload({ options: mergeConfig({ repo: "owner/name" }) }).signIn.signedIn, null);
-});
 
 test("a pasted repository URL is understood as a subscription", () => {
   const options = { repos: [], sessionId: "s1" };
@@ -1126,13 +876,19 @@ test("switching to wakeup brings a usable role, and quiet drops it", () => {
   assert.equal("wakeOn" in quiet, false);
 });
 
-test("archiving is on by default, because a maintainer's bookkeeping is not optional", () => {
+test("reading the inbox is on by default, and a dead sweep key is ignored", () => {
   const merged = mergeConfig({ cwd: process.cwd() });
-  assert.equal(merged.sweep.when, "events");
-  assert.equal(merged.sweep.args.at(-1), "--json");
-  // A profile can still turn it off for an instance nobody maintains, but that is
-  // a file-level decision, not a button.
-  assert.equal(mergeConfig({ cwd: process.cwd(), sweep: null }).sweep, null);
+  assert.equal(merged.clear, "repo");
+  assert.equal("sweep" in merged, false);
+  // A profile written for the browser archiver still names it. Loading must not
+  // fail over a key that no longer means anything — a shared template carries it.
+  const carried = mergeConfig({
+    cwd: process.cwd(),
+    sweep: { args: ["scripts/clear-inbox.mjs"], when: "always" },
+    signInCooldownMs: 1_000,
+  });
+  assert.equal("sweep" in carried, false);
+  assert.equal(carried.clear, "repo");
 });
 
 test("a subscription belongs to the session that made it", () => {
@@ -1492,9 +1248,7 @@ test("a fact that lost its repository is still routed by its key", async () => {
         ],
       },
       ack: { command: process.execPath, args: ["-e", "console.log('{}')"] },
-      // The default sweep would launch a browser here; this test is about routing.
-      sweep: null,
-    }));
+        }));
     ctx.emit("session/event", { id: "a" }, { type: "user/message", data: { source: { kind: "user" } } });
 
     const deadline = Date.now() + 5_000;
@@ -1514,46 +1268,6 @@ test("a fact that lost its repository is still routed by its key", async () => {
   }
 });
 
-test("a held fact does not sweep the inbox, because nothing new was found", async () => {
-  const root = mkdtempSync(join(tmpdir(), "inbox-sweep-held-"));
-
-  const marker = join(root, "swept");
-  try {
-    const agent = {
-      ...fakeAgent(root, "a"),
-      inject: () => {},
-      followup: () => {},
-    };
-    const ctx = fakeContext([agent]);
-    const { apply } = await import("./index.js");
-    apply(ctx, mergeConfig({
-      cwd: root,
-      delivery: "quiet",
-      intervalMs: 600_000,
-      poll: {
-        command: process.execPath,
-        args: [
-          "-e",
-          `console.log(JSON.stringify({ events: [{ key: "o/r#issue:1", role: "author", kind: "issue", title: "held", carried: true }] }))`,
-        ],
-      },
-      ack: { command: process.execPath, args: ["-e", "console.log('{}')"] },
-      sweep: {
-        command: process.execPath,
-        args: ["-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`],
-        when: "events",
-      },
-    }));
-    ctx.emit("agent/status", { agent: fakeAgent(root, "a") }, running);
-
-    await new Promise((resolve) => setTimeout(resolve, 1_200));
-    // The queue re-reports a held fact on every poll. Sweeping for it would open
-    // a browser once a minute for news nobody new has seen.
-    assert.equal(existsSync(marker), false, "a carried fact does not sweep");
-  } finally {
-    removeTree(root);
-  }
-});
 
 test("a repository fact belongs to its owner, an item fact to whoever works there", () => {
   const agents = [{ session: { id: "a" } }, { session: { id: "b" } }];
@@ -1636,7 +1350,6 @@ test("a fact about my repository waits for me while I am mid-turn", async () => 
         ],
       },
       ack: { command: process.execPath, args: ["-e", "console.log('{}')"] },
-      sweep: null,
     }));
     ctx.emit("session/event", { id: "a" }, { type: "user/message", data: { source: { kind: "user" } } });
 
@@ -1771,14 +1484,14 @@ test("a failure names who ended the run, because three different things wear the
 
   // A command that answered non-zero keeps its own words and its exit code.
   const answered = commandFailure(
-    { code: 2, message: "Command failed: sweep" },
-    { stderr: "  needs a browser sign-in  \n" },
+    { code: 2, message: "Command failed: needs a person" },
+    { stderr: "  run gh auth login  \n" },
     { timeoutMs: 120_000 },
   );
-  assert.equal(answered.message, "Command failed: sweep: needs a browser sign-in");
+  assert.equal(answered.message, "Command failed: needs a person: run gh auth login");
   assert.equal(answered.exitCode, 2);
   // `raw` counts what the command actually emitted, before trimming.
-  assert.equal(answered.raw.stderr, "  needs a browser sign-in  \n".length);
+  assert.equal(answered.raw.stderr, "  run gh auth login  \n".length);
 });
 
 // ---------------------------------------------------------------------------
@@ -1856,7 +1569,7 @@ test("a claim names one item and survives as a preference", async () => {
       },
     };
     const { apply } = await import("./index.js");
-    apply(ctx, mergeConfig({ cwd: root, repo: "", delivery: "quiet", intervalMs: 600_000, sweep: null }));
+    apply(ctx, mergeConfig({ cwd: root, repo: "", delivery: "quiet", intervalMs: 600_000 }));
 
     assert.equal(registered?.name, "inbox_claim");
     // A queue key names the same item as its canonical identity, digest and all:
@@ -1921,7 +1634,6 @@ test("an item I filed elsewhere waits for a claim instead of going to a stranger
         command: process.execPath,
         args: ["-e", `require('fs').appendFileSync(${JSON.stringify(ackLog)}, (process.env.INBOX_BRIDGE_KEYS || '') + '\\n')`],
       },
-      sweep: null,
     }));
     ctx.emit("session/event", { id: "a" }, { type: "user/message", data: { source: { kind: "user" } } });
 

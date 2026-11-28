@@ -156,3 +156,17 @@ npm run verify:install（打包 → 空目录安装 → 按包名 import → 跑
 - **留着等认领**：认领是人的动作，一台根本不参与那个项目的机器上没人会去认领；这条路径只把积压变成常态。
 - **只把搜索限定到已订阅仓库**：等价于把「有没有接收方」的判断藏进查询串里，日志就再也说不清被丢掉的是什么。折叠时拒绝并计数，判断留在代码里、留在日志里。
 - **给事件加过期时间**：治的是症状，还得决定过期多久；而且「四天后忽然开始有人干这个仓库」时，意图应当是历史归历史，不是补发。
+
+## D-021 清掉读过的线程不靠浏览器
+
+**2026-11-28。** 在此之前，「清掉读过的」被拆成两层：条目级标已读走 API，仓库级（CI、安全告警、发布）靠 `scripts/clear-inbox.mjs` 起一个自带 profile 的浏览器、用 DevTools 协议点网页上的 Done。代价是三样：一个 584 行的 CDP 客户端、一份要登录的浏览器配置、以及一块面板上的「打开登录窗口」按钮——用户要用一个**没有他的书签和已保存密码**的陌生窗口收一次验证码。实测里它还经常空转：`clear-inbox: the browser never opened http://127.0.0.1:9333`，错误只落进日志。
+
+根因是当初的判断「GitHub 的 Done 只有网页端点」。这一条今天仍然成立（`POST /notifications/beta/archive` 要网页会话 + CSRF，GraphQL 的 `Mutation` 上没有 `markNotificationThreadAsDone`），但**插件不需要 Done**：它要的是「这条别再报给我」，而 `PATCH /notifications/threads/<id>` 就够——已读的线程同样不在 `/notifications` 的未读流里。拿一个网页状态的名字去要求一个轮询器，才是不必要的耦合。
+
+判据：删掉 `scripts/clear-inbox.mjs` 与整套 sign-in（`openSignIn`/`checkSignIn`/`signInLaunch`/`spawnSignIn`/`signInCooldownMs`/`sweep`/浏览器 profile/面板登录行）。清理由 `pollOnce` 里的 `markThreadsRead` 完成，和读收件箱同一条 `gh` 调用。新增一项 `doctor` 检查：令牌有没有 `notifications` 权限——缺了 PATCH 会回 404 并附带 `This API operation needs the "notifications" scope`，看起来像插件坏了，所以必须由 doctor 直说补法（`gh auth refresh -h github.com -s notifications`）。
+
+替代的选项与它们为什么不够：
+
+- **保留 Done，只把窗口做得不陌生**：还是要在空 profile 里输一次密码，只是少了点意外。棱角磨平了，耦合还在。
+- **复制用户的浏览器 cookie 进专用 profile**：能免掉登录，但 Chromium 的应用绑定加密会让它静默失效，而且这是复制凭据——把一次登录换成一条不可预测的失败路径。
+- **接管用户正在运行的浏览器**：DevTools 只能挂在启动时带调试参数的实例上；对已在运行的浏览器传端口，只会被转发成一个新标签页然后退出，这正是「窗口起不来」的来源。
