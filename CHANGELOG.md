@@ -1,4 +1,4 @@
-## 未发布（等确认后定版本号）
+## 3.3.2
 
 - **面板又能打开了：胶囊变大、点不开是同一个原因。** 症状：胶囊变大、点击没有任何反应。宿主日志里只有一行 `client: render failed: busy is not defined`——3.2.0 的清单块写在了 `InboxBar` 里，却用了住在 `Controls` 里的 `busy`/`fixing`/`fix`/`requestScope`，于是面板第一次渲染就抛错，`Guard` 把整块界面吞掉。改了什么：清单抽成独立组件 `SetupList`，自带 `busy`/`fix`/`error`——它是面板里唯一需要这些状态的部分，按钮就应该和它的状态住在一起。
 - **发布前先看它能不能画出来。** `node --check` 看不见「名字不在作用域里」，这个包也没有构建步骤，所以这类错误唯一的证据是发布之后的宿主日志——连续两轮都是这样。新增 `client.test.mjs`：按宿主的方式加载包（`window.__ModuleLoader__.load`），替身 React，用一份「还有待办」的 status 渲染状态栏，**展开面板**，把每个函数组件调用一次，并断言 `InboxBar`、`SetupList`、`Controls` 真的被走到（「没抛异常」不足以说明面板画出来了）。反向验证：同一套装置对 3.3.1 发出的那份 `client.js` 立刻抛 `ReferenceError: busy is not defined`（行号正是发出去的那一行），对本提交则渲染 8 个组件、无异常。`npm run verify` 已包含它。证据：`npm run verify` **163 测试全绿** + `docs:check` + `verify:install`。
