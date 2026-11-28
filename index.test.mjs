@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, isAbsolute } from "node:path";
 
-import { DEFAULT_ACK_HINT, admissionVerdict, audienceFor, buildMessage, buildUiPayload, checkLatestVersion, commandFailure, compareVersions, deliver, deliveryTargets, detectRepo, ensureDir, eventTier, filterUndelivered, formatEvents, formatOfflineNotice, hostRuntime, itemIdentity, keyOf, markReadVerdict, mergeConfig, overlayPreferences, roleAllowed, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, runCommand, sessionLabel, sessionTag, updateNotice, wakePlan, writeFailure } from "./index.js";
+import { DEFAULT_ACK_HINT, admissionVerdict, audienceFor, buildMessage, buildUiPayload, checkLatestVersion, commandFailure, compareVersions, deliver, deliveryTargets, detectRepo, ensureDir, eventTier, filterUndelivered, formatEvents, formatOfflineNotice, hostRuntime, itemIdentity, keyOf, markReadVerdict, mergeConfig, overlayPreferences, roleAllowed, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, runCommand, sessionLabel, sessionTag, setupChecklist, probeSetup, updateNotice, wakePlan, writeFailure } from "./index.js";
 
 const idle = { status: "idle" };
 const running = { status: "running" };
@@ -1737,3 +1737,65 @@ test("a first run without gh is told what to run, not just what failed", () => {
   assert.equal(odd.includes("gh auth login"), false);
   assert.match(odd, /先做手头的事/u);
 });
+
+test("the setup checklist names the step a first run is missing, in order", () => {
+  const bare = setupChecklist({});
+  assert.deepEqual(
+    bare.filter((item) => !item.ok).map((item) => item.id),
+    ["gh", "repository"],
+  );
+  // No gh means nothing else is knowable: no login row, no scope row.
+  assert.equal(bare.some((item) => item.id === "login"), false);
+
+  const present = setupChecklist({ gh: "gh version 2.62.0" });
+  const login = present.find((item) => item.id === "login");
+  assert.equal(login.ok, false);
+  assert.equal(login.command, "gh auth login");
+
+  // Logged in, and the token cannot mark threads read: the row carries the fix.
+  const scoped = setupChecklist({ gh: "gh", login: "me", scopes: ["repo", "read:org"], repos: ["a/b"] });
+  const scope = scoped.find((item) => item.id === "scope");
+  assert.equal(scope.ok, false);
+  assert.equal(scope.command, "gh auth refresh -h github.com -s notifications");
+
+  // Unknown scopes are not a fault to report: a fine-grained token may print none.
+  const unknown = setupChecklist({ gh: "gh", login: "me", scopes: null, repos: ["a/b"] });
+  assert.equal(unknown.some((item) => item.id === "scope" && item.ok === false), false);
+
+  // Everything in place: nothing left to say.
+  const ready = setupChecklist({ gh: "gh", login: "me", scopes: ["repo", "notifications"], repos: ["a/b"] });
+  assert.deepEqual(ready.filter((item) => !item.ok), []);
+});
+
+test("an App identity has no gh login to check", () => {
+  const items = setupChecklist({ gh: "gh", login: null, scopes: null, repos: ["a/b"], identity: "app" });
+  assert.equal(items.some((item) => item.id === "login"), false);
+  assert.equal(items.some((item) => item.id === "scope"), false);
+});
+
+test("the probe reads version, login and scopes from gh, and stops where gh stops", () => {
+  const offline = probeSetup({ run: () => { throw new Error("ENOENT: gh not found"); } });
+  assert.deepEqual(offline, { gh: null, login: null, scopes: null });
+
+  const anonymous = probeSetup({
+    run: (argv) => {
+      if (argv[0] === "--version") return "gh version 2.62.0 (2025-01-01)\n";
+      throw new Error("gh: not logged in");
+    },
+  });
+  assert.match(anonymous.gh, /2\.62\.0/u);
+  assert.equal(anonymous.login, null);
+  assert.equal(anonymous.scopes, null);
+
+  const full = probeSetup({
+    run: (argv) => {
+      if (argv[0] === "--version") return "gh version 2.62.0\n";
+      if (argv[0] === "api" && argv[1] === "user") return "c3115644151\n";
+      return 'HTTP/2.0 200 OK\nX-OAuth-Scopes: gist, notifications, repo\n\n{"login":"me"}';
+    },
+  });
+  assert.equal(full.login, "c3115644151");
+  assert.deepEqual(full.scopes, ["gist", "notifications", "repo"]);
+  assert.equal(setupChecklist({ ...full, repos: ["a/b"] }).filter((item) => !item.ok).length, 0);
+});
+

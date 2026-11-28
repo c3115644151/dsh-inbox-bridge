@@ -1899,6 +1899,28 @@ function runCli(argv) {
   return runPoll({ repoRoot, stateFile, pendingFile, state, options, now, me, repos });
 }
 
+/**
+ * The token scopes GitHub reported in a response header, as a list.
+ *
+ * `gh api --include` prints the headers above the body, and `x-oauth-scopes`
+ * is the one line that says what this token can do — the difference between
+ * "read-marking works" and "every PATCH answers 404". Both the plugin's setup
+ * checklist and `doctor` read it from here, because two parsers would drift.
+ */
+export function parseOauthScopes(headerText) {
+  const line = String(headerText ?? "")
+    .split(/\r?\n/u)
+    .find((entry) => /^x-oauth-scopes:/iu.test(entry));
+  if (!line) return [];
+  return line
+    .split(":")
+    .slice(1)
+    .join(":")
+    .split(",")
+    .map((name) => name.trim())
+    .filter(Boolean);
+}
+
 const isDirectInvocation = (() => {
   if (!process.argv[1]) return false;
   try {

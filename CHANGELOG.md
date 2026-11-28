@@ -1,3 +1,17 @@
+## 未发布（等确认后定版本号）
+
+- **装完第一屏是「还差几步」，不再是空事件列表。** 症状：一个从没听过这个插件的人装完、重载，看到的是一个安静的面板——没有事件，也没有一句「还缺什么」。他要撞上三道墙才会知道自己缺 `gh`、缺登录、缺接管，而撞墙时的提示分散在面板一行、日志一行和一个他不知道存在的 `doctor` 里。改了什么：新增 `probeSetup()`（问 `gh`：版本、登录名、令牌 scopes，三次短调用，每 10 分钟最多一次，**不在读状态的路径上**）、`setupChecklist()`（把事实排成 gh → 登录 → 令牌权限 → 接管仓库 → 状态根，每行带命令）与面板的清单块（只显示没做到的，做到就消失；文案在 `client.js` 分中英）。本机实跑：
+
+  ```
+  ok   gh          gh version 2.103.3 (2026-10-26)
+  ok   login       c3115644151
+  TODO scope       gist, project, read:org, repo, workflow -> gh auth refresh -h github.com -s notifications
+  ok   repository  c3115644151/dsh-inbox-bridge
+  ```
+
+- 证据：新增 4 条测试（清单按顺序只报没做到的、无 `gh` 时不出现登录行、App 身份没有登录行、探针在 `gh` 缺席/未登录/正常三态下的返回值、scope 头的共享解析含 `read:org` 这种带冒号的 scope）；`npm test` **164 全绿**；`verify:install` 通过；`doctor` 仍报同一条 scope 警告（解析已换成共享实现）。
+
+- 顺手把 `doctor` 里那份内联的 scope 头解析换成 `parseOauthScopes()`（住在 `scripts/github-inbox.mjs`）：同一个头两处解析会漂，然后页面和 doctor 各说一套。
 ## 3.1.2
 
 - **第一次运行失败时，告诉人下一步做什么。** 症状：新装的机器上 `gh` 还没登录，插件每轮只念一句 `poll skipped: gh is not authenticated`——本机日志里实测连续三次都是这句——而会话里收到的是「暂时读不到 工作区（gh is not authenticated），先做手头的事」。装的人读不出「该去登录」这一步。改了什么：`formatOfflineNotice` 把认得的原因配上对应的一步——`gh is not authenticated` / `bad credentials` / `HTTP 401|403` → 「在终端跑一次 `gh auth login`，插件下一轮会自己恢复」；`no repository` → 「面板里粘贴一个仓库链接，或在 git 仓库的目录里开会话」。认不出的原因**不加建议**：一句错的下一步比没有更坏。证据：新增测试 `a first run without gh is told what to run, not just what failed` 覆盖三例（两个第一道墙 + 一个必须不带建议的未知原因）；`npm test` **160 全绿**。

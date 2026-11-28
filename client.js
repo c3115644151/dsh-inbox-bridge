@@ -112,6 +112,15 @@ window.__ModuleLoader__.load({
         updateAvailable: (latest, current) => `发现新版本 ${latest}（当前 ${current}）`,
         storageFailed: (root) => `状态写不进去：${root}（设置记不住）`,
         markReadBlocked: "读过的通知还留在 GitHub 收件箱里（令牌缺 notifications 权限）",
+        setupTitle: "还差几步",
+        setupItem: (id) =>
+          ({
+            gh: "本机没有 gh：先装 GitHub CLI",
+            login: "gh 还没登录",
+            scope: "令牌缺 notifications 权限",
+            repository: "还没有接管仓库：粘贴仓库链接，或在这个仓库里开会话",
+            storage: "状态写不进去",
+          })[id] ?? id,
         markReadTip: (reason) =>
           `${reason}。一次性补上：gh auth refresh -h github.com -s notifications —— 补完 30 分钟内会自动重试`,
         storageTip: (root, reason) =>
@@ -182,6 +191,15 @@ window.__ModuleLoader__.load({
         updateAvailable: (latest, current) => `new version ${latest} available (you have ${current})`,
         storageFailed: (root) => `cannot write state to ${root} (settings will not stick)`,
         markReadBlocked: "threads it read stay unread in the GitHub inbox (token has no notifications scope)",
+        setupTitle: "still missing",
+        setupItem: (id) =>
+          ({
+            gh: "no gh on this machine: install the GitHub CLI",
+            login: "gh is not logged in",
+            scope: "token has no notifications scope",
+            repository: "no repository taken yet: paste a link, or open a session in that repository",
+            storage: "state cannot be written",
+          })[id] ?? id,
         markReadTip: (reason) =>
           `${reason}. One fix: gh auth refresh -h github.com -s notifications — it retries within 30 minutes once the scope is there`,
         storageTip: (root, reason) =>
@@ -380,6 +398,26 @@ window.__ModuleLoader__.load({
         whiteSpace: "nowrap",
       },
       rule: { marginBottom: "10px", borderTop: "0.5px solid var(--dsw-alias-border-l2)" },
+      // The setup checklist: a quiet box that only exists while something is
+      // missing, and disappears the moment the last row turns green.
+      setupBox: {
+        display: "grid",
+        gap: "3px",
+        marginBottom: "10px",
+        padding: "7px 9px",
+        borderRadius: "6px",
+        background: "var(--dsw-alias-fill-l1, rgba(127,127,127,0.08))",
+      },
+      setupHead: { fontSize: "11px", fontWeight: "600", color: "var(--dsw-alias-label-secondary)" },
+      setupRow: { display: "flex", alignItems: "baseline", gap: "6px", minWidth: 0 },
+      setupMark: { fontSize: "11px", color: "var(--dsw-alias-label-warning, inherit)" },
+      setupText: { fontSize: "11px", lineHeight: "18px", color: "var(--dsw-alias-label-primary)", minWidth: 0 },
+      setupCommand: {
+        marginLeft: "6px",
+        fontSize: "11px",
+        fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+        color: "var(--dsw-alias-label-secondary)",
+      },
       list: { display: "grid", gap: "6px", minWidth: 0 },
       row: {
         // Two lines per fact: the title is what the reader scans, so it gets the
@@ -1253,6 +1291,10 @@ window.__ModuleLoader__.load({
       // instead of an empty list that looks like "all quiet".
       const sessionRepo = status.scope === "session" ? status.session?.repo ?? null : null;
       const watchedRepos = status.watched ?? status.repos ?? [];
+      // The first screen: a fresh install sees a short list of what is still
+      // missing, each row with the command that finishes it. Green rows are not
+      // shown — a checklist that is done must get out of the way.
+      const setupTodo = (status.setup ?? []).filter((item) => item && item.ok === false);
       const unwatched =
         sessionRepo && watchedRepos.length > 0 && !watchedRepos.includes(sessionRepo) ? sessionRepo : null;
       const metaRow = (name, value, extra) =>
@@ -1302,6 +1344,28 @@ window.__ModuleLoader__.load({
               ),
             ),
             h("div", { style: styles.rule }),
+            setupTodo.length > 0
+              ? h(
+                  "div",
+                  { style: styles.setupBox, role: "group", "aria-label": text.setupTitle },
+                  h("div", { style: styles.setupHead }, text.setupTitle),
+                  setupTodo.map((item) =>
+                    h(
+                      "div",
+                      { key: item.id, style: styles.setupRow, title: item.detail ?? "" },
+                      h("span", { style: styles.setupMark, "aria-hidden": "true" }, "✗"),
+                      h(
+                        "span",
+                        { style: styles.setupText },
+                        text.setupItem(item.id),
+                        item.command
+                          ? h("code", { style: styles.setupCommand }, item.command)
+                          : null,
+                      ),
+                    ),
+                  ),
+                )
+              : null,
             unbound
               ? h("div", { style: styles.emptyLine }, text.unbound)
               : unwatched

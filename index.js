@@ -22,6 +22,7 @@ import { randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseOauthScopes } from "./scripts/github-inbox.mjs";
 import { repoOfKey, splitKey } from "./scripts/key.mjs";
 import { stateRootFor } from "./scripts/state-root.mjs";
 
@@ -250,6 +251,8 @@ export const DEFAULT_ACK_HINT = `node "${CLI}" ack --done -- <key>`;
 
 /** How long to stop trying to mark threads read after the token refused. */
 const MARK_READ_RECHECK_MS = 30 * 60 * 1000;
+/** How long a setup probe is trusted: three short `gh` calls, not per status read. */
+const SETUP_TTL_MS = 10 * 60 * 1000;
 /** How long a session workspace's `owner/name` is trusted before re-reading git. */
 const REPO_TTL_MS = 10 * 60 * 1000;
 
@@ -296,6 +299,93 @@ export function ensureDir(dir) {
     // directory was there all along: only a still-missing path is a failure.
     if (!existsSync(dir)) throw writeFailure(error, dir);
   }
+}
+
+/**
+ * What a first run is missing, in the order it has to be fixed.
+ *
+ * Facts only — which step is done, and the command that does it. The words
+ * belong to the page (zh/en), because a checklist is read once by someone who
+ * has never seen this plugin and then never again.
+ *
+ * A row that is fine is still listed: "gh ok, logged in as X, two repositories"
+ * is how an installer confirms the thing works without opening a log.
+ */
+export function setupChecklist({
+  gh = null,
+  login = null,
+  scopes = null,
+  repos = [],
+  storage = { ok: true },
+  identity = "user",
+} = {}) {
+  const list = Array.isArray(repos) ? repos : [];
+  const items = [{ id: "gh", ok: Boolean(gh), detail: gh }];
+  // Without `gh` there is nothing to log into: a login row would be advice for a
+  // step that cannot be taken yet.
+  if (gh && identity !== "app") {
+    items.push({ id: "login", ok: Boolean(login), detail: login, command: login ? null : "gh auth login" });
+    if (login) {
+      // Unknown scopes are not a problem to report: a fine-grained token may not
+      // print the header at all, and nagging about something unverified is how
+      // a checklist gets ignored.
+      const known = Array.isArray(scopes);
+      items.push({
+        id: "scope",
+        ok: !known || scopes.includes("notifications"),
+        detail: known ? scopes.join(", ") : null,
+        command: known && !scopes.includes("notifications") ? "gh auth refresh -h github.com -s notifications" : null,
+      });
+    }
+  }
+  items.push({
+    id: "repository",
+    ok: list.length > 0,
+    detail: list.length > 0 ? list.join(", ") : null,
+    command: list.length > 0 ? null : null,
+  });
+  if (storage && storage.ok === false) {
+    items.push({ id: "storage", ok: false, detail: storage.root ?? null, command: null });
+  }
+  return items;
+}
+
+/**
+ * Ask the machine's `gh` what it is: which version, who is logged in, and what
+ * the token may do. Cheap enough to run once per ten minutes and never on the
+ * path a poll takes, and every probe is injectable so the tests stay offline.
+ */
+export function probeSetup({ cwd = process.cwd(), env = process.env, run = null } = {}) {
+  const call =
+    run ??
+    ((argv) =>
+      execFileSync("gh", argv, {
+        cwd,
+        env,
+        encoding: "utf8",
+        timeout: 8_000,
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "ignore"],
+      }));
+  const facts = { gh: null, login: null, scopes: null };
+  try {
+    facts.gh = String(call(["--version"])).trim().split(/\r?\n/u)[0] || "gh";
+  } catch {
+    // No gh on PATH: the first row of the checklist, and nothing else applies.
+    return facts;
+  }
+  try {
+    facts.login = String(call(["api", "user", "--jq", ".login"])).trim() || null;
+  } catch {
+    // Present but not logged in; the row says which command fixes it.
+    return facts;
+  }
+  try {
+    facts.scopes = parseOauthScopes(call(["api", "--include", "user"]));
+  } catch {
+    facts.scopes = null;
+  }
+  return facts;
 }
 
 /**
@@ -597,6 +687,16 @@ export function apply(ctx, config) {
    * more than one 404 per thread per minute.
    */
   const markRead = { blocked: false, reason: null, at: 0 };
+  /**
+   * What the machine is missing, asked of `gh` rather than guessed from a
+   * failure. Probed on the poll's own clock (never on a status read: the page
+   * polls status often, and three subprocesses per read is a tax on every
+   * session), and re-probed when the answer could have changed.
+   */
+  let setupFacts = { gh: null, login: null, scopes: null, at: 0, probed: false };
+  const refreshSetup = () => {
+    setupFacts = { ...probeSetup({ cwd: options.cwd }), at: Date.now(), probed: true };
+  };
 
   const uiPayload = (sessionId = null) => {
     const agent = sessionId ? agents.get(sessionId) : null;
@@ -669,6 +769,16 @@ export function apply(ctx, config) {
       // consequence is visible there — GitHub keeps showing them as unread —
       // and the fix is one command the page can print.
       markRead: markRead.blocked ? { blocked: true, reason: markRead.reason } : { blocked: false, reason: null },
+      // The first screen: what a fresh install still has to do, in the order it
+      // has to be done. Facts only — the words live in client.js.
+      setup: setupChecklist({
+        gh: setupFacts.gh,
+        login: setupFacts.login,
+        scopes: setupFacts.scopes,
+        repos: polledRepos(),
+        storage: state,
+        identity: options.identity.kind,
+      }),
       // What the migration copied the first time a newer root was used.
       storageMoved: state.migrated?.copied?.length ? state.migrated.copied : null,
     };
@@ -765,6 +875,16 @@ export function apply(ctx, config) {
     if (Date.now() - startedAt < 3_000) return;
     startedAt = Date.now();
     polling = true;
+    // Ask the machine what it is missing before deciding anything: a setup that
+    // is not finished should say so on this poll, not on the one after the user
+    // asks why nothing happens.
+    if (!setupFacts.probed || Date.now() - setupFacts.at > SETUP_TTL_MS) {
+      try {
+        refreshSetup();
+      } catch {
+        // A probe never fails a poll; the checklist stays as it was.
+      }
+    }
     const scoped = {
       ...options,
       repos,
@@ -794,6 +914,9 @@ export function apply(ctx, config) {
         markRead.blocked = true;
         markRead.reason = verdict.reason;
         markRead.at = Date.now();
+        // The token's scopes are the cause: have the checklist re-ask on the
+        // next poll so the row appears with the command that fixes it.
+        setupFacts.at = 0;
         if (!repeat) log(verdict.log);
       }
       if (payload.skipped) {

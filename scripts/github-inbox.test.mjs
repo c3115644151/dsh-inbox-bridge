@@ -30,6 +30,7 @@ import {
   isMaintainer,
   mentionsLogin,
   mineSearches,
+  parseOauthScopes,
   prRole,
   pullsArgs,
   runsArgs,
@@ -1371,4 +1372,10 @@ test("a served repository reports what changed since the bookmark, and nothing o
     later.fresh.map((event) => event.key),
     ["me/mine#issue:1:mine:openc1"],
   );
+});
+
+test("the scope header is parsed in one place, including a colon inside a scope", () => {
+  assert.deepEqual(parseOauthScopes("X-OAuth-Scopes: repo, read:org\n"), ["repo", "read:org"]);
+  assert.deepEqual(parseOauthScopes("no headers here"), []);
+  assert.deepEqual(parseOauthScopes(null), []);
 });

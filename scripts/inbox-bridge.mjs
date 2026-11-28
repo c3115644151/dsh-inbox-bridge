@@ -15,6 +15,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { splitKey } from "./key.mjs";
 import { repoOfKey as repoFromKey } from "./key.mjs";
+import { parseOauthScopes } from "./github-inbox.mjs";
 import { QUEUE_DIR, SOURCE_DIR, stateRootFor } from "./state-root.mjs";
 
 
@@ -767,18 +768,9 @@ export function describeDoctor(root, options = {}) {
   if (!scopes.ok) {
     add("notifications", "warn", "没法确认令牌能不能标记通知为已读", scopes.reason);
   } else {
-    const header = String(scopes.value ?? "")
-      .split(/\r?\n/u)
-      .find((line) => /^x-oauth-scopes:/iu.test(line));
-    const granted = header
-      ? header
-          .split(":")
-          .slice(1)
-          .join(":")
-          .split(",")
-          .map((name) => name.trim())
-          .filter(Boolean)
-      : [];
+    // One parser for the header, shared with the plugin's setup checklist: two
+    // parsers of the same line drift, and then the page and doctor disagree.
+    const granted = parseOauthScopes(scopes.value);
     if (granted.includes("notifications")) {
       add("notifications", "ok", "令牌可以标记通知为已读");
     } else if (granted.length > 0) {
