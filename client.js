@@ -875,11 +875,6 @@ window.__ModuleLoader__.load({
       // wakeup mode, and keeping them always open doubles the panel height for a
       // setting most people never touch.
       const [showWake, setShowWake] = React.useState(false);
-      // The device-flow answer: its one-time code and where to type it. Kept in
-      // the component because the panel polls every 20 s and the code is useless
-      // after that long.
-      const [fix, setFix] = React.useState(null);
-      const [fixing, setFixing] = React.useState(false);
       const pick = text.pick;
       const send = async (set, value) => {
         if (busy) return;
@@ -891,22 +886,6 @@ window.__ModuleLoader__.load({
           setError(result.error ?? "failed");
           return;
         }
-        reload();
-      };
-      // One click asks GitHub for the scope; the approval still happens in the
-      // person's own browser, which is the part nobody can do for them.
-      const requestScope = async () => {
-        if (busy || fixing) return;
-        setFixing(true);
-        setError(null);
-        const result = await change(status, "fixscope", "1");
-        setFixing(false);
-        if (!result.ok) {
-          setError(result.error ?? "failed");
-          return;
-        }
-        setFix(result.fix ?? null);
-        if (result.fix && result.fix.ok === false) setError(result.fix.reason ?? "failed");
         reload();
       };
       const seg = (label, options, current, set, key) =>
@@ -1111,7 +1090,88 @@ window.__ModuleLoader__.load({
       );
     }
 
-    function InboxBar(props) {
+    /**
+ * The setup checklist, and the one button on it.
+ *
+ * It owns its own state because the flow it starts is local to it: a click asks
+ * GitHub for the `notifications` scope, GitHub answers with a one-time code,
+ * and the person approves it in their own browser. Nothing else in the panel
+ * needs to know any of that.
+ */
+function SetupList({ status, text }) {
+  const [busy, setBusy] = React.useState(false);
+  const [fix, setFix] = React.useState(null);
+  const [error, setError] = React.useState(null);
+  const todo = (status.setup ?? []).filter((item) => item && item.ok === false);
+  const requestScope = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    const result = await change(status, "fixscope", "1");
+    setBusy(false);
+    if (!result.ok) {
+      setError(result.error ?? "failed");
+      return;
+    }
+    setFix(result.fix ?? null);
+    if (result.fix && result.fix.ok === false) setError(result.fix.reason ?? "failed");
+  };
+  if (todo.length === 0) return null;
+  return h(
+    "div",
+    { style: styles.setupBox, role: "group", "aria-label": text.setupTitle },
+    h("div", { style: styles.setupHead }, text.setupTitle),
+    todo.map((item) =>
+      h(
+        "div",
+        { key: item.id, style: styles.setupRow, title: item.detail ?? "" },
+        h("span", { style: styles.setupMark, "aria-hidden": "true" }, "✗"),
+        h(
+          "span",
+          { style: styles.setupText },
+          text.setupItem(item.id),
+          // The scope is the one row the plugin can do for the user: a device
+          // flow needs their approval and nothing else.
+          item.id === "scope" && item.command
+            ? h(
+                "button",
+                {
+                  type: "button",
+                  disabled: busy,
+                  style: styles.seg,
+                  title: item.command,
+                  onClick: () => void requestScope(),
+                },
+                busy ? text.setupFixing : text.setupFixOne,
+              )
+            : item.command
+              ? h("code", { style: styles.setupCommand }, item.command)
+              : null,
+          fix?.code
+            ? h(
+                "div",
+                { style: styles.setupHint },
+                text.setupFixCode(fix.code),
+                h(
+                  "a",
+                  {
+                    href: fix.url ?? "https://github.com/login/device",
+                    target: "_blank",
+                    rel: "noreferrer",
+                    style: styles.setupLink,
+                  },
+                  text.setupFixOpen,
+                ),
+              )
+            : null,
+          error ? h("div", { style: styles.setupHint }, error) : null,
+        ),
+      ),
+    ),
+  );
+}
+
+function InboxBar(props) {
       const sessionId = props?.sessionId ?? null;
       const { status, missing, reload } = useStatus(sessionId);
       const text = locale();
@@ -1375,59 +1435,7 @@ window.__ModuleLoader__.load({
               ),
             ),
             h("div", { style: styles.rule }),
-            setupTodo.length > 0
-              ? h(
-                  "div",
-                  { style: styles.setupBox, role: "group", "aria-label": text.setupTitle },
-                  h("div", { style: styles.setupHead }, text.setupTitle),
-                  setupTodo.map((item) =>
-                    h(
-                      "div",
-                      { key: item.id, style: styles.setupRow, title: item.detail ?? "" },
-                      h("span", { style: styles.setupMark, "aria-hidden": "true" }, "✗"),
-                      h(
-                        "span",
-                        { style: styles.setupText },
-                        text.setupItem(item.id),
-                        // The scope is the one row the plugin can do for the user:
-                        // a device flow needs their approval and nothing else.
-                        item.id === "scope" && item.command
-                          ? h(
-                              "button",
-                              {
-                                type: "button",
-                                disabled: busy || fixing,
-                                style: styles.seg,
-                                title: item.command,
-                                onClick: () => void requestScope(),
-                              },
-                              fixing ? text.setupFixing : text.setupFixOne,
-                            )
-                          : item.command
-                            ? h("code", { style: styles.setupCommand }, item.command)
-                            : null,
-                        fix?.code
-                          ? h(
-                              "div",
-                              { style: styles.setupHint },
-                              text.setupFixCode(fix.code),
-                              h(
-                                "a",
-                                {
-                                  href: fix.url ?? "https://github.com/login/device",
-                                  target: "_blank",
-                                  rel: "noreferrer",
-                                  style: styles.setupLink,
-                                },
-                                text.setupFixOpen,
-                              ),
-                            )
-                          : null,
-                      ),
-                    ),
-                  ),
-                )
-              : null,
+            setupTodo.length > 0 ? h(SetupList, { status, text }) : null,
             unbound
               ? h("div", { style: styles.emptyLine }, text.unbound)
               : unwatched

@@ -50,7 +50,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test index.test.mjs scripts/github-inbox.test.mjs scripts/inbox-bridge.test.mjs scripts/packaging.test.mjs",
+    "test": "node --test client.test.mjs index.test.mjs scripts/github-inbox.test.mjs scripts/inbox-bridge.test.mjs scripts/packaging.test.mjs",
     "docs:check": "node scripts/check-docs.mjs",
     "verify:install": "node scripts/verify-install.mjs",
     "verify": "npm test && npm run docs:check && npm run verify:install",
