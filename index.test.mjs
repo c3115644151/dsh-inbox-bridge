@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, isAbsolute } from "node:path";
 
-import { DEFAULT_ACK_HINT, admissionVerdict, audienceFor, buildMessage, buildUiPayload, checkLatestVersion, commandFailure, compareVersions, deliver, deliveryTargets, detectRepo, ensureDir, eventTier, filterUndelivered, formatEvents, hostRuntime, itemIdentity, keyOf, markReadVerdict, mergeConfig, overlayPreferences, roleAllowed, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, runCommand, sessionLabel, sessionTag, updateNotice, wakePlan, writeFailure } from "./index.js";
+import { DEFAULT_ACK_HINT, admissionVerdict, audienceFor, buildMessage, buildUiPayload, checkLatestVersion, commandFailure, compareVersions, deliver, deliveryTargets, detectRepo, ensureDir, eventTier, filterUndelivered, formatEvents, formatOfflineNotice, hostRuntime, itemIdentity, keyOf, markReadVerdict, mergeConfig, overlayPreferences, roleAllowed, pollLabel, preferenceNext, repoFromInput, repoOf, repoOfKey, runCommand, sessionLabel, sessionTag, updateNotice, wakePlan, writeFailure } from "./index.js";
 
 const idle = { status: "idle" };
 const running = { status: "running" };
@@ -1719,3 +1719,21 @@ test("another reason for a failed mark-read is passed through, without a scope h
   assert.equal(markReadVerdict(undefined), null);
 });
 
+
+test("a first run without gh is told what to run, not just what failed", () => {
+  // A fresh install has no `gh`, or has one that was never logged in. The source
+  // says `gh is not authenticated`; the session needs the next step.
+  const notice = formatOfflineNotice({ repo: "owner/name" }, "gh is not authenticated");
+  assert.match(notice, /gh auth login/u);
+  assert.match(notice, /仓库 owner\/name/u);
+
+  // No repository taken yet is the other first-run wall, and it has its own step.
+  const bare = formatOfflineNotice({}, "no repository: pass --repo or add a git remote");
+  assert.match(bare, /接管/u);
+  assert.match(bare, /面板/u);
+
+  // An unknown failure gets no invented advice: a wrong next step is worse than none.
+  const odd = formatOfflineNotice({}, "HTTP 502 from api.github.com");
+  assert.equal(odd.includes("gh auth login"), false);
+  assert.match(odd, /先做手头的事/u);
+});

@@ -2038,9 +2038,30 @@ export function runCommand(spec, options, extraEnv = {}) {
  * The one line worth paying for when the source cannot be read: the agent knows
  * the plugin is blind, so it does not mistake silence for "nothing happened".
  */
+/**
+ * What a session is told when a poll could not read anything.
+ *
+ * The reason is the source's own words — `gh is not authenticated`, `no
+ * repository: pass --repo or add a git remote` — which a fresh install cannot
+ * act on. The advice is the part that turns a status line into the next step,
+ * and only reasons we recognise get one: inventing advice for an unknown
+ * failure would be guessing.
+ */
+const OFFLINE_ADVICE = [
+  [
+    /gh is not authenticated|bad credentials|http 40[13]/iu,
+    "本机的 gh 还没登录：在终端跑一次 `gh auth login`，插件下一轮会自己恢复。",
+  ],
+  [
+    /no repository/iu,
+    "还没有接管任何仓库：面板里粘贴一个仓库链接，或在一个 git 仓库的目录里开会话。",
+  ],
+];
+
 export function formatOfflineNotice(options, reason) {
   const where = options.repo ? `仓库 ${options.repo}` : "工作区";
-  return `${NOTICE_NAME} 暂时读不到 ${where}（${reason}）——这段时间的事它看不到。先做手头的事，需要我处理时告诉我。`;
+  const advice = (OFFLINE_ADVICE.find(([pattern]) => pattern.test(String(reason ?? ""))) ?? [])[1];
+  return `${NOTICE_NAME} 暂时读不到 ${where}（${reason}）——这段时间的事它看不到。${advice ? `${advice}\n` : ""}先做手头的事，需要我处理时告诉我。`;
 }
 
 /**
