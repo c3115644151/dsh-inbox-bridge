@@ -1,4 +1,4 @@
-## 未发布（等确认后定版本号）
+## 3.3.1
 
 - **等设备码的那个等待不再可能挂住。** 症状：CI 上 `a device flow that never prints a code says so instead of hanging` 被判 `cancelledByParent`，原因写着 `Promise resolution is still pending but the event loop has already resolved`——等待用的定时器 `unref()` 过，宿主里如果刚好没有别的事，事件循环先退出，这个 Promise 就永远不 resolve，点按钮的人看到的是「已发出…」一直不结束。改了什么：定时器不再 `unref()`，`finish()` 在给出答案时 `clearTimeout`（顺带解决「答案早到、12 秒的定时器还留着」这个尾巴）。证据：`npm test` **167 全绿、cancelled 0**；另写了一个「空事件循环」脚本复现 CI 条件，修复前挂住、修复后输出 `{"ok":false,"reason":"gh did not print a one-time code"}`。
 ## 3.3.0
