@@ -1881,7 +1881,13 @@ function runCli(argv) {
   setIdentity(identityFromEnv());
   // Resolved once per poll: it decides which events belong to this identity.
   const me = resolveLogin(repoRoot);
-  const workDir = path.join(repoRoot, ".work", "github-inbox");
+  // The poller keeps its own record of what it saw; it lives beside the queue,
+// under the root the plugin chose (`INBOX_STATE_ROOT`), so both are found in
+// one place. A standalone run without that variable falls back to
+// `<cwd>/.work`, which is where older versions wrote.
+  const workDir = process.env.INBOX_STATE_ROOT
+    ? path.join(path.resolve(repoRoot, process.env.INBOX_STATE_ROOT), "github-inbox")
+    : path.join(repoRoot, ".work", "github-inbox");
   const stateFile = path.join(workDir, "state.json");
   const pendingFile = path.join(workDir, "pending.md");
   const now = new Date();

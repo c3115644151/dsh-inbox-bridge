@@ -23,6 +23,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { repoOfKey, splitKey } from "./scripts/key.mjs";
+import { stateRootFor } from "./scripts/state-root.mjs";
 
 export const name = "inbox-bridge";
 /**
@@ -250,24 +251,16 @@ export const DEFAULT_ACK_HINT = `node "${CLI}" ack --done -- <key>`;
 /** How long a session workspace's `owner/name` is trusted before re-reading git. */
 const REPO_TTL_MS = 10 * 60 * 1000;
 
-/** Queue state the CLI owns: one entry per event key, with its status. */
-const STATE_REL = join(".work", "inbox-bridge", "state.json");
-/** What the poller saw last, per repository. */
-const SOURCE_STATE_REL = join(".work", "github-inbox", "state.json");
 /** The path the client view reads; same origin as the page, so no CORS and no second port. */
 const UI_ROUTE = "/inbox-bridge/status.json";
 /** Where the page reports what it sees (clipping, missing layers) into the log. */
 const CLIENT_LOG_ROUTE = "/inbox-bridge/client-log";
 /** Where the page changes how this instance behaves; GET with a token, since routes answer GET only. */
 const PREFS_ROUTE = "/inbox-bridge/prefs";
-/**
- * Choices made in the page, kept beside the queue instead of rewritten into the
- * host's configuration file: the plugin owns its own overlay, and deleting this
- * file returns the instance to exactly what the profile says.
- */
-const PREFS_REL = join(".work", "inbox-bridge", "prefs.json");
-/** Event details (title, url, role) kept beside the queue, so reloads keep them. */
-const LABELS_REL = join(".work", "inbox-bridge", "labels.json");
+// The queue (`state.json`), the page's choices (`prefs.json`) and the event
+// details (`labels.json`) all live under the state root chosen in `apply`, so
+// there is one answer to "where does this instance keep its state" — see
+// scripts/state-root.mjs.
 /** How many event details to keep for the view. */
 const RECENT_LIMIT = 60;
 
@@ -400,14 +393,23 @@ export function keyOf(agent) {
 export function apply(ctx, config) {
   const baseConfig = config ?? {};
   const options = mergeConfig(baseConfig);
-  const stateDir = join(options.cwd, ".work", "inbox-bridge");
+  // State belongs to the plugin, not to whatever project directory the session
+  // happens to sit in: a read-only, synced or another-account workspace turned
+  // "take this repository" into `EPERM … mkdir`, and there was nothing an
+  // installer could do about it from inside the plugin. See scripts/state-root.mjs
+  // for the order of candidates and why each one is tried.
+  const state = stateRootFor({ cwd: options.cwd, env: process.env });
+  // Children (the poller, the ack CLI) write under the same root, and they cannot
+  // read this object: the environment is how they learn it.
+  options.stateRoot = state.root;
+  const stateDir = state.queueDir;
   const logPath = join(stateDir, "plugin.log");
   /**
    * What the page is allowed to change, and how. Routes in this host answer GET
    * and HEAD only, so a choice arrives as query parameters; the token keeps a
    * random web page from changing this instance behind the user's back.
    */
-  const prefsFile = join(options.cwd, PREFS_REL);
+  const prefsFile = join(stateDir, "prefs.json");
   const uiToken = randomUUID();
   let prefs = readJsonSync(prefsFile) ?? {};
   const persistPrefs = (next) => {
@@ -527,7 +529,7 @@ export function apply(ctx, config) {
   // The queue file records only status and time, so the view would show bare
   // keys. Keep the details this process saw next to the queue, so a reload of
   // the Host does not turn every row back into `run:43951300067`.
-  const labelsFile = join(options.cwd, LABELS_REL);
+  const labelsFile = join(stateDir, "labels.json");
   const recent = new Map();
   for (const [key, label] of Object.entries(readJsonSync(labelsFile) ?? {})) {
     if (label && typeof label === "object") recent.set(key, label);
@@ -579,8 +581,8 @@ export function apply(ctx, config) {
       : null;
     const base = buildUiPayload({
       options,
-      queue: readJson(join(options.cwd, STATE_REL))?.events,
-      source: readJson(join(options.cwd, SOURCE_STATE_REL)),
+      queue: readJson(join(stateDir, "state.json"))?.events,
+      source: readJson(join(state.sourceDir, "state.json")),
       recent,
       session,
       polled: polledRepos(),
@@ -621,6 +623,12 @@ export function apply(ctx, config) {
       overlay: Object.keys(prefs),
       sessionId,
       update: updateInfo,
+      // Where state goes, and — when no root could be written — why. The page
+      // shows this only when it is not fine: a plugin that cannot remember a
+      // setting has to say so instead of quietly forgetting it.
+      storage: { root: state.root, from: state.from, ok: state.ok, reason: state.reason },
+      // What the migration copied the first time a newer root was used.
+      storageMoved: state.migrated?.copied?.length ? state.migrated.copied : null,
     };
   };
 
@@ -635,6 +643,10 @@ export function apply(ctx, config) {
           {
             at: new Date().toISOString(),
             cwd: options.cwd,
+            // Where this instance actually keeps its state, and how that place
+            // was chosen: the first thing to look at when a machine says it
+            // cannot remember anything.
+            state: { root: state.root, from: state.from, ok: state.ok, reason: state.reason },
             repo: options.repo,
             repos: polledRepos(),
             intervalMs: options.intervalMs,
@@ -1932,6 +1944,9 @@ export function runCommand(spec, options, extraEnv = {}) {
           // finish inside Ns" instead of the outer kill, which says nothing.
           ...(options.pollBudgetMs > 0 ? { INBOX_POLL_TIMEOUT_MS: String(options.pollBudgetMs) } : {}),
             ...(options.clear && options.clear !== "off" ? { INBOX_CLEAR: options.clear } : {}),
+            // The root this instance chose, so the poller writes the same place
+            // the queue is read from instead of guessing one of its own.
+            ...(options.stateRoot ? { INBOX_STATE_ROOT: options.stateRoot } : {}),
             ...extraEnv,
           },
           timeout: options.timeoutMs,

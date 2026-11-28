@@ -65,7 +65,7 @@ The status row under the composer carries a chip: when something is waiting, a b
 - the identity and the last poll;
 - two controls: delivery (queue only / may wake — selecting "may wake" reveals a `⌄` on the button that opens the rhythm rows) and how the session handles its facts (act now / confirm first), plus the repositories this session took over (paste a repository link or type `owner/name`; `×` releases).
 
-Each control explains itself on hover. Changes apply immediately and are stored in `<cwd>/.work/inbox-bridge/prefs.json`; they do not rewrite the DSH plugin configuration, and a reset returns to the configured values. The panel is per session: switching sessions shows what that session took over and what would reach it.
+Each control explains itself on hover. Changes apply immediately and are stored in `inbox-bridge/prefs.json` under the state root; they do not rewrite the DSH plugin configuration, and a reset returns to the configured values. The panel is per session: switching sessions shows what that session took over and what would reach it.
 
 ## Install
 
@@ -117,7 +117,7 @@ Full settings, command line and state files: [settings and commands](docs/config
 - **One fact wakes one session.** It does not arbitrate concurrent work: one pull request never wakes two sessions, but two agents already acting on it are beyond it.
 - **No browser, no sign-in.** A read thread is cleared with `PATCH /notifications/threads/<id>`, in the same `gh` call that reads the inbox; the token needs the `notifications` scope, and `inbox-bridge doctor` says so. GitHub's web "Done" has no public endpoint, so the plugin does not chase that state: for a poller, read and done are the same thing — neither comes back in the unread feed.
 - **It only touches the repositories it owns.** It clears the threads it read through its own ownership, and leaves the rest of the account alone.
-- **State is local.** It lives under the workspace's `.work/` and is not synced across machines.
+- **State is local, and it does not live in your project.** It goes to the plugin's own root (`$DSH_HOME/inbox-bridge`, overridable with `INBOX_STATE_ROOT`) and is not synced across machines, so a read-only, synced, or another-account workspace cannot break it.
 
 ## More
 

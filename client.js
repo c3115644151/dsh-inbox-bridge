@@ -110,6 +110,9 @@ window.__ModuleLoader__.load({
         elsewhereTip: "这些条目在你的仓库之外，没有会话会收到它们；点了认领才会送到本会话",
         unbound: "会话正在绑定，先不列别人的条目",
         updateAvailable: (latest, current) => `发现新版本 ${latest}（当前 ${current}）`,
+        storageFailed: (root) => `状态写不进去：${root}（设置记不住）`,
+        storageTip: (root, reason) =>
+          `${root} 无法创建或写入：${reason}。设 INBOX_STATE_ROOT 到一个可写目录，或在 profile 里给它权限`,
         updateTip: "旧版本可能带着未修复的问题。请在会话里让 agent 升级，插件本身不会自动改动正在运行的版本。",
         scopeRead: "身份",
         scopeWatch: "接管的仓库",
@@ -174,6 +177,9 @@ window.__ModuleLoader__.load({
         elsewhereTip: "Outside your repositories, so no session receives them; claiming one sends it here",
         unbound: "binding this session, so no other session's items are listed",
         updateAvailable: (latest, current) => `new version ${latest} available (you have ${current})`,
+        storageFailed: (root) => `cannot write state to ${root} (settings will not stick)`,
+        storageTip: (root, reason) =>
+          `${root} cannot be created or written: ${reason}. Point INBOX_STATE_ROOT at a writable directory, or fix that path's permissions`,
         updateTip: "An older copy may carry unfixed bugs. Ask the agent in a session to upgrade; the plugin never changes a running version by itself.",
         scopeRead: "identity",
         scopeWatch: "repositories",
@@ -1314,6 +1320,16 @@ window.__ModuleLoader__.load({
                 null,
             elsewhere > 0 && !unbound
               ? h("div", { style: styles.more, title: text.elsewhereTip }, text.elsewhere(elsewhere))
+              : null,
+            status.storage?.ok === false
+              ? h(
+                  "div",
+                  {
+                    style: { ...styles.more, color: "var(--dsw-alias-label-warning, inherit)", cursor: "default" },
+                    title: text.storageTip(status.storage.root, status.storage.reason ?? ""),
+                  },
+                  text.storageFailed(status.storage.root),
+                )
               : null,
             status.update?.behind
               ? h(

@@ -12,6 +12,7 @@
 | `client.js` | 客户端：胶囊、面板、文案（zh/en） | 网络请求之外的业务判断 |
 | `scripts/github-inbox.mjs` | 抓取与事件提取（GitHub → 事实） | 队列状态、投递时机 |
 | `scripts/inbox-bridge.mjs` | 队列状态机（pending / delivered / done）、CLI | 抓取、投递 |
+| `scripts/state-root.mjs` | 状态根的选择、探测与一次性迁移（`INBOX_STATE_ROOT` → `$DSH_HOME` → `<cwd>/.work`） | 任何业务判断；路径只能由它回答 |
 | `scripts/build-market-index.mjs` | 市场索引生成与校验 | 任何运行时逻辑 |
 | `scripts/check-docs.mjs` | 文档与版本一致性校验 | 任何运行时逻辑 |
 | `scripts/release.mjs` | 维护者发布流水（校验、提交、推送、发布、等 registry） | 任何运行时逻辑 |

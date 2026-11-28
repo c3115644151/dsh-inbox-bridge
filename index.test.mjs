@@ -1,3 +1,7 @@
+// State lands under each test's own workspace: `INBOX_STATE_ROOT` is resolved
+// against `cwd`, so pinning it once per file still gives every test its own
+// root — and a test never writes into the machine's real DSH home.
+process.env.INBOX_STATE_ROOT = ".work";
 import test from "node:test";
 import assert from "node:assert/strict";
 

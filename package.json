@@ -38,6 +38,7 @@
     "scripts/github-inbox.mjs",
     "scripts/inbox-bridge.mjs",
     "scripts/key.mjs",
+    "scripts/state-root.mjs",
     "docs/how-it-works.md",
     "docs/configuration.md",
     "docs/DETAIL.md",

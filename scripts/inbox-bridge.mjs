@@ -15,12 +15,11 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { splitKey } from "./key.mjs";
 import { repoOfKey as repoFromKey } from "./key.mjs";
+import { QUEUE_DIR, SOURCE_DIR, stateRootFor } from "./state-root.mjs";
 
-const STATE_REL = join(".work", "inbox-bridge", "state.json");
-const RUNTIME_REL = join(".work", "inbox-bridge", "runtime.json");
+
 // The poller ships next to this file, so the same command works from any cwd.
 const POLLER_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "github-inbox.mjs");
-const SOURCE_STATE_REL = join(".work", "github-inbox", "state.json");
 
 export const STATUSES = ["pending", "delivered", "done"];
 /** Delivered-but-unhandled events resurface after this long. */
@@ -380,8 +379,19 @@ function safePoll(root, options = {}) {
   }
 }
 
+/**
+ * Where this instance keeps its queue.
+ *
+ * The plugin passes the root it chose (`INBOX_STATE_ROOT`); a standalone run
+ * derives it the same way the plugin does, so `doctor` inspects the files the
+ * running instance actually uses instead of a second set under `<cwd>/.work`.
+ */
+function rootOf(root) {
+  return stateRootFor({ cwd: root, env: process.env }).root;
+}
+
 function stateFileOf(root) {
-  return resolve(root, STATE_REL);
+  return join(rootOf(root), QUEUE_DIR, "state.json");
 }
 
 function writeState(file, state) {
@@ -447,8 +457,8 @@ export function describeStatus(root, options = {}) {
     const status = entry?.status;
     if (status in counts) counts[status] += 1;
   }
-  const runtime = readJson(resolve(root, RUNTIME_REL));
-  const source = readJson(resolve(root, SOURCE_STATE_REL));
+  const runtime = readJson(join(rootOf(root), QUEUE_DIR, "runtime.json"));
+  const source = readJson(join(rootOf(root), SOURCE_DIR, "state.json"));
   const repos = Array.isArray(runtime?.repos) && runtime.repos.length > 0 ? runtime.repos : null;
   // The collector keeps one slice per repository; `lastPoll` is per slice.
   const slices = source?.repos && typeof source.repos === "object" ? source.repos : null;
@@ -474,7 +484,7 @@ export function describeStatus(root, options = {}) {
     lastPoll: lastPolls[0] ?? source?.lastPoll ?? null,
     lastPolls,
     stateFile: stateFileOf(root),
-    runtimeFile: resolve(root, RUNTIME_REL),
+    runtimeFile: join(rootOf(root), QUEUE_DIR, "runtime.json"),
     pluginSeen: runtime !== null,
   };
 }
@@ -606,8 +616,8 @@ export function describeDoctor(root, options = {}) {
   const checks = [];
   const add = (id, status, title, detail = null) => checks.push({ id, status, title, detail });
 
-  const runtime = readJson(resolve(root, RUNTIME_REL));
-  const source = readJson(resolve(root, SOURCE_STATE_REL));
+  const runtime = readJson(join(rootOf(root), QUEUE_DIR, "runtime.json"));
+  const source = readJson(join(rootOf(root), SOURCE_DIR, "state.json"));
   const queue = readState(stateFileOf(root)).events ?? {};
   const counts = { pending: 0, delivered: 0, done: 0 };
   for (const entry of Object.values(queue)) {
@@ -624,6 +634,22 @@ export function describeDoctor(root, options = {}) {
   } else {
     add("plugin", "ok", `插件在这里运行过：${runtime.cwd ?? root}`);
   }
+  // The first thing to check when a machine "cannot remember anything": which
+  // root was chosen, and did it take. State used to live under the workspace,
+  // which is exactly where an installed plugin is least allowed to write.
+  const chosen = stateRootFor({ cwd: root, env: process.env });
+  add(
+    "state",
+    chosen.ok ? "ok" : "fail",
+    chosen.ok
+      ? `状态根 ${chosen.root}（来自 ${chosen.from}）`
+      : `没有任何状态根写得进去：最后一次是 ${chosen.root}`,
+    chosen.ok
+      ? chosen.migrated?.copied?.length
+        ? `从 ${chosen.migrated.from} 迁过来 ${chosen.migrated.copied.length} 个文件`
+        : null
+      : `${chosen.reason}；设 INBOX_STATE_ROOT 到一个可写目录，或修好上面那个路径的权限`,
+  );
 
   const repos =
     Array.isArray(runtime?.repos) && runtime.repos.length > 0
@@ -808,8 +834,8 @@ export function formatDoctor(report) {
 export function explainKey(root, key, options = {}) {
   const readJson = options.readJson ?? readJsonFile;
   const now = options.now ?? Date.now();
-  const runtime = readJson(resolve(root, RUNTIME_REL));
-  const source = readJson(resolve(root, SOURCE_STATE_REL));
+  const runtime = readJson(join(rootOf(root), QUEUE_DIR, "runtime.json"));
+  const source = readJson(join(rootOf(root), SOURCE_DIR, "state.json"));
   const queue = readState(stateFileOf(root)).events ?? {};
   const { repo, inner } = splitKey(key);
   const entry = queue[key] ?? null;

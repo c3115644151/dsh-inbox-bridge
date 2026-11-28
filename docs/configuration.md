@@ -21,7 +21,7 @@ DSH 的插件配置里，一个 `dsh-inbox-bridge` 条目即可；等价写法�
 输入框下面那颗胶囊浮出来的卡片里，可以直接改这几件事：提醒方式、处理方式、节奏（空闲多久、每小时几次）、这个会话接管哪些仓库、以及认领一条别人仓库里的条目。这些改动不写回 DSH 的插件配置，而是记在插件自己的覆盖层里：
 
 ```text
-<cwd>/.work/inbox-bridge/prefs.json
+$DSH_HOME/inbox-bridge/prefs.json（旧版本在 <cwd>/.work/inbox-bridge/prefs.json）
 ```
 
 优先级是 **页面上的选择 > profile 里的配置 > 默认值**。卡片上的「恢复配置」删掉这个文件的内容，一切回到 profile 写的那份；直接删文件也一样。
@@ -69,7 +69,7 @@ GitHub 网页上的「Done」没有公开接口（`POST /notifications/beta/arch
 
 | 键 | 默认 | 作用 |
 | --- | --- | --- |
-| `cwd` | DSH 进程工作目录 | 状态文件放在哪个工作区的 `.work/`；也是推断仓库的起点 |
+| `cwd` | DSH 进程工作目录 | 推断仓库的起点；**不再决定状态放哪**（见「状态放在哪」，那里是插件自己的根，可用 `INBOX_STATE_ROOT` 指定） |
 | `repo` | 从 `origin` 推断 | 只盯这一个 `owner/name`；`INBOX_REPO` 环境变量可覆盖 |
 | `repos` | `[]` | 盯一组仓库：`["owner/one", "owner/two"]`；非空时优先于 `repo`，状态按仓库分片 |
 | `intervalMs` | `60000`（1 分钟） | **回合进行中**的轮询间隔；`wakeup` 下空闲时也按它取数，`quiet` 下空闲不轮询。CI 需要更快的返工就调小它（下限 5000），代价是每次轮询三个 `gh` 只读请求 |
@@ -149,13 +149,25 @@ node scripts/inbox-bridge.mjs explain <key>     # 某件事走到哪一步了，
 
 ## 状态放在哪
 
-都在工作目录下，都是本地文件，可以随时删（删掉等于从零开始）：
+状态根是插件自己的，**不是**会话所在的项目目录。按下面的顺序挑第一个真正能创建、能写入的：
+
+1. `INBOX_STATE_ROOT`（环境变量；相对路径按 `cwd` 解析）
+2. `$DSH_HOME`（默认 `~/.dsh`）
+3. `<cwd>/.work`（旧位置，兜底）
+
+为什么要有第 2 项：把状态写进项目目录意味着「插件能不能工作」取决于那个目录能不能写。它常常不能——只读或同步中的项目、别的账号建的目录、被 Defender 的受控文件夹访问盯上的桌面、目标已经消失的 Junction。症状是 `could not write … EPERM: operation not permitted, mkdir`，装的人从插件内部没有任何办法自救。第一次用新根时，旧根里的 `state.json`、`prefs.json`、`labels.json` 与抓取器状态会被复制过去（日志留在原处，因为日志记的是它自己那次运行）。
+
+根目录下：
 
 ```
-.work/inbox-bridge/state.json    队列：pending / delivered / done
-.work/inbox-bridge/runtime.json  这轮生效的配置，status 读它
-.work/inbox-bridge/plugin.log    投递、唤醒、skip 的痕迹
-.work/github-inbox/state.json    抓取器：每个仓库一个分片，记上次轮询与已见事件
+inbox-bridge/state.json    队列：pending / delivered / done
+inbox-bridge/runtime.json  这轮生效的配置，status 读它（含 state.root / from）
+inbox-bridge/plugin.log    投递、唤醒、skip 的痕迹
+inbox-bridge/prefs.json    面板改过的选择（覆盖层）
+inbox-bridge/labels.json   事件标题与链接，供面板显示
+github-inbox/state.json    抓取器：每个仓库一个分片，记上次轮询与已见事件
 ```
+
+都是本地文件，可以随时删（删掉等于从零开始）。`node scripts/inbox-bridge.mjs doctor` 第一项 `state` 会说用的是哪个根、由谁决定、迁了几个文件；一个根都写不进去时它是 fail 并给出原因，面板也有一行「状态写不进去」。
 
 页面那一行读的是同源路由 `GET /inbox-bridge/status.json`（只读，内容与 `status` 命令一致）；它不写任何文件，也不改变队列。
